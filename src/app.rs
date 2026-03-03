@@ -1,7 +1,7 @@
 use crate::assets::{AppSettings, Assets, BindableAction, Icon, PixelGridMode, SettingsWindow};
 use crate::canvas::{BlendMode, Canvas, CanvasState, Layer, TiledImage};
 use crate::components::dialogs::{NewFileDialog, SaveFileDialog, SaveFormat, TiffCompression};
-use crate::components::history::{SingleLayerSnapshotCommand, SnapshotCommand};
+use crate::components::history::{CanvasSnapshot, SingleLayerSnapshotCommand, SnapshotCommand};
 use crate::components::*;
 use crate::io::FileHandler;
 use crate::ops::clipboard::PasteOverlay;
@@ -32,6 +32,21 @@ pub struct FilterResult {
     pub description: String,
     /// Non-zero for live-preview jobs; result is discarded when token != current preview_job_token.
     pub preview_token: u64,
+}
+
+/// Result delivered from a background canvas-wide operation (resize image/canvas).
+/// Unlike `FilterResult` which targets a single layer, this carries all layers.
+pub struct CanvasOpResult {
+    pub project_index: usize,
+    /// Snapshot of the canvas state before the operation (for undo).
+    pub before: crate::components::history::CanvasSnapshot,
+    /// The processed layers (one `TiledImage` per layer, in order).
+    pub result_layers: Vec<TiledImage>,
+    /// New canvas dimensions after the operation.
+    pub new_width: u32,
+    pub new_height: u32,
+    /// Human-readable name for the undo history entry.
+    pub description: String,
 }
 
 // ============================================================================
@@ -157,6 +172,10 @@ pub struct PaintFEApp {
     /// Monotonically-increasing token; preview jobs carrying an older token are discarded on receipt.
     preview_job_token: u64,
 
+    // Async canvas-wide operation pipeline (resize image/canvas)
+    canvas_op_sender: mpsc::Sender<CanvasOpResult>,
+    canvas_op_receiver: mpsc::Receiver<CanvasOpResult>,
+
     // Async IO pipeline (background image load / save)
     io_sender: mpsc::Sender<IoResult>,
     io_receiver: mpsc::Receiver<IoResult>,
@@ -187,6 +206,15 @@ pub struct PaintFEApp {
     /// True after the user confirmed "Exit without Saving" — suppresses the dialog on the
     /// next close_requested so the OS close actually goes through.
     force_exit: bool,
+
+    /// Queue of project indices (untitled/dirty) that still need Save As dialogs
+    /// before the app can exit. Populated when user clicks "Save" in the exit dialog.
+    /// Each entry is processed sequentially: switch to tab → open Save As → wait for
+    /// completion/cancel → advance to next or exit.
+    exit_save_queue: Vec<usize>,
+    /// True while working through exit_save_queue — the current Save As dialog
+    /// is part of the exit flow (not a normal Save As).
+    exit_save_active: bool,
 
     /// Instant of the last auto-save tick (used to measure the interval).
     last_autosave: std::time::Instant,
@@ -349,6 +377,7 @@ impl PaintFEApp {
         let (filter_sender, filter_receiver) = mpsc::channel();
         let (io_sender, io_receiver) = mpsc::channel();
         let (script_sender, script_receiver) = mpsc::channel();
+        let (canvas_op_sender, canvas_op_receiver) = mpsc::channel();
 
         // Probe ONNX Runtime availability
         let onnx_available =
@@ -398,6 +427,8 @@ impl PaintFEApp {
             filter_ops_start_time: None,
             filter_status_description: String::new(),
             preview_job_token: 1,
+            canvas_op_sender,
+            canvas_op_receiver,
             io_sender,
             io_receiver,
             pending_io_ops: 0,
@@ -417,6 +448,8 @@ impl PaintFEApp {
             pending_close_index: None,
             pending_exit: false,
             force_exit: false,
+            exit_save_queue: Vec::new(),
+            exit_save_active: false,
             last_autosave: std::time::Instant::now(),
             first_frame: true,
             ipc_receiver,
@@ -706,6 +739,40 @@ impl eframe::App for PaintFEApp {
                 }
             }
         }
+
+        // --- Poll async canvas-wide operation results (resize image/canvas) ---
+        while let Ok(result) = self.canvas_op_receiver.try_recv() {
+            self.pending_filter_jobs = self.pending_filter_jobs.saturating_sub(1);
+            if self.pending_filter_jobs == 0 {
+                self.filter_ops_start_time = None;
+                self.filter_status_description.clear();
+            }
+            if result.project_index < self.projects.len()
+                && let Some(project) = self.projects.get_mut(result.project_index)
+            {
+                let state = &mut project.canvas_state;
+                // Restore before-state so SnapshotCommand captures it correctly
+                result.before.restore_into(state);
+                let mut cmd = SnapshotCommand::new(result.description, state);
+                // Apply result layers
+                for (i, tiled) in result.result_layers.into_iter().enumerate() {
+                    if i < state.layers.len() {
+                        state.layers[i].pixels = tiled;
+                        state.layers[i].invalidate_lod();
+                        state.layers[i].gpu_generation += 1;
+                    }
+                }
+                state.width = result.new_width;
+                state.height = result.new_height;
+                state.composite_cache = None;
+                state.clear_preview_state();
+                state.mark_dirty(None);
+                cmd.set_after(state);
+                project.history.push(Box::new(cmd));
+                project.mark_dirty();
+            }
+        }
+
         // Request a repaint while filter jobs are pending so polling stays active
         if self.pending_filter_jobs > 0 {
             ctx.request_repaint();
@@ -1796,21 +1863,30 @@ impl eframe::App for PaintFEApp {
                     ui.label("Do you want to save before closing?");
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.button("Save").clicked() {
+                        let btn_size = egui::vec2(100.0, 28.0);
+                        if ui
+                            .add(egui::Button::new("Save").min_size(btn_size))
+                            .clicked()
+                        {
                             do_save = true;
                         }
-                        if ui.button("Don't Save").clicked() {
+                        if ui
+                            .add(egui::Button::new("Don't Save").min_size(btn_size))
+                            .clicked()
+                        {
                             do_discard = true;
                         }
-                        if ui.button("Cancel").clicked() {
+                        if ui
+                            .add(egui::Button::new("Cancel").min_size(btn_size))
+                            .clicked()
+                        {
                             do_cancel = true;
                         }
                     });
                 });
             if do_save {
                 // Switch to the target tab and open the Save As dialog.
-                self.active_project_index = close_idx;
-                self.save_file_dialog.open = true;
+                self.open_save_as_for_project(close_idx);
                 // Clear pending — after saving the user can re-close cleanly.
                 self.pending_close_index = None;
             }
@@ -1832,6 +1908,7 @@ impl eframe::App for PaintFEApp {
                 .map(|p| p.name.clone())
                 .collect();
 
+            let mut do_save = false;
             let mut do_exit = false;
             let mut do_cancel = false;
 
@@ -1873,12 +1950,11 @@ impl eframe::App for PaintFEApp {
                             }
 
                             ui.add_space(8.0);
-                            ui.label("Save your work first, or your changes will be lost.");
+                            ui.label("Do you want to save before exiting?");
                             ui.add_space(12.0);
 
-                            // Warning button — red tint that adapts to light/dark theme.
                             let is_dark = ui.visuals().dark_mode;
-                            let (btn_fill, btn_text) = if is_dark {
+                            let (danger_fill, danger_text) = if is_dark {
                                 (
                                     egui::Color32::from_rgb(170, 35, 35),
                                     egui::Color32::from_rgb(255, 220, 220),
@@ -1886,35 +1962,72 @@ impl eframe::App for PaintFEApp {
                             } else {
                                 (egui::Color32::from_rgb(192, 38, 38), egui::Color32::WHITE)
                             };
-                            let exit_btn = egui::Button::new(
-                                egui::RichText::new("Exit without Saving")
-                                    .color(btn_text)
-                                    .strong(),
-                            )
-                            .fill(btn_fill)
-                            .min_size(egui::vec2(160.0, 26.0));
 
-                            if ui.add(exit_btn).clicked() {
-                                do_exit = true;
-                            }
-                            ui.add_space(4.0);
-                            if ui.button("Cancel").clicked() {
-                                do_cancel = true;
-                            }
+                            let btn_size = egui::vec2(110.0, 26.0);
+                            // Center the row of 3 buttons
+                            let total_w = btn_size.x * 3.0 + ui.spacing().item_spacing.x * 2.0;
+                            let avail = ui.available_width();
+                            let pad = ((avail - total_w) / 2.0).max(0.0);
+                            ui.horizontal(|ui| {
+                                ui.add_space(pad);
+                                if ui
+                                    .add(egui::Button::new("Save").min_size(btn_size))
+                                    .clicked()
+                                {
+                                    do_save = true;
+                                }
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            egui::RichText::new("Exit Without")
+                                                .color(danger_text),
+                                        )
+                                        .fill(danger_fill)
+                                        .min_size(btn_size),
+                                    )
+                                    .clicked()
+                                {
+                                    do_exit = true;
+                                }
+                                if ui
+                                    .add(egui::Button::new("Cancel").min_size(btn_size))
+                                    .clicked()
+                                {
+                                    do_cancel = true;
+                                }
+                            });
 
                             ui.add_space(6.0);
-                            ui.label(
-                                egui::RichText::new(
-                                    "Save from File \u{2192} Save, then quit again.  \
-                                     Disable this prompt in Settings \u{2192} General.",
-                                )
-                                .small()
-                                .weak(),
-                            );
                         });
                     }
                 });
 
+            if do_save {
+                let current_time = ctx.input(|i| i.time);
+                // Save all projects that already have a file path
+                self.handle_save_all(current_time);
+                // Collect dirty untitled projects that need Save As
+                let untitled_dirty: Vec<usize> = self
+                    .projects
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, p)| p.is_dirty && !p.file_handler.has_current_path())
+                    .map(|(i, _)| i)
+                    .collect();
+                self.pending_exit = false;
+                if untitled_dirty.is_empty() {
+                    // All projects had paths — exit immediately
+                    self.force_exit = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                } else {
+                    // Queue Save As dialogs for each untitled dirty project
+                    self.exit_save_queue = untitled_dirty;
+                    self.exit_save_active = true;
+                    // Pop the first and open Save As for it
+                    let first = self.exit_save_queue.remove(0);
+                    self.open_save_as_for_project(first);
+                }
+            }
             if do_exit {
                 self.pending_exit = false;
                 self.force_exit = true;
@@ -1931,7 +2044,10 @@ impl eframe::App for PaintFEApp {
         }
 
         // Save File Dialog - saves the active project
+        let save_dialog_was_open = self.save_file_dialog.open;
+        let mut save_dialog_confirmed = false;
         if let Some(action) = self.save_file_dialog.show(ctx) {
+            save_dialog_confirmed = true;
             let project_index = self.active_project_index;
             if project_index < self.projects.len() {
                 if action.format == SaveFormat::Pfe {
@@ -2068,6 +2184,26 @@ impl eframe::App for PaintFEApp {
                         }
                     });
                 }
+            }
+        }
+
+        // Exit-save queue: advance after Save As completes or abort on cancel
+        if self.exit_save_active {
+            if save_dialog_confirmed {
+                // User confirmed a save — move to next project in queue or exit
+                if self.exit_save_queue.is_empty() {
+                    // All untitled projects have been saved — exit
+                    self.exit_save_active = false;
+                    self.force_exit = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                } else {
+                    let next = self.exit_save_queue.remove(0);
+                    self.open_save_as_for_project(next);
+                }
+            } else if save_dialog_was_open && !self.save_file_dialog.open {
+                // Dialog was open and is now closed without a save — user canceled, abort exit
+                self.exit_save_queue.clear();
+                self.exit_save_active = false;
             }
         }
 
@@ -4649,35 +4785,42 @@ impl PaintFEApp {
                 });
             }
         } else {
-            // No existing path — extract all data we need from project
-            let project = &self.projects[idx];
-            let composite = project.canvas_state.composite();
-            let was_animated = project.was_animated;
-            let animation_fps = project.animation_fps;
-            let frame_images: Option<Vec<image::RgbaImage>> =
-                if project.canvas_state.layers.len() > 1 {
-                    Some(
-                        project
-                            .canvas_state
-                            .layers
-                            .iter()
-                            .map(|l| l.pixels.to_rgba_image())
-                            .collect(),
-                    )
-                } else {
-                    None
-                };
-
-            self.save_file_dialog.reset();
-            self.save_file_dialog.set_source_image(&composite);
-
-            if let Some(frames) = frame_images.as_ref() {
-                self.save_file_dialog
-                    .set_source_animated(frames, was_animated, animation_fps);
-            }
-
-            self.save_file_dialog.open = true;
+            // No existing path — open Save As dialog
+            self.open_save_as_for_project(idx);
         }
+    }
+
+    /// Open a Save As dialog for the project at `idx`, switching to that tab first.
+    /// Used by both Ctrl+Shift+S and the exit-save queue.
+    fn open_save_as_for_project(&mut self, idx: usize) {
+        if idx >= self.projects.len() {
+            return;
+        }
+        self.active_project_index = idx;
+        let project = &self.projects[idx];
+        let composite = project.canvas_state.composite();
+        let was_animated = project.was_animated;
+        let animation_fps = project.animation_fps;
+        let frame_images: Option<Vec<image::RgbaImage>> =
+            if project.canvas_state.layers.len() > 1 {
+                Some(
+                    project
+                        .canvas_state
+                        .layers
+                        .iter()
+                        .map(|l| l.pixels.to_rgba_image())
+                        .collect(),
+                )
+            } else {
+                None
+            };
+        self.save_file_dialog.reset();
+        self.save_file_dialog.set_source_image(&composite);
+        if let Some(frames) = frame_images.as_ref() {
+            self.save_file_dialog
+                .set_source_animated(frames, was_animated, animation_fps);
+        }
+        self.save_file_dialog.open = true;
     }
 
     /// Save a specific project by index (only if it has a path — skips dialog).
@@ -5128,18 +5271,34 @@ impl PaintFEApp {
             ActiveDialog::ResizeImage(dlg) => match dlg.show(ctx) {
                 DialogResult::Ok((w, h, interp)) => {
                     self.active_dialog = ActiveDialog::None;
-                    if let Some(project) = self.active_project_mut() {
-                        let mut cmd =
-                            SnapshotCommand::new("Resize Image".to_string(), &project.canvas_state);
-                        crate::ops::transform::resize_image(
-                            &mut project.canvas_state,
-                            w,
-                            h,
-                            interp,
-                        );
-                        cmd.set_after(&project.canvas_state);
-                        project.history.push(Box::new(cmd));
-                        project.mark_dirty();
+                    if let Some(project) = self.active_project() {
+                        let before = CanvasSnapshot::capture(&project.canvas_state);
+                        let flat_layers: Vec<RgbaImage> = project
+                            .canvas_state
+                            .layers
+                            .iter()
+                            .map(|l| l.pixels.to_rgba_image())
+                            .collect();
+                        let sender = self.canvas_op_sender.clone();
+                        let project_index = self.active_project_index;
+                        let current_time = ctx.input(|i| i.time);
+                        if self.pending_filter_jobs == 0 {
+                            self.filter_ops_start_time = Some(current_time);
+                        }
+                        self.filter_status_description = "Resize Image".to_string();
+                        self.pending_filter_jobs += 1;
+                        rayon::spawn(move || {
+                            let result_layers =
+                                crate::ops::transform::resize_layers(flat_layers, w, h, interp);
+                            let _ = sender.send(CanvasOpResult {
+                                project_index,
+                                before,
+                                result_layers,
+                                new_width: w,
+                                new_height: h,
+                                description: "Resize Image".to_string(),
+                            });
+                        });
                     }
                     return;
                 }
@@ -5155,21 +5314,38 @@ impl PaintFEApp {
                 match dlg.show(ctx, secondary) {
                     DialogResult::Ok((w, h, anchor, fill)) => {
                         self.active_dialog = ActiveDialog::None;
-                        if let Some(project) = self.active_project_mut() {
-                            let mut cmd = SnapshotCommand::new(
-                                "Resize Canvas".to_string(),
-                                &project.canvas_state,
-                            );
-                            crate::ops::transform::resize_canvas(
-                                &mut project.canvas_state,
-                                w,
-                                h,
-                                anchor,
-                                fill,
-                            );
-                            cmd.set_after(&project.canvas_state);
-                            project.history.push(Box::new(cmd));
-                            project.mark_dirty();
+                        if let Some(project) = self.active_project() {
+                            let before = CanvasSnapshot::capture(&project.canvas_state);
+                            let old_w = project.canvas_state.width;
+                            let old_h = project.canvas_state.height;
+                            let flat_layers: Vec<RgbaImage> = project
+                                .canvas_state
+                                .layers
+                                .iter()
+                                .map(|l| l.pixels.to_rgba_image())
+                                .collect();
+                            let sender = self.canvas_op_sender.clone();
+                            let project_index = self.active_project_index;
+                            let current_time = ctx.input(|i| i.time);
+                            if self.pending_filter_jobs == 0 {
+                                self.filter_ops_start_time = Some(current_time);
+                            }
+                            self.filter_status_description = "Resize Canvas".to_string();
+                            self.pending_filter_jobs += 1;
+                            rayon::spawn(move || {
+                                let result_layers =
+                                    crate::ops::transform::resize_canvas_layers(
+                                        flat_layers, old_w, old_h, w, h, anchor, fill,
+                                    );
+                                let _ = sender.send(CanvasOpResult {
+                                    project_index,
+                                    before,
+                                    result_layers,
+                                    new_width: w,
+                                    new_height: h,
+                                    description: "Resize Canvas".to_string(),
+                                });
+                            });
                         }
                         return;
                     }
@@ -8856,6 +9032,14 @@ impl PaintFEApp {
                         .size(14.0)
                         .color(self.theme.text_color),
                 );
+                if let Some(project) = self.projects.get(self.active_project_index) {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    ui.label(
+                        egui::RichText::new(format!("({})", project.canvas_state.layers.len()))
+                            .size(12.0)
+                            .color(egui::Color32::GRAY),
+                    );
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button("×").clicked() {
                         close_clicked = true;

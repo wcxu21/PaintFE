@@ -214,6 +214,21 @@ pub(crate) fn numeric_field_with_buttons(
     suffix: &str,
     step: f32,
 ) -> bool {
+    numeric_field_with_buttons_focus(ui, value, speed, range, suffix, step, false)
+}
+
+/// Like `numeric_field_with_buttons`, but when `request_focus` is true the
+/// DragValue is given keyboard focus on this frame (used to auto-select
+/// the first field when a dialog opens).
+pub(crate) fn numeric_field_with_buttons_focus(
+    ui: &mut egui::Ui,
+    value: &mut f32,
+    speed: f32,
+    range: std::ops::RangeInclusive<f32>,
+    suffix: &str,
+    step: f32,
+    request_focus: bool,
+) -> bool {
     let mut changed = false;
     let range_start = *range.start();
     let range_end = *range.end();
@@ -229,7 +244,11 @@ pub(crate) fn numeric_field_with_buttons(
         } else {
             dv
         };
-        if ui.add(dv).changed() {
+        let response = ui.add(dv);
+        if request_focus {
+            response.request_focus();
+        }
+        if response.changed() {
             changed = true;
         }
         if ui.small_button("+").clicked() {
@@ -331,6 +350,7 @@ pub struct ResizeImageDialog {
     pub preset: ResizePreset,
     original_w: u32,
     original_h: u32,
+    just_opened: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -385,6 +405,7 @@ impl ResizeImageDialog {
             preset: ResizePreset::default(),
             original_w: state.width,
             original_h: state.height,
+            just_opened: true,
         }
     }
 
@@ -447,14 +468,19 @@ impl ResizeImageDialog {
                     .show(ui, |ui| {
                         // Width row
                         ui.label(t!("dialog.resize_image.width"));
-                        let w_changed = numeric_field_with_buttons(
+                        let w_focus = self.just_opened;
+                        let w_changed = numeric_field_with_buttons_focus(
                             ui,
                             &mut self.width,
                             1.0,
                             1.0..=20000.0,
                             "",
                             1.0,
+                            w_focus,
                         );
+                        if w_focus {
+                            self.just_opened = false;
+                        }
                         ui.label("px");
                         ui.end_row();
 
@@ -616,6 +642,7 @@ pub struct ResizeCanvasDialog {
     pub fill_transparent: bool,
     original_w: u32,
     original_h: u32,
+    just_opened: bool,
 }
 
 impl ResizeCanvasDialog {
@@ -628,6 +655,7 @@ impl ResizeCanvasDialog {
             fill_transparent: true,
             original_w: state.width,
             original_h: state.height,
+            just_opened: true,
         }
     }
 
@@ -662,14 +690,19 @@ impl ResizeCanvasDialog {
                     .spacing([8.0, 4.0])
                     .show(ui, |ui| {
                         ui.label(t!("dialog.resize_image.width"));
-                        let w_changed = numeric_field_with_buttons(
+                        let w_focus = self.just_opened;
+                        let w_changed = numeric_field_with_buttons_focus(
                             ui,
                             &mut self.width,
                             1.0,
                             1.0..=20000.0,
                             "",
                             1.0,
+                            w_focus,
                         );
+                        if w_focus {
+                            self.just_opened = false;
+                        }
                         ui.label("px");
                         ui.end_row();
 
