@@ -6,6 +6,14 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## [1.1.2] - 2026-03-06
+
+### Fixed
+- **History panel width growing**: The history panel no longer expands indefinitely when long action names are added — content is now capped to the panel width instead of ratcheting the minimum upward.
+- **Font size cap removed**: The text tool font size is no longer capped at 500px and can now be set to any value.
+
+---
+
 ## [1.1.1] - 2026-03-09
 
 ### Fixed

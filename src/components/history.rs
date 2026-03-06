@@ -1040,9 +1040,8 @@ impl HistoryPanel {
         let scroll_width = ui.available_width();
         egui::ScrollArea::vertical()
             .max_height(180.0)
-            .min_scrolled_width(scroll_width)
             .show(ui, |ui| {
-                ui.set_min_width(scroll_width);
+                ui.set_max_width(scroll_width);
                 let items = history.undo_history();
                 if items.is_empty() {
                     ui.weak("No history yet");

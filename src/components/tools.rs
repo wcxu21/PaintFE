@@ -2832,7 +2832,7 @@ impl ToolsPanel {
                 let dv_resp = ui.add(
                     egui::DragValue::new(&mut self.text_state.font_size)
                         .speed(0.5)
-                        .clamp_range(6.0..=500.0)
+                        .clamp_range(6.0..=f32::MAX)
                         .suffix("px"),
                 );
                 if dv_resp.changed() {
@@ -2885,7 +2885,7 @@ impl ToolsPanel {
             }
         });
         if ui.small_button("+").clicked() {
-            self.text_state.font_size = (self.text_state.font_size + 1.0).min(500.0);
+            self.text_state.font_size += 1.0;
             self.text_state.preview_dirty = true;
             self.text_state.glyph_cache.clear();
             self.text_state.ctx_bar_style_dirty = true;
