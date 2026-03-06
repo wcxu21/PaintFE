@@ -8,6 +8,7 @@ use crate::ops::clipboard::PasteOverlay;
 use crate::ops::dialogs::{ActiveDialog, DialogResult};
 use crate::ops::scripting::{ScriptMessage, apply_canvas_ops};
 use crate::project::Project;
+use crate::signal_widgets;
 use crate::theme::{Theme, WindowVisibility};
 use eframe::egui;
 use image::RgbaImage;
@@ -319,35 +320,58 @@ impl PaintFEApp {
         }
 
         // -- Font configuration ------------------------------------------------
-        // Primary: Noto Sans (Latin, Cyrillic, Greek, Thai — ~556KB embedded)
-        // Fallback: System CJK font (discovered at runtime for JP/KO/ZH support)
+        // Proportional: DM Sans (primary, matches website) → Noto Sans (Cyrillic/
+        //   Greek/Thai fallback) → system CJK → egui defaults
+        // Monospace: JetBrains Mono (matches website badges/tags) → egui defaults
         {
             let mut fonts = egui::FontDefinitions::default();
 
-            // Embed Noto Sans Regular as primary UI font
+            // DM Sans — primary proportional UI font (~47 KB, Latin + Latin Ext)
+            fonts.font_data.insert(
+                "dm_sans".to_owned(),
+                egui::FontData::from_static(include_bytes!("../assets/fonts/DMSans-Regular.ttf")),
+            );
+
+            // Noto Sans — fallback for Cyrillic, Greek, Thai (~556 KB)
             fonts.font_data.insert(
                 "noto_sans".to_owned(),
                 egui::FontData::from_static(include_bytes!("../assets/fonts/NotoSans-Regular.ttf")),
             );
 
-            // Build proportional font family: Noto Sans first, then egui defaults
+            // JetBrains Mono — monospace for badges, tags, script editor (~110 KB)
+            fonts.font_data.insert(
+                "jetbrains_mono".to_owned(),
+                egui::FontData::from_static(include_bytes!(
+                    "../assets/fonts/JetBrainsMono-Regular.ttf"
+                )),
+            );
+
+            // Proportional family: DM Sans → Noto Sans → egui defaults
             let proportional = fonts
                 .families
                 .entry(egui::FontFamily::Proportional)
                 .or_default();
             proportional.insert(0, "noto_sans".to_owned());
+            proportional.insert(0, "dm_sans".to_owned()); // push to front
+
+            // Monospace family: JetBrains Mono → egui defaults (Hack)
+            let monospace = fonts
+                .families
+                .entry(egui::FontFamily::Monospace)
+                .or_default();
+            monospace.insert(0, "jetbrains_mono".to_owned());
 
             // Try to discover a system CJK font at runtime for JP/KO/ZH support
             if let Some((name, data)) = discover_system_cjk_font() {
                 fonts
                     .font_data
                     .insert(name.clone(), egui::FontData::from_owned(data));
-                // Insert CJK font after Noto Sans but before egui defaults
+                // Insert CJK after DM Sans + Noto Sans but before egui defaults
                 let proportional = fonts
                     .families
                     .entry(egui::FontFamily::Proportional)
                     .or_default();
-                proportional.insert(1, name);
+                proportional.insert(2, name);
             }
 
             cc.egui_ctx.set_fonts(fonts);
@@ -359,12 +383,14 @@ impl PaintFEApp {
         } else {
             settings.theme_preset.accent_colors()
         };
-        let theme = match settings.theme_mode {
+        let mut theme = match settings.theme_mode {
             crate::theme::ThemeMode::Dark => Theme::dark_with_accent(settings.theme_preset, accent),
             crate::theme::ThemeMode::Light => {
                 Theme::light_with_accent(settings.theme_preset, accent)
             }
         };
+        let ov = settings.build_theme_overrides();
+        theme.apply_overrides(&ov);
         theme.apply(&cc.egui_ctx);
 
         // Initialize with one default project
@@ -683,9 +709,9 @@ impl eframe::App for PaintFEApp {
                             })
                             .collect();
                         let path = dir.join(format!("{}.autosave.pfe", safe_name));
-                        let pfe_data = crate::io::build_pfe_v1(&project.canvas_state);
+                        let pfe_data = crate::io::build_pfe(&project.canvas_state);
                         let proj_name = project.name.clone();
-                        rayon::spawn(move || match crate::io::write_pfe_v1(&pfe_data, &path) {
+                        rayon::spawn(move || match crate::io::write_pfe(&pfe_data, &path) {
                             Ok(()) => {
                                 crate::logger::write(
                                     "INFO",
@@ -1047,6 +1073,7 @@ impl eframe::App for PaintFEApp {
                                 pixels: tiled,
                                 lod_cache: None,
                                 gpu_generation: 0,
+                                content: crate::canvas::LayerContent::Raster,
                             };
                             project.canvas_state.layers.push(layer);
                         }
@@ -1205,7 +1232,8 @@ impl eframe::App for PaintFEApp {
             if kb.is_pressed(ctx, BindableAction::SaveAs) {
                 // Trigger Save As dialog (mirrors File > Save As menu logic)
                 let save_as_data = if self.active_project_index < self.projects.len() {
-                    let project = &self.projects[self.active_project_index];
+                    let project = &mut self.projects[self.active_project_index];
+                    project.canvas_state.ensure_all_text_layers_rasterized();
                     let composite = project.canvas_state.composite();
                     let frame_images: Option<Vec<image::RgbaImage>> =
                         if project.canvas_state.layers.len() > 1 {
@@ -1689,7 +1717,11 @@ impl eframe::App for PaintFEApp {
             let text_tool_active = self.tools_panel.active_tool
                 == crate::components::tools::Tool::Text
                 && self.tools_panel.text_state.is_editing;
-            if !text_tool_active && self.paste_overlay.is_none() {
+            let other_widget_focused = ctx.memory(|m| {
+                m.focus()
+                    .is_some_and(|id| self.canvas.canvas_widget_id != Some(id))
+            });
+            if !text_tool_active && !other_widget_focused && self.paste_overlay.is_none() {
                 use crate::components::tools::Tool;
                 let tool_actions: &[(BindableAction, Tool)] = &[
                     (BindableAction::ToolBrush, Tool::Brush),
@@ -1720,7 +1752,7 @@ impl eframe::App for PaintFEApp {
             }
 
             // [ / ] — Decrease / Increase brush size
-            if !text_tool_active {
+            if !text_tool_active && !other_widget_focused {
                 use crate::components::tools::Tool;
                 let brush_tool = matches!(
                     self.tools_panel.active_tool,
@@ -1979,8 +2011,7 @@ impl eframe::App for PaintFEApp {
                                 if ui
                                     .add(
                                         egui::Button::new(
-                                            egui::RichText::new("Exit Without")
-                                                .color(danger_text),
+                                            egui::RichText::new("Exit Without").color(danger_text),
                                         )
                                         .fill(danger_fill)
                                         .min_size(btn_size),
@@ -2053,7 +2084,8 @@ impl eframe::App for PaintFEApp {
                 if action.format == SaveFormat::Pfe {
                     // Save as .pfe project file — build data snapshot, serialize in background
                     let project = &mut self.projects[project_index];
-                    let pfe_data = crate::io::build_pfe_v1(&project.canvas_state);
+                    project.canvas_state.ensure_all_text_layers_rasterized();
+                    let pfe_data = crate::io::build_pfe(&project.canvas_state);
                     let path = action.path.clone();
 
                     let sender = self.io_sender.clone();
@@ -2062,7 +2094,7 @@ impl eframe::App for PaintFEApp {
                     }
                     self.pending_io_ops += 1;
 
-                    rayon::spawn(move || match crate::io::write_pfe_v1(&pfe_data, &path) {
+                    rayon::spawn(move || match crate::io::write_pfe(&pfe_data, &path) {
                         Ok(()) => {
                             let _ = sender.send(IoResult::SaveComplete {
                                 project_index,
@@ -2083,6 +2115,7 @@ impl eframe::App for PaintFEApp {
                 } else if action.animated && action.format.supports_animation() {
                     // Animated save — composite each layer as a frame (include hidden layers)
                     let project = &mut self.projects[project_index];
+                    project.canvas_state.ensure_all_text_layers_rasterized();
                     let frames: Vec<image::RgbaImage> = project
                         .canvas_state
                         .layers
@@ -2142,6 +2175,7 @@ impl eframe::App for PaintFEApp {
                 } else {
                     // Static image save — encode on background thread
                     let project = &mut self.projects[project_index];
+                    project.canvas_state.ensure_all_text_layers_rasterized();
                     let composite = project.canvas_state.composite();
                     let path = action.path.clone();
                     let format = action.format;
@@ -2232,171 +2266,1697 @@ impl eframe::App for PaintFEApp {
 
         // --- Top Menu Bar ---
         let menu_kb = self.settings.keybindings.clone();
-        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
-            egui::menu::bar(ui, |ui| {
-                ui.menu_button(t!("menu.file"), |ui| {
-                    if self
-                        .assets
-                        .menu_item_shortcut(
-                            ui,
-                            Icon::MenuFileNew,
-                            &t!("menu.file.new"),
-                            &menu_kb,
-                            BindableAction::NewFile,
-                        )
-                        .clicked()
-                    {
-                        self.new_file_dialog.load_clipboard_dimensions();
-                        self.new_file_dialog.open = true;
-                        ui.close_menu();
-                    }
-                    if self
-                        .assets
-                        .menu_item_shortcut(
-                            ui,
-                            Icon::MenuFileOpen,
-                            &t!("menu.file.open"),
-                            &menu_kb,
-                            BindableAction::OpenFile,
-                        )
-                        .clicked()
-                    {
-                        self.handle_open_file(ctx.input(|i| i.time));
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    if self
-                        .assets
-                        .menu_item_shortcut(
-                            ui,
-                            Icon::MenuFileSave,
-                            &t!("menu.file.save"),
-                            &menu_kb,
-                            BindableAction::Save,
-                        )
-                        .clicked()
-                    {
-                        self.handle_save(ctx.input(|i| i.time));
-                        ui.close_menu();
-                    }
-                    {
-                        let any_dirty =
-                            self.projects.iter().any(|p| p.is_dirty && p.path.is_some());
+        let menu_resp = egui::TopBottomPanel::top("menu_bar")
+            .frame(self.theme.menu_frame())
+            .exact_height(28.0)
+            .show(ctx, |ui| {
+                egui::menu::bar(ui, |ui| {
+                    ui.menu_button(t!("menu.file"), |ui| {
+                        if self
+                            .assets
+                            .menu_item_shortcut(
+                                ui,
+                                Icon::MenuFileNew,
+                                &t!("menu.file.new"),
+                                &menu_kb,
+                                BindableAction::NewFile,
+                            )
+                            .clicked()
+                        {
+                            self.new_file_dialog.load_clipboard_dimensions();
+                            self.new_file_dialog.open = true;
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item_shortcut(
+                                ui,
+                                Icon::MenuFileOpen,
+                                &t!("menu.file.open"),
+                                &menu_kb,
+                                BindableAction::OpenFile,
+                            )
+                            .clicked()
+                        {
+                            self.handle_open_file(ctx.input(|i| i.time));
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if self
+                            .assets
+                            .menu_item_shortcut(
+                                ui,
+                                Icon::MenuFileSave,
+                                &t!("menu.file.save"),
+                                &menu_kb,
+                                BindableAction::Save,
+                            )
+                            .clicked()
+                        {
+                            self.handle_save(ctx.input(|i| i.time));
+                            ui.close_menu();
+                        }
+                        {
+                            let any_dirty =
+                                self.projects.iter().any(|p| p.is_dirty && p.path.is_some());
+                            if self
+                                .assets
+                                .menu_item_shortcut_enabled(
+                                    ui,
+                                    Icon::MenuFileSaveAll,
+                                    &t!("menu.file.save_all"),
+                                    any_dirty,
+                                    &menu_kb,
+                                    BindableAction::SaveAll,
+                                )
+                                .clicked()
+                            {
+                                self.handle_save_all(ctx.input(|i| i.time));
+                                ui.close_menu();
+                            }
+                        }
+                        if self
+                            .assets
+                            .menu_item_shortcut(
+                                ui,
+                                Icon::MenuFileSaveAs,
+                                &t!("menu.file.save_as"),
+                                &menu_kb,
+                                BindableAction::SaveAs,
+                            )
+                            .clicked()
+                        {
+                            // Extract data from project before mutating save_file_dialog
+                            let save_as_data = if self.active_project_index < self.projects.len() {
+                                let project = &mut self.projects[self.active_project_index];
+                                project.canvas_state.ensure_all_text_layers_rasterized();
+                                let composite = project.canvas_state.composite();
+                                let frame_images: Option<Vec<image::RgbaImage>> =
+                                    if project.canvas_state.layers.len() > 1 {
+                                        Some(
+                                            project
+                                                .canvas_state
+                                                .layers
+                                                .iter()
+                                                .map(|l| l.pixels.to_rgba_image())
+                                                .collect(),
+                                        )
+                                    } else {
+                                        None
+                                    };
+                                let was_animated = project.was_animated;
+                                let animation_fps = project.animation_fps;
+                                let path = project.path.clone();
+                                Some((composite, frame_images, was_animated, animation_fps, path))
+                            } else {
+                                None
+                            };
+
+                            self.save_file_dialog.reset();
+                            if let Some((
+                                composite,
+                                frame_images,
+                                was_animated,
+                                animation_fps,
+                                path,
+                            )) = save_as_data
+                            {
+                                self.save_file_dialog.set_source_image(&composite);
+                                if let Some(frames) = frame_images.as_ref() {
+                                    self.save_file_dialog.set_source_animated(
+                                        frames,
+                                        was_animated,
+                                        animation_fps,
+                                    );
+                                }
+                                if let Some(ref p) = path {
+                                    self.save_file_dialog.set_from_path(p);
+                                }
+                            }
+                            self.save_file_dialog.open = true;
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if self
+                            .assets
+                            .menu_item(ui, Icon::MenuFilePrint, &t!("menu.file.print"))
+                            .clicked()
+                        {
+                            if let Some(project) = self.active_project_mut() {
+                                project.canvas_state.ensure_all_text_layers_rasterized();
+                                let composite = project.canvas_state.composite();
+                                if let Err(e) = crate::ops::print::print_image(&composite) {
+                                    eprintln!("Print error: {}", e);
+                                }
+                            }
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if self
+                            .assets
+                            .menu_item(ui, Icon::MenuFileQuit, &t!("menu.file.quit"))
+                            .clicked()
+                        {
+                            ui.close_menu();
+                            let dirty_count = self.projects.iter().filter(|p| p.is_dirty).count();
+                            if self.settings.confirm_on_exit && dirty_count > 0 {
+                                self.pending_exit = true;
+                            } else {
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            }
+                        }
+                    });
+
+                    ui.menu_button(t!("menu.edit"), |ui| {
+                        let can_undo = self.active_project().is_some_and(|p| p.history.can_undo());
+                        let can_redo = self.active_project().is_some_and(|p| p.history.can_redo());
+
                         if self
                             .assets
                             .menu_item_shortcut_enabled(
                                 ui,
-                                Icon::MenuFileSaveAll,
-                                &t!("menu.file.save_all"),
-                                any_dirty,
+                                Icon::MenuEditUndo,
+                                &t!("menu.edit.undo"),
+                                can_undo,
                                 &menu_kb,
-                                BindableAction::SaveAll,
+                                BindableAction::Undo,
                             )
                             .clicked()
                         {
-                            self.handle_save_all(ctx.input(|i| i.time));
+                            if self.paste_overlay.is_some() {
+                                self.cancel_paste_overlay();
+                                if let Some(project) = self.active_project_mut() {
+                                    project.canvas_state.clear_selection();
+                                }
+                            } else if self.tools_panel.has_active_tool_preview() {
+                                if let Some(project) =
+                                    self.projects.get_mut(self.active_project_index)
+                                {
+                                    self.tools_panel
+                                        .cancel_active_tool(&mut project.canvas_state);
+                                }
+                            } else if let Some(project) = self.active_project_mut() {
+                                project.canvas_state.clear_selection();
+                                project.history.undo(&mut project.canvas_state);
+                            }
                             ui.close_menu();
                         }
-                    }
-                    if self
-                        .assets
-                        .menu_item_shortcut(
-                            ui,
-                            Icon::MenuFileSaveAs,
-                            &t!("menu.file.save_as"),
-                            &menu_kb,
-                            BindableAction::SaveAs,
-                        )
-                        .clicked()
-                    {
-                        // Extract data from project before mutating save_file_dialog
-                        let save_as_data = if self.active_project_index < self.projects.len() {
-                            let project = &self.projects[self.active_project_index];
-                            let composite = project.canvas_state.composite();
-                            let frame_images: Option<Vec<image::RgbaImage>> =
-                                if project.canvas_state.layers.len() > 1 {
-                                    Some(
-                                        project
-                                            .canvas_state
-                                            .layers
-                                            .iter()
-                                            .map(|l| l.pixels.to_rgba_image())
-                                            .collect(),
-                                    )
-                                } else {
-                                    None
-                                };
-                            let was_animated = project.was_animated;
-                            let animation_fps = project.animation_fps;
-                            let path = project.path.clone();
-                            Some((composite, frame_images, was_animated, animation_fps, path))
-                        } else {
-                            None
-                        };
-
-                        self.save_file_dialog.reset();
-                        if let Some((composite, frame_images, was_animated, animation_fps, path)) =
-                            save_as_data
+                        if self
+                            .assets
+                            .menu_item_shortcut_enabled(
+                                ui,
+                                Icon::MenuEditRedo,
+                                &t!("menu.edit.redo"),
+                                can_redo,
+                                &menu_kb,
+                                BindableAction::Redo,
+                            )
+                            .clicked()
                         {
-                            self.save_file_dialog.set_source_image(&composite);
-                            if let Some(frames) = frame_images.as_ref() {
-                                self.save_file_dialog.set_source_animated(
-                                    frames,
-                                    was_animated,
-                                    animation_fps,
+                            if let Some(project) = self.active_project_mut() {
+                                project.history.redo(&mut project.canvas_state);
+                            }
+                            ui.close_menu();
+                        }
+
+                        ui.separator();
+
+                        let has_sel = self
+                            .active_project()
+                            .is_some_and(|p| p.canvas_state.has_selection());
+                        let has_clip = crate::ops::clipboard::has_clipboard_image();
+
+                        if self
+                            .assets
+                            .menu_item_shortcut_enabled(
+                                ui,
+                                Icon::MenuEditCut,
+                                &t!("menu.edit.cut"),
+                                has_sel,
+                                &menu_kb,
+                                BindableAction::Cut,
+                            )
+                            .clicked()
+                        {
+                            self.do_snapshot_op("Cut Selection", |s| {
+                                crate::ops::clipboard::cut_selection(s);
+                            });
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item_shortcut_enabled(
+                                ui,
+                                Icon::MenuEditCopy,
+                                &t!("menu.edit.copy"),
+                                has_sel,
+                                &menu_kb,
+                                BindableAction::Copy,
+                            )
+                            .clicked()
+                        {
+                            if let Some(project) = self.active_project() {
+                                crate::ops::clipboard::copy_selection(&project.canvas_state);
+                            }
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item_shortcut_enabled(
+                                ui,
+                                Icon::MenuEditPaste,
+                                &t!("menu.edit.paste"),
+                                has_clip,
+                                &menu_kb,
+                                BindableAction::Paste,
+                            )
+                            .clicked()
+                        {
+                            // Commit existing paste first.
+                            if self.paste_overlay.is_some() {
+                                self.commit_paste_overlay();
+                            }
+                            if let Some(project) = self.active_project_mut() {
+                                let (cw, ch) =
+                                    (project.canvas_state.width, project.canvas_state.height);
+                                if let Some(overlay) = PasteOverlay::from_clipboard(cw, ch) {
+                                    project.canvas_state.clear_selection();
+                                    self.paste_overlay = Some(overlay);
+                                    self.canvas.open_paste_menu = true;
+                                }
+                            }
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item_enabled(
+                                ui,
+                                Icon::MenuEditPasteLayer,
+                                &t!("menu.edit.paste_as_layer"),
+                                has_clip,
+                            )
+                            .clicked()
+                        {
+                            // Paste clipboard contents as a new layer
+                            let img = crate::ops::clipboard::get_from_system_clipboard()
+                                .or_else(crate::ops::clipboard::get_clipboard_image_pub);
+                            if let Some(src) = img {
+                                self.do_snapshot_op("Paste as New Layer", |s| {
+                                    crate::ops::adjustments::import_layer_from_image(
+                                        s,
+                                        &src,
+                                        "Pasted Layer",
+                                    );
+                                });
+                            }
+                            ui.close_menu();
+                        }
+
+                        ui.separator();
+
+                        // Selection operations
+                        if self
+                            .assets
+                            .menu_item_shortcut(
+                                ui,
+                                Icon::MenuEditSelectAll,
+                                &t!("menu.edit.select_all"),
+                                &menu_kb,
+                                BindableAction::SelectAll,
+                            )
+                            .clicked()
+                        {
+                            if let Some(project) = self.active_project_mut() {
+                                let w = project.canvas_state.width;
+                                let h = project.canvas_state.height;
+                                let mask = image::GrayImage::from_pixel(w, h, image::Luma([255u8]));
+                                project.canvas_state.selection_mask = Some(mask);
+                                project.canvas_state.invalidate_selection_overlay();
+                                project.canvas_state.mark_dirty(None);
+                            }
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item_shortcut_enabled(
+                                ui,
+                                Icon::MenuEditDeselect,
+                                &t!("menu.edit.deselect"),
+                                has_sel,
+                                &menu_kb,
+                                BindableAction::Deselect,
+                            )
+                            .clicked()
+                        {
+                            if let Some(project) = self.active_project_mut() {
+                                project.canvas_state.clear_selection();
+                                project.canvas_state.mark_dirty(None);
+                            }
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item_enabled(
+                                ui,
+                                Icon::MenuEditInvertSel,
+                                &t!("menu.edit.invert_selection"),
+                                has_sel,
+                            )
+                            .clicked()
+                        {
+                            if let Some(project) = self.active_project_mut() {
+                                let w = project.canvas_state.width;
+                                let h = project.canvas_state.height;
+                                if let Some(ref mask) = project.canvas_state.selection_mask {
+                                    let inverted = image::GrayImage::from_fn(w, h, |x, y| {
+                                        let v = mask.get_pixel(x, y).0[0];
+                                        image::Luma([255u8 - v])
+                                    });
+                                    project.canvas_state.selection_mask = Some(inverted);
+                                } else {
+                                    // No selection = select all
+                                    let mask =
+                                        image::GrayImage::from_pixel(w, h, image::Luma([255u8]));
+                                    project.canvas_state.selection_mask = Some(mask);
+                                }
+                                project.canvas_state.invalidate_selection_overlay();
+                                project.canvas_state.mark_dirty(None);
+                            }
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item_enabled(
+                                ui,
+                                Icon::MenuEditColorRange,
+                                "Select Color Range...",
+                                true,
+                            )
+                            .clicked()
+                        {
+                            if let Some(project) = self.active_project_mut() {
+                                let dlg = crate::ops::dialogs::ColorRangeDialog::new(
+                                    &project.canvas_state,
+                                );
+                                self.active_dialog =
+                                    crate::ops::dialogs::ActiveDialog::ColorRange(dlg);
+                            }
+                            ui.close_menu();
+                        }
+
+                        ui.separator();
+
+                        if self
+                            .assets
+                            .menu_item(ui, Icon::MenuEditPreferences, &t!("menu.edit.preferences"))
+                            .clicked()
+                        {
+                            self.settings_window.open = true;
+                            ui.close_menu();
+                        }
+                    });
+
+                    // ==================== CANVAS MENU (was: Image) ====================
+                    let no_dialog = !modal_open;
+                    ui.menu_button(t!("menu.canvas"), |ui| {
+                        if self
+                            .assets
+                            .menu_item_shortcut_below_enabled(
+                                ui,
+                                Icon::MenuCanvasResize,
+                                &t!("menu.canvas.resize_image"),
+                                no_dialog,
+                                &menu_kb,
+                                BindableAction::ResizeImage,
+                            )
+                            .clicked()
+                        {
+                            if let Some(project) = self.active_project() {
+                                self.active_dialog = ActiveDialog::ResizeImage(
+                                    crate::ops::dialogs::ResizeImageDialog::new(
+                                        &project.canvas_state,
+                                    ),
                                 );
                             }
-                            if let Some(ref p) = path {
-                                self.save_file_dialog.set_from_path(p);
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item_shortcut_below_enabled(
+                                ui,
+                                Icon::MenuCanvasResize,
+                                &t!("menu.canvas.resize_canvas"),
+                                no_dialog,
+                                &menu_kb,
+                                BindableAction::ResizeCanvas,
+                            )
+                            .clicked()
+                        {
+                            if let Some(project) = self.active_project() {
+                                self.active_dialog = ActiveDialog::ResizeCanvas(
+                                    crate::ops::dialogs::ResizeCanvasDialog::new(
+                                        &project.canvas_state,
+                                    ),
+                                );
                             }
+                            ui.close_menu();
                         }
-                        self.save_file_dialog.open = true;
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    if self
-                        .assets
-                        .menu_item(ui, Icon::MenuFilePrint, &t!("menu.file.print"))
-                        .clicked()
-                    {
-                        if let Some(project) = self.active_project() {
-                            let composite = project.canvas_state.composite();
-                            if let Err(e) = crate::ops::print::print_image(&composite) {
-                                eprintln!("Print error: {}", e);
+                        let has_sel = self
+                            .active_project()
+                            .is_some_and(|p| p.canvas_state.has_selection());
+                        if self
+                            .assets
+                            .menu_item_enabled(
+                                ui,
+                                Icon::MenuCanvasCrop,
+                                &t!("menu.canvas.crop_to_selection"),
+                                has_sel,
+                            )
+                            .clicked()
+                        {
+                            self.do_snapshot_op("Crop to Selection", |s| {
+                                crate::ops::adjustments::crop_to_selection(s);
+                            });
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        if self
+                            .assets
+                            .menu_item(
+                                ui,
+                                Icon::Rename,
+                                &t!("menu.canvas.new_text_layer"),
+                            )
+                            .clicked()
+                        {
+                            if let Some(project) = self.active_project_mut() {
+                                crate::ops::canvas_ops::add_text_layer(
+                                    &mut project.canvas_state,
+                                    &mut project.history,
+                                );
+                                self.canvas.gpu_clear_layers();
                             }
+                            ui.close_menu();
                         }
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    if self
-                        .assets
-                        .menu_item(ui, Icon::MenuFileQuit, &t!("menu.file.quit"))
-                        .clicked()
-                    {
-                        ui.close_menu();
-                        let dirty_count = self.projects.iter().filter(|p| p.is_dirty).count();
-                        if self.settings.confirm_on_exit && dirty_count > 0 {
-                            self.pending_exit = true;
-                        } else {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        ui.separator();
+                        ui.menu_button(t!("menu.canvas.flip_canvas"), |ui| {
+                            ui.set_min_width(ui.min_rect().width().max(160.0));
+                            if self
+                                .assets
+                                .menu_item(
+                                    ui,
+                                    Icon::MenuCanvasFlipH,
+                                    &t!("menu.canvas.flip_horizontal"),
+                                )
+                                .clicked()
+                            {
+                                self.do_snapshot_op("Flip Horizontal", |s| {
+                                    crate::ops::transform::flip_canvas_horizontal(s);
+                                });
+                                ui.close_menu();
+                            }
+                            if self
+                                .assets
+                                .menu_item(
+                                    ui,
+                                    Icon::MenuCanvasFlipV,
+                                    &t!("menu.canvas.flip_vertical"),
+                                )
+                                .clicked()
+                            {
+                                self.do_snapshot_op("Flip Vertical", |s| {
+                                    crate::ops::transform::flip_canvas_vertical(s);
+                                });
+                                ui.close_menu();
+                            }
+                        });
+                        ui.menu_button(t!("menu.canvas.rotate_canvas"), |ui| {
+                            ui.set_min_width(ui.min_rect().width().max(160.0));
+                            if self
+                                .assets
+                                .menu_item(
+                                    ui,
+                                    Icon::MenuCanvasRotateCw,
+                                    &t!("menu.canvas.rotate_90cw"),
+                                )
+                                .clicked()
+                            {
+                                self.do_snapshot_op("Rotate 90° CW", |s| {
+                                    crate::ops::transform::rotate_canvas_90cw(s);
+                                });
+                                ui.close_menu();
+                            }
+                            if self
+                                .assets
+                                .menu_item(
+                                    ui,
+                                    Icon::MenuCanvasRotateCcw,
+                                    &t!("menu.canvas.rotate_90ccw"),
+                                )
+                                .clicked()
+                            {
+                                self.do_snapshot_op("Rotate 90° CCW", |s| {
+                                    crate::ops::transform::rotate_canvas_90ccw(s);
+                                });
+                                ui.close_menu();
+                            }
+                            if self
+                                .assets
+                                .menu_item(
+                                    ui,
+                                    Icon::MenuCanvasRotate180,
+                                    &t!("menu.canvas.rotate_180"),
+                                )
+                                .clicked()
+                            {
+                                self.do_snapshot_op("Rotate 180°", |s| {
+                                    crate::ops::transform::rotate_canvas_180(s);
+                                });
+                                ui.close_menu();
+                            }
+                        });
+                        ui.separator();
+                        if self
+                            .assets
+                            .menu_item_shortcut_below(
+                                ui,
+                                Icon::MenuCanvasFlatten,
+                                &t!("menu.canvas.flatten_all_layers"),
+                                &menu_kb,
+                                BindableAction::FlattenLayers,
+                            )
+                            .clicked()
+                        {
+                            self.do_snapshot_op("Flatten All Layers", |s| {
+                                crate::ops::transform::flatten_image(s);
+                            });
+                            ui.close_menu();
                         }
-                    }
-                });
+                    });
 
-                ui.menu_button(t!("menu.edit"), |ui| {
+                    // (Layers menu removed — layer operations are now in the Layers Panel context menu)
+
+                    // ==================== COLOR MENU (was: Adjustments) ====================
+                    ui.menu_button(t!("menu.color"), |ui| {
+                        // --- Instant adjustments (no dialog) ---
+                        if self
+                            .assets
+                            .menu_item(ui, Icon::MenuColorAutoLevels, &t!("menu.color.auto_levels"))
+                            .clicked()
+                        {
+                            self.do_layer_snapshot_op("Auto Levels", |s| {
+                                let idx = s.active_layer_index;
+                                crate::ops::adjustments::auto_levels(s, idx);
+                            });
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item(ui, Icon::MenuColorDesaturate, &t!("menu.color.desaturate"))
+                            .clicked()
+                        {
+                            self.do_layer_snapshot_op("Desaturate", |s| {
+                                let idx = s.active_layer_index;
+                                crate::ops::filters::desaturate_layer(s, idx);
+                            });
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item(ui, Icon::MenuColorInvert, &t!("menu.color.invert_colors"))
+                            .clicked()
+                        {
+                            self.do_gpu_snapshot_op("Invert Colors", |s, gpu| {
+                                let idx = s.active_layer_index;
+                                crate::ops::adjustments::invert_colors_gpu(s, idx, gpu);
+                            });
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item(
+                                ui,
+                                Icon::MenuColorInvertAlpha,
+                                &t!("menu.color.invert_alpha"),
+                            )
+                            .clicked()
+                        {
+                            self.do_layer_snapshot_op("Invert Alpha", |s| {
+                                let idx = s.active_layer_index;
+                                crate::ops::adjustments::invert_alpha(s, idx);
+                            });
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item(ui, Icon::MenuColorSepia, &t!("menu.color.sepia_tone"))
+                            .clicked()
+                        {
+                            self.do_layer_snapshot_op("Sepia Tone", |s| {
+                                let idx = s.active_layer_index;
+                                crate::ops::adjustments::sepia(s, idx);
+                            });
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        // --- Parameterized adjustments (with dialog) ---
+                        if self
+                            .assets
+                            .menu_item_enabled(
+                                ui,
+                                Icon::MenuColorBrightness,
+                                &t!("menu.color.brightness_contrast"),
+                                no_dialog,
+                            )
+                            .clicked()
+                        {
+                            if let Some(project) = self.active_project() {
+                                self.active_dialog = ActiveDialog::BrightnessContrast(
+                                    crate::ops::dialogs::BrightnessContrastDialog::new(
+                                        &project.canvas_state,
+                                    ),
+                                );
+                            }
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item_enabled(
+                                ui,
+                                Icon::MenuColorCurves,
+                                &t!("menu.color.curves"),
+                                no_dialog,
+                            )
+                            .clicked()
+                        {
+                            if let Some(project) = self.active_project() {
+                                self.active_dialog = ActiveDialog::Curves(
+                                    crate::ops::dialogs::CurvesDialog::new(&project.canvas_state),
+                                );
+                            }
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item_enabled(
+                                ui,
+                                Icon::MenuColorExposure,
+                                &t!("menu.color.exposure"),
+                                no_dialog,
+                            )
+                            .clicked()
+                        {
+                            if let Some(project) = self.active_project() {
+                                self.active_dialog = ActiveDialog::Exposure(
+                                    crate::ops::dialogs::ExposureDialog::new(&project.canvas_state),
+                                );
+                            }
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item_enabled(
+                                ui,
+                                Icon::MenuColorHighlights,
+                                &t!("menu.color.highlights_shadows"),
+                                no_dialog,
+                            )
+                            .clicked()
+                        {
+                            if let Some(project) = self.active_project() {
+                                self.active_dialog = ActiveDialog::HighlightsShadows(
+                                    crate::ops::dialogs::HighlightsShadowsDialog::new(
+                                        &project.canvas_state,
+                                    ),
+                                );
+                            }
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item_enabled(
+                                ui,
+                                Icon::MenuColorHsl,
+                                &t!("menu.color.hue_saturation"),
+                                no_dialog,
+                            )
+                            .clicked()
+                        {
+                            if let Some(project) = self.active_project() {
+                                self.active_dialog = ActiveDialog::HueSaturation(
+                                    crate::ops::dialogs::HueSaturationDialog::new(
+                                        &project.canvas_state,
+                                    ),
+                                );
+                            }
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item_enabled(
+                                ui,
+                                Icon::MenuColorLevels,
+                                &t!("menu.color.levels"),
+                                no_dialog,
+                            )
+                            .clicked()
+                        {
+                            if let Some(project) = self.active_project() {
+                                self.active_dialog = ActiveDialog::Levels(
+                                    crate::ops::dialogs::LevelsDialog::new(&project.canvas_state),
+                                );
+                            }
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item_enabled(
+                                ui,
+                                Icon::MenuColorTemperature,
+                                &t!("menu.color.temperature_tint"),
+                                no_dialog,
+                            )
+                            .clicked()
+                        {
+                            if let Some(project) = self.active_project() {
+                                self.active_dialog = ActiveDialog::TemperatureTint(
+                                    crate::ops::dialogs::TemperatureTintDialog::new(
+                                        &project.canvas_state,
+                                    ),
+                                );
+                            }
+                            ui.close_menu();
+                        }
+                        ui.separator();
+                        // --- Additional color adjustments ---
+                        if self
+                            .assets
+                            .menu_item_enabled(
+                                ui,
+                                Icon::MenuColorHsl,
+                                &t!("menu.color.vibrance"),
+                                no_dialog,
+                            )
+                            .clicked()
+                        {
+                            if let Some(project) = self.active_project() {
+                                self.active_dialog = ActiveDialog::Vibrance(
+                                    crate::ops::dialogs::VibranceDialog::new(&project.canvas_state),
+                                );
+                            }
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item_enabled(
+                                ui,
+                                Icon::MenuColorInvert,
+                                &t!("menu.color.threshold"),
+                                no_dialog,
+                            )
+                            .clicked()
+                        {
+                            if let Some(project) = self.active_project() {
+                                self.active_dialog = ActiveDialog::Threshold(
+                                    crate::ops::dialogs::ThresholdDialog::new(
+                                        &project.canvas_state,
+                                    ),
+                                );
+                            }
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item_enabled(
+                                ui,
+                                Icon::MenuColorDesaturate,
+                                &t!("menu.color.posterize"),
+                                no_dialog,
+                            )
+                            .clicked()
+                        {
+                            if let Some(project) = self.active_project() {
+                                self.active_dialog = ActiveDialog::Posterize(
+                                    crate::ops::dialogs::PosterizeDialog::new(
+                                        &project.canvas_state,
+                                    ),
+                                );
+                            }
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item_enabled(
+                                ui,
+                                Icon::MenuColorBrightness,
+                                &t!("menu.color.color_balance"),
+                                no_dialog,
+                            )
+                            .clicked()
+                        {
+                            if let Some(project) = self.active_project() {
+                                self.active_dialog = ActiveDialog::ColorBalance(
+                                    crate::ops::dialogs::ColorBalanceDialog::new(
+                                        &project.canvas_state,
+                                    ),
+                                );
+                            }
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item_enabled(
+                                ui,
+                                Icon::MenuColorCurves,
+                                &t!("menu.color.gradient_map"),
+                                no_dialog,
+                            )
+                            .clicked()
+                        {
+                            if let Some(project) = self.active_project() {
+                                self.active_dialog = ActiveDialog::GradientMap(
+                                    crate::ops::dialogs::GradientMapDialog::new(
+                                        &project.canvas_state,
+                                    ),
+                                );
+                            }
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item_enabled(
+                                ui,
+                                Icon::MenuColorDesaturate,
+                                &t!("menu.color.black_and_white"),
+                                no_dialog,
+                            )
+                            .clicked()
+                        {
+                            if let Some(project) = self.active_project() {
+                                self.active_dialog = ActiveDialog::BlackAndWhite(
+                                    crate::ops::dialogs::BlackAndWhiteDialog::new(
+                                        &project.canvas_state,
+                                    ),
+                                );
+                            }
+                            ui.close_menu();
+                        }
+                    });
+
+                    // ==================== FILTER MENU (was: Effects) ====================
+                    ui.menu_button(t!("menu.filter"), |ui| {
+                        // -- Blur submenu --
+                        ui.menu_button(t!("menu.filter.blur"), |ui| {
+                            if self
+                                .assets
+                                .menu_item_enabled(
+                                    ui,
+                                    Icon::MenuFilterGaussian,
+                                    &t!("menu.filter.blur.gaussian"),
+                                    no_dialog,
+                                )
+                                .clicked()
+                            {
+                                if let Some(project) = self.active_project() {
+                                    self.active_dialog = ActiveDialog::GaussianBlur(
+                                        crate::ops::dialogs::GaussianBlurDialog::new(
+                                            &project.canvas_state,
+                                        ),
+                                    );
+                                }
+                                ui.close_menu();
+                            }
+                            if self
+                                .assets
+                                .menu_item_enabled(
+                                    ui,
+                                    Icon::MenuFilterBokeh,
+                                    &t!("menu.filter.blur.bokeh"),
+                                    no_dialog,
+                                )
+                                .clicked()
+                            {
+                                if let Some(project) = self.active_project() {
+                                    self.active_dialog = ActiveDialog::BokehBlur(
+                                        crate::ops::effect_dialogs::BokehBlurDialog::new(
+                                            &project.canvas_state,
+                                        ),
+                                    );
+                                }
+                                ui.close_menu();
+                            }
+                            if self
+                                .assets
+                                .menu_item_enabled(
+                                    ui,
+                                    Icon::MenuFilterMotionBlur,
+                                    &t!("menu.filter.blur.motion"),
+                                    no_dialog,
+                                )
+                                .clicked()
+                            {
+                                if let Some(project) = self.active_project() {
+                                    self.active_dialog = ActiveDialog::MotionBlur(
+                                        crate::ops::effect_dialogs::MotionBlurDialog::new(
+                                            &project.canvas_state,
+                                        ),
+                                    );
+                                }
+                                ui.close_menu();
+                            }
+                            if self
+                                .assets
+                                .menu_item_enabled(
+                                    ui,
+                                    Icon::MenuFilterBoxBlur,
+                                    &t!("menu.filter.blur.box"),
+                                    no_dialog,
+                                )
+                                .clicked()
+                            {
+                                if let Some(project) = self.active_project() {
+                                    self.active_dialog = ActiveDialog::BoxBlur(
+                                        crate::ops::effect_dialogs::BoxBlurDialog::new(
+                                            &project.canvas_state,
+                                        ),
+                                    );
+                                }
+                                ui.close_menu();
+                            }
+                            if self
+                                .assets
+                                .menu_item_enabled(
+                                    ui,
+                                    Icon::MenuFilterZoomBlur,
+                                    &t!("menu.filter.blur.zoom"),
+                                    no_dialog,
+                                )
+                                .clicked()
+                            {
+                                if let Some(project) = self.active_project() {
+                                    self.active_dialog = ActiveDialog::ZoomBlur(
+                                        crate::ops::effect_dialogs::ZoomBlurDialog::new(
+                                            &project.canvas_state,
+                                        ),
+                                    );
+                                }
+                                ui.close_menu();
+                            }
+                        });
+
+                        // -- Sharpen submenu (was in Stylize + Noise) --
+                        ui.menu_button(t!("menu.filter.sharpen"), |ui| {
+                            if self
+                                .assets
+                                .menu_item_enabled(
+                                    ui,
+                                    Icon::MenuFilterSharpenItem,
+                                    &t!("menu.filter.sharpen.sharpen"),
+                                    no_dialog,
+                                )
+                                .clicked()
+                            {
+                                if let Some(project) = self.active_project() {
+                                    self.active_dialog = ActiveDialog::Sharpen(
+                                        crate::ops::effect_dialogs::SharpenDialog::new(
+                                            &project.canvas_state,
+                                        ),
+                                    );
+                                }
+                                ui.close_menu();
+                            }
+                            if self
+                                .assets
+                                .menu_item_enabled(
+                                    ui,
+                                    Icon::MenuFilterReduceNoise,
+                                    &t!("menu.filter.sharpen.reduce_noise"),
+                                    no_dialog,
+                                )
+                                .clicked()
+                            {
+                                if let Some(project) = self.active_project() {
+                                    self.active_dialog = ActiveDialog::ReduceNoise(
+                                        crate::ops::effect_dialogs::ReduceNoiseDialog::new(
+                                            &project.canvas_state,
+                                        ),
+                                    );
+                                }
+                                ui.close_menu();
+                            }
+                        });
+
+                        // -- Distort submenu --
+                        ui.menu_button(t!("menu.filter.distort"), |ui| {
+                            if self
+                                .assets
+                                .menu_item_enabled(
+                                    ui,
+                                    Icon::MenuFilterCrystallize,
+                                    &t!("menu.filter.distort.crystallize"),
+                                    no_dialog,
+                                )
+                                .clicked()
+                            {
+                                if let Some(project) = self.active_project() {
+                                    self.active_dialog = ActiveDialog::Crystallize(
+                                        crate::ops::effect_dialogs::CrystallizeDialog::new(
+                                            &project.canvas_state,
+                                        ),
+                                    );
+                                }
+                                ui.close_menu();
+                            }
+                            if self
+                                .assets
+                                .menu_item_enabled(
+                                    ui,
+                                    Icon::MenuFilterDents,
+                                    &t!("menu.filter.distort.dents"),
+                                    no_dialog,
+                                )
+                                .clicked()
+                            {
+                                if let Some(project) = self.active_project() {
+                                    self.active_dialog = ActiveDialog::Dents(
+                                        crate::ops::effect_dialogs::DentsDialog::new(
+                                            &project.canvas_state,
+                                        ),
+                                    );
+                                }
+                                ui.close_menu();
+                            }
+                            if self
+                                .assets
+                                .menu_item_enabled(
+                                    ui,
+                                    Icon::MenuFilterPixelate,
+                                    &t!("menu.filter.distort.pixelate"),
+                                    no_dialog,
+                                )
+                                .clicked()
+                            {
+                                if let Some(project) = self.active_project() {
+                                    self.active_dialog = ActiveDialog::Pixelate(
+                                        crate::ops::effect_dialogs::PixelateDialog::new(
+                                            &project.canvas_state,
+                                        ),
+                                    );
+                                }
+                                ui.close_menu();
+                            }
+                            if self
+                                .assets
+                                .menu_item_enabled(
+                                    ui,
+                                    Icon::MenuFilterBulge,
+                                    &t!("menu.filter.distort.bulge_pinch"),
+                                    no_dialog,
+                                )
+                                .clicked()
+                            {
+                                if let Some(project) = self.active_project() {
+                                    self.active_dialog = ActiveDialog::Bulge(
+                                        crate::ops::effect_dialogs::BulgeDialog::new(
+                                            &project.canvas_state,
+                                        ),
+                                    );
+                                }
+                                ui.close_menu();
+                            }
+                            if self
+                                .assets
+                                .menu_item_enabled(
+                                    ui,
+                                    Icon::MenuFilterTwist,
+                                    &t!("menu.filter.distort.twist"),
+                                    no_dialog,
+                                )
+                                .clicked()
+                            {
+                                if let Some(project) = self.active_project() {
+                                    self.active_dialog = ActiveDialog::Twist(
+                                        crate::ops::effect_dialogs::TwistDialog::new(
+                                            &project.canvas_state,
+                                        ),
+                                    );
+                                }
+                                ui.close_menu();
+                            }
+                        });
+
+                        // -- Noise submenu --
+                        ui.menu_button(t!("menu.filter.noise"), |ui| {
+                            if self
+                                .assets
+                                .menu_item_enabled(
+                                    ui,
+                                    Icon::MenuFilterAddNoise,
+                                    &t!("menu.filter.noise.add_noise"),
+                                    no_dialog,
+                                )
+                                .clicked()
+                            {
+                                if let Some(project) = self.active_project() {
+                                    self.active_dialog = ActiveDialog::AddNoise(
+                                        crate::ops::effect_dialogs::AddNoiseDialog::new(
+                                            &project.canvas_state,
+                                        ),
+                                    );
+                                }
+                                ui.close_menu();
+                            }
+                            if self
+                                .assets
+                                .menu_item_enabled(
+                                    ui,
+                                    Icon::MenuFilterMedian,
+                                    &t!("menu.filter.noise.median"),
+                                    no_dialog,
+                                )
+                                .clicked()
+                            {
+                                if let Some(project) = self.active_project() {
+                                    self.active_dialog = ActiveDialog::Median(
+                                        crate::ops::effect_dialogs::MedianDialog::new(
+                                            &project.canvas_state,
+                                        ),
+                                    );
+                                }
+                                ui.close_menu();
+                            }
+                        });
+
+                        // -- Stylize submenu (absorbs old Artistic) --
+                        ui.menu_button(t!("menu.filter.stylize"), |ui| {
+                            if self
+                                .assets
+                                .menu_item_enabled(
+                                    ui,
+                                    Icon::MenuFilterGlow,
+                                    &t!("menu.filter.stylize.glow"),
+                                    no_dialog,
+                                )
+                                .clicked()
+                            {
+                                if let Some(project) = self.active_project() {
+                                    self.active_dialog = ActiveDialog::Glow(
+                                        crate::ops::effect_dialogs::GlowDialog::new(
+                                            &project.canvas_state,
+                                        ),
+                                    );
+                                }
+                                ui.close_menu();
+                            }
+                            if self
+                                .assets
+                                .menu_item_enabled(
+                                    ui,
+                                    Icon::MenuFilterVignette,
+                                    &t!("menu.filter.stylize.vignette"),
+                                    no_dialog,
+                                )
+                                .clicked()
+                            {
+                                if let Some(project) = self.active_project() {
+                                    self.active_dialog = ActiveDialog::Vignette(
+                                        crate::ops::effect_dialogs::VignetteDialog::new(
+                                            &project.canvas_state,
+                                        ),
+                                    );
+                                }
+                                ui.close_menu();
+                            }
+                            if self
+                                .assets
+                                .menu_item_enabled(
+                                    ui,
+                                    Icon::MenuFilterHalftone,
+                                    &t!("menu.filter.stylize.halftone"),
+                                    no_dialog,
+                                )
+                                .clicked()
+                            {
+                                if let Some(project) = self.active_project() {
+                                    self.active_dialog = ActiveDialog::Halftone(
+                                        crate::ops::effect_dialogs::HalftoneDialog::new(
+                                            &project.canvas_state,
+                                        ),
+                                    );
+                                }
+                                ui.close_menu();
+                            }
+                            if self
+                                .assets
+                                .menu_item_enabled(
+                                    ui,
+                                    Icon::MenuFilterInk,
+                                    &t!("menu.filter.stylize.ink"),
+                                    no_dialog,
+                                )
+                                .clicked()
+                            {
+                                if let Some(project) = self.active_project() {
+                                    self.active_dialog = ActiveDialog::Ink(
+                                        crate::ops::effect_dialogs::InkDialog::new(
+                                            &project.canvas_state,
+                                        ),
+                                    );
+                                }
+                                ui.close_menu();
+                            }
+                            if self
+                                .assets
+                                .menu_item_enabled(
+                                    ui,
+                                    Icon::MenuFilterOilPainting,
+                                    &t!("menu.filter.stylize.oil_painting"),
+                                    no_dialog,
+                                )
+                                .clicked()
+                            {
+                                if let Some(project) = self.active_project() {
+                                    self.active_dialog = ActiveDialog::OilPainting(
+                                        crate::ops::effect_dialogs::OilPaintingDialog::new(
+                                            &project.canvas_state,
+                                        ),
+                                    );
+                                }
+                                ui.close_menu();
+                            }
+                            if self
+                                .assets
+                                .menu_item_enabled(
+                                    ui,
+                                    Icon::MenuFilterColorFilter,
+                                    &t!("menu.filter.stylize.color_filter"),
+                                    no_dialog,
+                                )
+                                .clicked()
+                            {
+                                if let Some(project) = self.active_project() {
+                                    self.active_dialog = ActiveDialog::ColorFilter(
+                                        crate::ops::effect_dialogs::ColorFilterDialog::new(
+                                            &project.canvas_state,
+                                        ),
+                                    );
+                                }
+                                ui.close_menu();
+                            }
+                        });
+
+                        // -- Glitch submenu --
+                        ui.menu_button(t!("menu.filter.glitch"), |ui| {
+                            if self
+                                .assets
+                                .menu_item_enabled(
+                                    ui,
+                                    Icon::MenuFilterPixelDrag,
+                                    &t!("menu.filter.glitch.pixel_drag"),
+                                    no_dialog,
+                                )
+                                .clicked()
+                            {
+                                if let Some(project) = self.active_project() {
+                                    self.active_dialog = ActiveDialog::PixelDrag(
+                                        crate::ops::effect_dialogs::PixelDragDialog::new(
+                                            &project.canvas_state,
+                                        ),
+                                    );
+                                }
+                                ui.close_menu();
+                            }
+                            if self
+                                .assets
+                                .menu_item_enabled(
+                                    ui,
+                                    Icon::MenuFilterRgbDisplace,
+                                    &t!("menu.filter.glitch.rgb_displace"),
+                                    no_dialog,
+                                )
+                                .clicked()
+                            {
+                                if let Some(project) = self.active_project() {
+                                    self.active_dialog = ActiveDialog::RgbDisplace(
+                                        crate::ops::effect_dialogs::RgbDisplaceDialog::new(
+                                            &project.canvas_state,
+                                        ),
+                                    );
+                                }
+                                ui.close_menu();
+                            }
+                        });
+
+                        // -- AI submenu --
+                        ui.separator();
+                        let remove_bg_resp = self.assets.menu_item_enabled(
+                            ui,
+                            Icon::MenuFilterRemoveBg,
+                            &t!("menu.filter.remove_background"),
+                            no_dialog && self.onnx_available,
+                        );
+                        if !self.onnx_available {
+                            remove_bg_resp.clone().on_disabled_hover_text(
+                                "Configure ONNX Runtime and BiRefNet model in Preferences > AI tab",
+                            );
+                        }
+                        if remove_bg_resp.clicked() {
+                            self.active_dialog = ActiveDialog::RemoveBackground(
+                                crate::ops::effect_dialogs::RemoveBackgroundDialog::new(),
+                            );
+                            ui.close_menu();
+                        }
+
+                        // -- Custom Scripts submenu (only shown if scripts exist) --
+                        if !self.custom_scripts.is_empty() {
+                            ui.separator();
+                            ui.menu_button("Custom", |ui| {
+                                let mut action: Option<CustomScriptAction> = None;
+                                for (idx, effect) in self.custom_scripts.iter().enumerate() {
+                                    ui.horizontal(|ui| {
+                                        // Run button — effect name, takes remaining space
+                                        if ui.button(&effect.name).clicked() {
+                                            action = Some(CustomScriptAction::Run(idx));
+                                            ui.close_menu();
+                                        }
+                                        // Push Edit and Delete to the right
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                let del_btn = ui
+                                                    .small_button(
+                                                        egui::RichText::new("Del")
+                                                            .color(egui::Color32::from_rgb(
+                                                                180, 80, 80,
+                                                            ))
+                                                            .size(10.0),
+                                                    )
+                                                    .on_hover_text("Delete this custom effect");
+                                                if del_btn.clicked() {
+                                                    action = Some(CustomScriptAction::Delete(idx));
+                                                    ui.close_menu();
+                                                }
+                                                let edit_btn = ui
+                                                    .small_button(
+                                                        egui::RichText::new("Edit").size(10.0),
+                                                    )
+                                                    .on_hover_text("Edit in Script Editor");
+                                                if edit_btn.clicked() {
+                                                    action = Some(CustomScriptAction::Edit(idx));
+                                                    ui.close_menu();
+                                                }
+                                            },
+                                        );
+                                    });
+                                }
+                                if let Some(act) = action {
+                                    match act {
+                                        CustomScriptAction::Run(idx) => {
+                                            if let Some(effect) = self.custom_scripts.get(idx) {
+                                                let code = effect.code.clone();
+                                                let name = effect.name.clone();
+                                                self.run_custom_script(code, name);
+                                            }
+                                        }
+                                        CustomScriptAction::Edit(idx) => {
+                                            if let Some(effect) = self.custom_scripts.get(idx) {
+                                                self.script_editor.code = effect.code.clone();
+                                                self.window_visibility.script_editor = true;
+                                            }
+                                        }
+                                        CustomScriptAction::Delete(idx) => {
+                                            if let Some(effect) = self.custom_scripts.get(idx) {
+                                                script_editor::delete_custom_effect(&effect.name);
+                                            }
+                                            self.custom_scripts.remove(idx);
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                    });
+
+                    // ==================== GENERATE MENU (was: Effects > Render) ====================
+                    ui.menu_button(t!("menu.generate"), |ui| {
+                        if self
+                            .assets
+                            .menu_item_enabled(
+                                ui,
+                                Icon::MenuGenerateGrid,
+                                &t!("menu.generate.grid"),
+                                no_dialog,
+                            )
+                            .clicked()
+                        {
+                            if let Some(project) = self.active_project() {
+                                self.active_dialog = ActiveDialog::Grid(
+                                    crate::ops::effect_dialogs::GridDialog::new(
+                                        &project.canvas_state,
+                                    ),
+                                );
+                            }
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item_enabled(
+                                ui,
+                                Icon::MenuGenerateShadow,
+                                &t!("menu.generate.drop_shadow"),
+                                no_dialog,
+                            )
+                            .clicked()
+                        {
+                            if let Some(project) = self.active_project() {
+                                self.active_dialog = ActiveDialog::DropShadow(
+                                    crate::ops::effect_dialogs::DropShadowDialog::new(
+                                        &project.canvas_state,
+                                    ),
+                                );
+                            }
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item_enabled(
+                                ui,
+                                Icon::MenuGenerateOutline,
+                                &t!("menu.generate.outline"),
+                                no_dialog,
+                            )
+                            .clicked()
+                        {
+                            if let Some(project) = self.active_project() {
+                                self.active_dialog = ActiveDialog::Outline(
+                                    crate::ops::effect_dialogs::OutlineDialog::new(
+                                        &project.canvas_state,
+                                    ),
+                                );
+                            }
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item_enabled(
+                                ui,
+                                Icon::MenuGenerateContours,
+                                &t!("menu.generate.contours"),
+                                no_dialog,
+                            )
+                            .clicked()
+                        {
+                            if let Some(project) = self.active_project() {
+                                self.active_dialog = ActiveDialog::Contours(
+                                    crate::ops::effect_dialogs::ContoursDialog::new(
+                                        &project.canvas_state,
+                                    ),
+                                );
+                            }
+                            ui.close_menu();
+                        }
+                    });
+
+                    ui.menu_button(t!("menu.view"), |ui| {
+                        // Panel toggles
+                        ui.label(egui::RichText::new("Panels").strong().size(11.0));
+                        ui.checkbox(
+                            &mut self.window_visibility.tools,
+                            t!("menu.view.tools_panel"),
+                        );
+                        ui.checkbox(
+                            &mut self.window_visibility.layers,
+                            t!("menu.view.layers_panel"),
+                        );
+                        ui.checkbox(
+                            &mut self.window_visibility.history,
+                            t!("menu.view.history_panel"),
+                        );
+                        ui.checkbox(
+                            &mut self.window_visibility.colors,
+                            t!("menu.view.colors_panel"),
+                        );
+                        ui.checkbox(
+                            &mut self.window_visibility.script_editor,
+                            t!("menu.view.script_editor"),
+                        );
+
+                        ui.separator();
+
+                        // Pixel grid toggle
+                        let show_grid = self
+                            .active_project()
+                            .map(|p| p.canvas_state.show_pixel_grid)
+                            .unwrap_or(false);
+                        let mut grid_checked = show_grid;
+                        if ui
+                            .checkbox(&mut grid_checked, t!("menu.view.toggle_pixel_grid"))
+                            .changed()
+                            && let Some(project) = self.active_project_mut()
+                        {
+                            project.canvas_state.show_pixel_grid = grid_checked;
+                        }
+
+                        // CMYK soft proof toggle
+                        let cmyk_on = self
+                            .active_project()
+                            .map(|p| p.canvas_state.cmyk_preview)
+                            .unwrap_or(false);
+                        let mut cmyk_checked = cmyk_on;
+                        if ui
+                            .checkbox(&mut cmyk_checked, t!("menu.view.cmyk_preview"))
+                            .on_hover_text(t!("menu.view.cmyk_preview.tooltip"))
+                            .changed()
+                            && let Some(project) = self.active_project_mut()
+                        {
+                            project.canvas_state.cmyk_preview = cmyk_checked;
+                            // Force full re-upload so the proof is applied immediately
+                            project.canvas_state.composite_cache = None;
+                            project.canvas_state.mark_dirty(None);
+                        }
+
+                        ui.separator();
+
+                        // Zoom controls
+                        if self
+                            .assets
+                            .menu_item_shortcut_below(
+                                ui,
+                                Icon::MenuViewZoomIn,
+                                &t!("menu.view.zoom_in"),
+                                &menu_kb,
+                                BindableAction::ViewZoomIn,
+                            )
+                            .clicked()
+                        {
+                            self.canvas.zoom_in();
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item_shortcut_below(
+                                ui,
+                                Icon::MenuViewZoomOut,
+                                &t!("menu.view.zoom_out"),
+                                &menu_kb,
+                                BindableAction::ViewZoomOut,
+                            )
+                            .clicked()
+                        {
+                            self.canvas.zoom_out();
+                            ui.close_menu();
+                        }
+                        if self
+                            .assets
+                            .menu_item_shortcut_below(
+                                ui,
+                                Icon::MenuViewFitWindow,
+                                &t!("menu.view.fit_to_window"),
+                                &menu_kb,
+                                BindableAction::ViewFitToWindow,
+                            )
+                            .clicked()
+                        {
+                            self.canvas.reset_zoom();
+                            ui.close_menu();
+                        }
+
+                        ui.separator();
+
+                        // Theme submenu
+                        ui.menu_button(t!("menu.view.theme"), |ui| {
+                            ui.set_min_width(ui.min_rect().width().max(160.0));
+                            let is_light =
+                                matches!(self.theme.mode, crate::theme::ThemeMode::Light);
+                            let is_dark = matches!(self.theme.mode, crate::theme::ThemeMode::Dark);
+                            if ui.radio(is_light, t!("menu.view.theme.light")).clicked() {
+                                if !is_light {
+                                    self.theme.toggle();
+                                    self.theme.apply(ctx);
+                                    self.settings.theme_mode = self.theme.mode;
+                                    self.settings.save();
+                                }
+                                ui.close_menu();
+                            }
+                            if ui.radio(is_dark, t!("menu.view.theme.dark")).clicked() {
+                                if !is_dark {
+                                    self.theme.toggle();
+                                    self.theme.apply(ctx);
+                                    self.settings.theme_mode = self.theme.mode;
+                                    self.settings.save();
+                                }
+                                ui.close_menu();
+                            }
+                        });
+                    });
+                });
+            });
+
+        // Bottom line below menu bar
+        {
+            let menu_rect = menu_resp.response.rect;
+            let line_color = self.theme.border_color;
+            let painter = ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Background,
+                egui::Id::new("menu_bottom_line"),
+            ));
+            let line_rect = egui::Rect::from_min_max(
+                egui::pos2(menu_rect.left(), menu_rect.bottom() - 1.0),
+                egui::pos2(menu_rect.right(), menu_rect.bottom()),
+            );
+            painter.rect_filled(line_rect, 0.0, line_color);
+        }
+
+        // --- Row 2: Actions + Project Tabs ---
+        let toolbar_resp = egui::TopBottomPanel::top("toolbar_tabs")
+            .frame(self.theme.toolbar_frame())
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    // === File Actions ===
+                    if self.assets.small_icon_button(ui, Icon::New).clicked() {
+                        self.new_file_dialog.load_clipboard_dimensions();
+                        self.new_file_dialog.open = true;
+                    }
+                    if self.assets.small_icon_button(ui, Icon::Open).clicked() {
+                        self.handle_open_file(ctx.input(|i| i.time));
+                    }
+                    let is_dirty = self.active_project().is_some_and(|p| p.is_dirty);
+                    if self
+                        .assets
+                        .icon_button_enabled(ui, Icon::Save, is_dirty)
+                        .clicked()
+                    {
+                        self.save_file_dialog.open = true;
+                    }
+
+                    ui.separator();
+
+                    // === Undo/Redo ===
                     let can_undo = self.active_project().is_some_and(|p| p.history.can_undo());
                     let can_redo = self.active_project().is_some_and(|p| p.history.can_redo());
 
                     if self
                         .assets
-                        .menu_item_shortcut_enabled(
-                            ui,
-                            Icon::MenuEditUndo,
-                            &t!("menu.edit.undo"),
-                            can_undo,
-                            &menu_kb,
-                            BindableAction::Undo,
-                        )
+                        .icon_button_enabled(ui, Icon::Undo, can_undo)
                         .clicked()
                     {
                         if self.paste_overlay.is_some() {
@@ -2414,1680 +3974,525 @@ impl eframe::App for PaintFEApp {
                             project.canvas_state.clear_selection();
                             project.history.undo(&mut project.canvas_state);
                         }
-                        ui.close_menu();
                     }
                     if self
                         .assets
-                        .menu_item_shortcut_enabled(
-                            ui,
-                            Icon::MenuEditRedo,
-                            &t!("menu.edit.redo"),
-                            can_redo,
-                            &menu_kb,
-                            BindableAction::Redo,
-                        )
+                        .icon_button_enabled(ui, Icon::Redo, can_redo)
                         .clicked()
+                        && let Some(project) = self.active_project_mut()
                     {
-                        if let Some(project) = self.active_project_mut() {
-                            project.history.redo(&mut project.canvas_state);
-                        }
-                        ui.close_menu();
+                        project.history.redo(&mut project.canvas_state);
                     }
 
                     ui.separator();
 
-                    let has_sel = self
-                        .active_project()
-                        .is_some_and(|p| p.canvas_state.has_selection());
-                    let has_clip = crate::ops::clipboard::has_clipboard_image();
-
-                    if self
-                        .assets
-                        .menu_item_shortcut_enabled(
-                            ui,
-                            Icon::MenuEditCut,
-                            &t!("menu.edit.cut"),
-                            has_sel,
-                            &menu_kb,
-                            BindableAction::Cut,
-                        )
-                        .clicked()
-                    {
-                        self.do_snapshot_op("Cut Selection", |s| {
-                            crate::ops::clipboard::cut_selection(s);
-                        });
-                        ui.close_menu();
+                    // === Zoom Controls ===
+                    if self.assets.small_icon_button(ui, Icon::ZoomIn).clicked() {
+                        self.canvas.zoom_in();
                     }
-                    if self
-                        .assets
-                        .menu_item_shortcut_enabled(
-                            ui,
-                            Icon::MenuEditCopy,
-                            &t!("menu.edit.copy"),
-                            has_sel,
-                            &menu_kb,
-                            BindableAction::Copy,
-                        )
-                        .clicked()
-                    {
-                        if let Some(project) = self.active_project() {
-                            crate::ops::clipboard::copy_selection(&project.canvas_state);
-                        }
-                        ui.close_menu();
+                    if self.assets.small_icon_button(ui, Icon::ZoomOut).clicked() {
+                        self.canvas.zoom_out();
                     }
-                    if self
-                        .assets
-                        .menu_item_shortcut_enabled(
-                            ui,
-                            Icon::MenuEditPaste,
-                            &t!("menu.edit.paste"),
-                            has_clip,
-                            &menu_kb,
-                            BindableAction::Paste,
-                        )
-                        .clicked()
-                    {
-                        // Commit existing paste first.
-                        if self.paste_overlay.is_some() {
-                            self.commit_paste_overlay();
-                        }
-                        if let Some(project) = self.active_project_mut() {
-                            let (cw, ch) =
-                                (project.canvas_state.width, project.canvas_state.height);
-                            if let Some(overlay) = PasteOverlay::from_clipboard(cw, ch) {
-                                project.canvas_state.clear_selection();
-                                self.paste_overlay = Some(overlay);
-                                self.canvas.open_paste_menu = true;
-                            }
-                        }
-                        ui.close_menu();
-                    }
-                    if self
-                        .assets
-                        .menu_item_enabled(
-                            ui,
-                            Icon::MenuEditPasteLayer,
-                            &t!("menu.edit.paste_as_layer"),
-                            has_clip,
-                        )
-                        .clicked()
-                    {
-                        // Paste clipboard contents as a new layer
-                        let img = crate::ops::clipboard::get_from_system_clipboard()
-                            .or_else(crate::ops::clipboard::get_clipboard_image_pub);
-                        if let Some(src) = img {
-                            self.do_snapshot_op("Paste as New Layer", |s| {
-                                crate::ops::adjustments::import_layer_from_image(
-                                    s,
-                                    &src,
-                                    "Pasted Layer",
-                                );
-                            });
-                        }
-                        ui.close_menu();
+                    if self.assets.small_icon_button(ui, Icon::ResetZoom).clicked() {
+                        self.canvas.reset_zoom();
                     }
 
                     ui.separator();
 
-                    // Selection operations
-                    if self
-                        .assets
-                        .menu_item_shortcut(
-                            ui,
-                            Icon::MenuEditSelectAll,
-                            &t!("menu.edit.select_all"),
-                            &menu_kb,
-                            BindableAction::SelectAll,
-                        )
-                        .clicked()
-                    {
-                        if let Some(project) = self.active_project_mut() {
-                            let w = project.canvas_state.width;
-                            let h = project.canvas_state.height;
-                            let mask = image::GrayImage::from_pixel(w, h, image::Luma([255u8]));
-                            project.canvas_state.selection_mask = Some(mask);
-                            project.canvas_state.invalidate_selection_overlay();
-                            project.canvas_state.mark_dirty(None);
-                        }
-                        ui.close_menu();
-                    }
-                    if self
-                        .assets
-                        .menu_item_shortcut_enabled(
-                            ui,
-                            Icon::MenuEditDeselect,
-                            &t!("menu.edit.deselect"),
-                            has_sel,
-                            &menu_kb,
-                            BindableAction::Deselect,
-                        )
-                        .clicked()
-                    {
-                        if let Some(project) = self.active_project_mut() {
-                            project.canvas_state.clear_selection();
-                            project.canvas_state.mark_dirty(None);
-                        }
-                        ui.close_menu();
-                    }
-                    if self
-                        .assets
-                        .menu_item_enabled(
-                            ui,
-                            Icon::MenuEditInvertSel,
-                            &t!("menu.edit.invert_selection"),
-                            has_sel,
-                        )
-                        .clicked()
-                    {
-                        if let Some(project) = self.active_project_mut() {
-                            let w = project.canvas_state.width;
-                            let h = project.canvas_state.height;
-                            if let Some(ref mask) = project.canvas_state.selection_mask {
-                                let inverted = image::GrayImage::from_fn(w, h, |x, y| {
-                                    let v = mask.get_pixel(x, y).0[0];
-                                    image::Luma([255u8 - v])
-                                });
-                                project.canvas_state.selection_mask = Some(inverted);
-                            } else {
-                                // No selection = select all
-                                let mask = image::GrayImage::from_pixel(w, h, image::Luma([255u8]));
-                                project.canvas_state.selection_mask = Some(mask);
-                            }
-                            project.canvas_state.invalidate_selection_overlay();
-                            project.canvas_state.mark_dirty(None);
-                        }
-                        ui.close_menu();
-                    }
-                    if self
-                        .assets
-                        .menu_item_enabled(
-                            ui,
-                            Icon::MenuEditColorRange,
-                            "Select Color Range...",
-                            true,
-                        )
-                        .clicked()
-                    {
-                        if let Some(project) = self.active_project_mut() {
-                            let dlg =
-                                crate::ops::dialogs::ColorRangeDialog::new(&project.canvas_state);
-                            self.active_dialog = crate::ops::dialogs::ActiveDialog::ColorRange(dlg);
-                        }
-                        ui.close_menu();
-                    }
-
-                    ui.separator();
-
-                    if self
-                        .assets
-                        .menu_item(ui, Icon::MenuEditPreferences, &t!("menu.edit.preferences"))
-                        .clicked()
-                    {
-                        self.settings_window.open = true;
-                        ui.close_menu();
-                    }
-                });
-
-                // ==================== CANVAS MENU (was: Image) ====================
-                let no_dialog = !modal_open;
-                ui.menu_button(t!("menu.canvas"), |ui| {
-                    if self
-                        .assets
-                        .menu_item_shortcut_below_enabled(
-                            ui,
-                            Icon::MenuCanvasResize,
-                            &t!("menu.canvas.resize_image"),
-                            no_dialog,
-                            &menu_kb,
-                            BindableAction::ResizeImage,
-                        )
-                        .clicked()
-                    {
-                        if let Some(project) = self.active_project() {
-                            self.active_dialog = ActiveDialog::ResizeImage(
-                                crate::ops::dialogs::ResizeImageDialog::new(&project.canvas_state),
-                            );
-                        }
-                        ui.close_menu();
-                    }
-                    if self
-                        .assets
-                        .menu_item_shortcut_below_enabled(
-                            ui,
-                            Icon::MenuCanvasResize,
-                            &t!("menu.canvas.resize_canvas"),
-                            no_dialog,
-                            &menu_kb,
-                            BindableAction::ResizeCanvas,
-                        )
-                        .clicked()
-                    {
-                        if let Some(project) = self.active_project() {
-                            self.active_dialog = ActiveDialog::ResizeCanvas(
-                                crate::ops::dialogs::ResizeCanvasDialog::new(&project.canvas_state),
-                            );
-                        }
-                        ui.close_menu();
-                    }
-                    let has_sel = self
-                        .active_project()
-                        .is_some_and(|p| p.canvas_state.has_selection());
-                    if self
-                        .assets
-                        .menu_item_enabled(
-                            ui,
-                            Icon::MenuCanvasCrop,
-                            &t!("menu.canvas.crop_to_selection"),
-                            has_sel,
-                        )
-                        .clicked()
-                    {
-                        self.do_snapshot_op("Crop to Selection", |s| {
-                            crate::ops::adjustments::crop_to_selection(s);
-                        });
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    ui.menu_button(t!("menu.canvas.flip_canvas"), |ui| {
-                        ui.set_min_width(ui.min_rect().width().max(160.0));
-                        if self
-                            .assets
-                            .menu_item(
-                                ui,
-                                Icon::MenuCanvasFlipH,
-                                &t!("menu.canvas.flip_horizontal"),
-                            )
-                            .clicked()
-                        {
-                            self.do_snapshot_op("Flip Horizontal", |s| {
-                                crate::ops::transform::flip_canvas_horizontal(s);
-                            });
-                            ui.close_menu();
-                        }
-                        if self
-                            .assets
-                            .menu_item(ui, Icon::MenuCanvasFlipV, &t!("menu.canvas.flip_vertical"))
-                            .clicked()
-                        {
-                            self.do_snapshot_op("Flip Vertical", |s| {
-                                crate::ops::transform::flip_canvas_vertical(s);
-                            });
-                            ui.close_menu();
-                        }
-                    });
-                    ui.menu_button(t!("menu.canvas.rotate_canvas"), |ui| {
-                        ui.set_min_width(ui.min_rect().width().max(160.0));
-                        if self
-                            .assets
-                            .menu_item(ui, Icon::MenuCanvasRotateCw, &t!("menu.canvas.rotate_90cw"))
-                            .clicked()
-                        {
-                            self.do_snapshot_op("Rotate 90° CW", |s| {
-                                crate::ops::transform::rotate_canvas_90cw(s);
-                            });
-                            ui.close_menu();
-                        }
-                        if self
-                            .assets
-                            .menu_item(
-                                ui,
-                                Icon::MenuCanvasRotateCcw,
-                                &t!("menu.canvas.rotate_90ccw"),
-                            )
-                            .clicked()
-                        {
-                            self.do_snapshot_op("Rotate 90° CCW", |s| {
-                                crate::ops::transform::rotate_canvas_90ccw(s);
-                            });
-                            ui.close_menu();
-                        }
-                        if self
-                            .assets
-                            .menu_item(ui, Icon::MenuCanvasRotate180, &t!("menu.canvas.rotate_180"))
-                            .clicked()
-                        {
-                            self.do_snapshot_op("Rotate 180°", |s| {
-                                crate::ops::transform::rotate_canvas_180(s);
-                            });
-                            ui.close_menu();
-                        }
-                    });
-                    ui.separator();
-                    if self
-                        .assets
-                        .menu_item_shortcut_below(
-                            ui,
-                            Icon::MenuCanvasFlatten,
-                            &t!("menu.canvas.flatten_all_layers"),
-                            &menu_kb,
-                            BindableAction::FlattenLayers,
-                        )
-                        .clicked()
-                    {
-                        self.do_snapshot_op("Flatten All Layers", |s| {
-                            crate::ops::transform::flatten_image(s);
-                        });
-                        ui.close_menu();
-                    }
-                });
-
-                // (Layers menu removed — layer operations are now in the Layers Panel context menu)
-
-                // ==================== COLOR MENU (was: Adjustments) ====================
-                ui.menu_button(t!("menu.color"), |ui| {
-                    // --- Instant adjustments (no dialog) ---
-                    if self
-                        .assets
-                        .menu_item(ui, Icon::MenuColorAutoLevels, &t!("menu.color.auto_levels"))
-                        .clicked()
-                    {
-                        self.do_layer_snapshot_op("Auto Levels", |s| {
-                            let idx = s.active_layer_index;
-                            crate::ops::adjustments::auto_levels(s, idx);
-                        });
-                        ui.close_menu();
-                    }
-                    if self
-                        .assets
-                        .menu_item(ui, Icon::MenuColorDesaturate, &t!("menu.color.desaturate"))
-                        .clicked()
-                    {
-                        self.do_layer_snapshot_op("Desaturate", |s| {
-                            let idx = s.active_layer_index;
-                            crate::ops::filters::desaturate_layer(s, idx);
-                        });
-                        ui.close_menu();
-                    }
-                    if self
-                        .assets
-                        .menu_item(ui, Icon::MenuColorInvert, &t!("menu.color.invert_colors"))
-                        .clicked()
-                    {
-                        self.do_gpu_snapshot_op("Invert Colors", |s, gpu| {
-                            let idx = s.active_layer_index;
-                            crate::ops::adjustments::invert_colors_gpu(s, idx, gpu);
-                        });
-                        ui.close_menu();
-                    }
-                    if self
-                        .assets
-                        .menu_item(
-                            ui,
-                            Icon::MenuColorInvertAlpha,
-                            &t!("menu.color.invert_alpha"),
-                        )
-                        .clicked()
-                    {
-                        self.do_layer_snapshot_op("Invert Alpha", |s| {
-                            let idx = s.active_layer_index;
-                            crate::ops::adjustments::invert_alpha(s, idx);
-                        });
-                        ui.close_menu();
-                    }
-                    if self
-                        .assets
-                        .menu_item(ui, Icon::MenuColorSepia, &t!("menu.color.sepia_tone"))
-                        .clicked()
-                    {
-                        self.do_layer_snapshot_op("Sepia Tone", |s| {
-                            let idx = s.active_layer_index;
-                            crate::ops::adjustments::sepia(s, idx);
-                        });
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    // --- Parameterized adjustments (with dialog) ---
-                    if self
-                        .assets
-                        .menu_item_enabled(
-                            ui,
-                            Icon::MenuColorBrightness,
-                            &t!("menu.color.brightness_contrast"),
-                            no_dialog,
-                        )
-                        .clicked()
-                    {
-                        if let Some(project) = self.active_project() {
-                            self.active_dialog = ActiveDialog::BrightnessContrast(
-                                crate::ops::dialogs::BrightnessContrastDialog::new(
-                                    &project.canvas_state,
-                                ),
-                            );
-                        }
-                        ui.close_menu();
-                    }
-                    if self
-                        .assets
-                        .menu_item_enabled(
-                            ui,
-                            Icon::MenuColorCurves,
-                            &t!("menu.color.curves"),
-                            no_dialog,
-                        )
-                        .clicked()
-                    {
-                        if let Some(project) = self.active_project() {
-                            self.active_dialog = ActiveDialog::Curves(
-                                crate::ops::dialogs::CurvesDialog::new(&project.canvas_state),
-                            );
-                        }
-                        ui.close_menu();
-                    }
-                    if self
-                        .assets
-                        .menu_item_enabled(
-                            ui,
-                            Icon::MenuColorExposure,
-                            &t!("menu.color.exposure"),
-                            no_dialog,
-                        )
-                        .clicked()
-                    {
-                        if let Some(project) = self.active_project() {
-                            self.active_dialog = ActiveDialog::Exposure(
-                                crate::ops::dialogs::ExposureDialog::new(&project.canvas_state),
-                            );
-                        }
-                        ui.close_menu();
-                    }
-                    if self
-                        .assets
-                        .menu_item_enabled(
-                            ui,
-                            Icon::MenuColorHighlights,
-                            &t!("menu.color.highlights_shadows"),
-                            no_dialog,
-                        )
-                        .clicked()
-                    {
-                        if let Some(project) = self.active_project() {
-                            self.active_dialog = ActiveDialog::HighlightsShadows(
-                                crate::ops::dialogs::HighlightsShadowsDialog::new(
-                                    &project.canvas_state,
-                                ),
-                            );
-                        }
-                        ui.close_menu();
-                    }
-                    if self
-                        .assets
-                        .menu_item_enabled(
-                            ui,
-                            Icon::MenuColorHsl,
-                            &t!("menu.color.hue_saturation"),
-                            no_dialog,
-                        )
-                        .clicked()
-                    {
-                        if let Some(project) = self.active_project() {
-                            self.active_dialog = ActiveDialog::HueSaturation(
-                                crate::ops::dialogs::HueSaturationDialog::new(
-                                    &project.canvas_state,
-                                ),
-                            );
-                        }
-                        ui.close_menu();
-                    }
-                    if self
-                        .assets
-                        .menu_item_enabled(
-                            ui,
-                            Icon::MenuColorLevels,
-                            &t!("menu.color.levels"),
-                            no_dialog,
-                        )
-                        .clicked()
-                    {
-                        if let Some(project) = self.active_project() {
-                            self.active_dialog = ActiveDialog::Levels(
-                                crate::ops::dialogs::LevelsDialog::new(&project.canvas_state),
-                            );
-                        }
-                        ui.close_menu();
-                    }
-                    if self
-                        .assets
-                        .menu_item_enabled(
-                            ui,
-                            Icon::MenuColorTemperature,
-                            &t!("menu.color.temperature_tint"),
-                            no_dialog,
-                        )
-                        .clicked()
-                    {
-                        if let Some(project) = self.active_project() {
-                            self.active_dialog = ActiveDialog::TemperatureTint(
-                                crate::ops::dialogs::TemperatureTintDialog::new(
-                                    &project.canvas_state,
-                                ),
-                            );
-                        }
-                        ui.close_menu();
-                    }
-                    ui.separator();
-                    // --- Additional color adjustments ---
-                    if self
-                        .assets
-                        .menu_item_enabled(
-                            ui,
-                            Icon::MenuColorHsl,
-                            &t!("menu.color.vibrance"),
-                            no_dialog,
-                        )
-                        .clicked()
-                    {
-                        if let Some(project) = self.active_project() {
-                            self.active_dialog = ActiveDialog::Vibrance(
-                                crate::ops::dialogs::VibranceDialog::new(&project.canvas_state),
-                            );
-                        }
-                        ui.close_menu();
-                    }
-                    if self
-                        .assets
-                        .menu_item_enabled(
-                            ui,
-                            Icon::MenuColorInvert,
-                            &t!("menu.color.threshold"),
-                            no_dialog,
-                        )
-                        .clicked()
-                    {
-                        if let Some(project) = self.active_project() {
-                            self.active_dialog = ActiveDialog::Threshold(
-                                crate::ops::dialogs::ThresholdDialog::new(&project.canvas_state),
-                            );
-                        }
-                        ui.close_menu();
-                    }
-                    if self
-                        .assets
-                        .menu_item_enabled(
-                            ui,
-                            Icon::MenuColorDesaturate,
-                            &t!("menu.color.posterize"),
-                            no_dialog,
-                        )
-                        .clicked()
-                    {
-                        if let Some(project) = self.active_project() {
-                            self.active_dialog = ActiveDialog::Posterize(
-                                crate::ops::dialogs::PosterizeDialog::new(&project.canvas_state),
-                            );
-                        }
-                        ui.close_menu();
-                    }
-                    if self
-                        .assets
-                        .menu_item_enabled(
-                            ui,
-                            Icon::MenuColorBrightness,
-                            &t!("menu.color.color_balance"),
-                            no_dialog,
-                        )
-                        .clicked()
-                    {
-                        if let Some(project) = self.active_project() {
-                            self.active_dialog = ActiveDialog::ColorBalance(
-                                crate::ops::dialogs::ColorBalanceDialog::new(&project.canvas_state),
-                            );
-                        }
-                        ui.close_menu();
-                    }
-                    if self
-                        .assets
-                        .menu_item_enabled(
-                            ui,
-                            Icon::MenuColorCurves,
-                            &t!("menu.color.gradient_map"),
-                            no_dialog,
-                        )
-                        .clicked()
-                    {
-                        if let Some(project) = self.active_project() {
-                            self.active_dialog = ActiveDialog::GradientMap(
-                                crate::ops::dialogs::GradientMapDialog::new(&project.canvas_state),
-                            );
-                        }
-                        ui.close_menu();
-                    }
-                    if self
-                        .assets
-                        .menu_item_enabled(
-                            ui,
-                            Icon::MenuColorDesaturate,
-                            &t!("menu.color.black_and_white"),
-                            no_dialog,
-                        )
-                        .clicked()
-                    {
-                        if let Some(project) = self.active_project() {
-                            self.active_dialog = ActiveDialog::BlackAndWhite(
-                                crate::ops::dialogs::BlackAndWhiteDialog::new(
-                                    &project.canvas_state,
-                                ),
-                            );
-                        }
-                        ui.close_menu();
-                    }
-                });
-
-                // ==================== FILTER MENU (was: Effects) ====================
-                ui.menu_button(t!("menu.filter"), |ui| {
-                    // -- Blur submenu --
-                    ui.menu_button(t!("menu.filter.blur"), |ui| {
-                        if self
-                            .assets
-                            .menu_item_enabled(
-                                ui,
-                                Icon::MenuFilterGaussian,
-                                &t!("menu.filter.blur.gaussian"),
-                                no_dialog,
-                            )
-                            .clicked()
-                        {
-                            if let Some(project) = self.active_project() {
-                                self.active_dialog = ActiveDialog::GaussianBlur(
-                                    crate::ops::dialogs::GaussianBlurDialog::new(
-                                        &project.canvas_state,
-                                    ),
-                                );
-                            }
-                            ui.close_menu();
-                        }
-                        if self
-                            .assets
-                            .menu_item_enabled(
-                                ui,
-                                Icon::MenuFilterBokeh,
-                                &t!("menu.filter.blur.bokeh"),
-                                no_dialog,
-                            )
-                            .clicked()
-                        {
-                            if let Some(project) = self.active_project() {
-                                self.active_dialog = ActiveDialog::BokehBlur(
-                                    crate::ops::effect_dialogs::BokehBlurDialog::new(
-                                        &project.canvas_state,
-                                    ),
-                                );
-                            }
-                            ui.close_menu();
-                        }
-                        if self
-                            .assets
-                            .menu_item_enabled(
-                                ui,
-                                Icon::MenuFilterMotionBlur,
-                                &t!("menu.filter.blur.motion"),
-                                no_dialog,
-                            )
-                            .clicked()
-                        {
-                            if let Some(project) = self.active_project() {
-                                self.active_dialog = ActiveDialog::MotionBlur(
-                                    crate::ops::effect_dialogs::MotionBlurDialog::new(
-                                        &project.canvas_state,
-                                    ),
-                                );
-                            }
-                            ui.close_menu();
-                        }
-                        if self
-                            .assets
-                            .menu_item_enabled(
-                                ui,
-                                Icon::MenuFilterBoxBlur,
-                                &t!("menu.filter.blur.box"),
-                                no_dialog,
-                            )
-                            .clicked()
-                        {
-                            if let Some(project) = self.active_project() {
-                                self.active_dialog = ActiveDialog::BoxBlur(
-                                    crate::ops::effect_dialogs::BoxBlurDialog::new(
-                                        &project.canvas_state,
-                                    ),
-                                );
-                            }
-                            ui.close_menu();
-                        }
-                        if self
-                            .assets
-                            .menu_item_enabled(
-                                ui,
-                                Icon::MenuFilterZoomBlur,
-                                &t!("menu.filter.blur.zoom"),
-                                no_dialog,
-                            )
-                            .clicked()
-                        {
-                            if let Some(project) = self.active_project() {
-                                self.active_dialog = ActiveDialog::ZoomBlur(
-                                    crate::ops::effect_dialogs::ZoomBlurDialog::new(
-                                        &project.canvas_state,
-                                    ),
-                                );
-                            }
-                            ui.close_menu();
-                        }
-                    });
-
-                    // -- Sharpen submenu (was in Stylize + Noise) --
-                    ui.menu_button(t!("menu.filter.sharpen"), |ui| {
-                        if self
-                            .assets
-                            .menu_item_enabled(
-                                ui,
-                                Icon::MenuFilterSharpenItem,
-                                &t!("menu.filter.sharpen.sharpen"),
-                                no_dialog,
-                            )
-                            .clicked()
-                        {
-                            if let Some(project) = self.active_project() {
-                                self.active_dialog = ActiveDialog::Sharpen(
-                                    crate::ops::effect_dialogs::SharpenDialog::new(
-                                        &project.canvas_state,
-                                    ),
-                                );
-                            }
-                            ui.close_menu();
-                        }
-                        if self
-                            .assets
-                            .menu_item_enabled(
-                                ui,
-                                Icon::MenuFilterReduceNoise,
-                                &t!("menu.filter.sharpen.reduce_noise"),
-                                no_dialog,
-                            )
-                            .clicked()
-                        {
-                            if let Some(project) = self.active_project() {
-                                self.active_dialog = ActiveDialog::ReduceNoise(
-                                    crate::ops::effect_dialogs::ReduceNoiseDialog::new(
-                                        &project.canvas_state,
-                                    ),
-                                );
-                            }
-                            ui.close_menu();
-                        }
-                    });
-
-                    // -- Distort submenu --
-                    ui.menu_button(t!("menu.filter.distort"), |ui| {
-                        if self
-                            .assets
-                            .menu_item_enabled(
-                                ui,
-                                Icon::MenuFilterCrystallize,
-                                &t!("menu.filter.distort.crystallize"),
-                                no_dialog,
-                            )
-                            .clicked()
-                        {
-                            if let Some(project) = self.active_project() {
-                                self.active_dialog = ActiveDialog::Crystallize(
-                                    crate::ops::effect_dialogs::CrystallizeDialog::new(
-                                        &project.canvas_state,
-                                    ),
-                                );
-                            }
-                            ui.close_menu();
-                        }
-                        if self
-                            .assets
-                            .menu_item_enabled(
-                                ui,
-                                Icon::MenuFilterDents,
-                                &t!("menu.filter.distort.dents"),
-                                no_dialog,
-                            )
-                            .clicked()
-                        {
-                            if let Some(project) = self.active_project() {
-                                self.active_dialog = ActiveDialog::Dents(
-                                    crate::ops::effect_dialogs::DentsDialog::new(
-                                        &project.canvas_state,
-                                    ),
-                                );
-                            }
-                            ui.close_menu();
-                        }
-                        if self
-                            .assets
-                            .menu_item_enabled(
-                                ui,
-                                Icon::MenuFilterPixelate,
-                                &t!("menu.filter.distort.pixelate"),
-                                no_dialog,
-                            )
-                            .clicked()
-                        {
-                            if let Some(project) = self.active_project() {
-                                self.active_dialog = ActiveDialog::Pixelate(
-                                    crate::ops::effect_dialogs::PixelateDialog::new(
-                                        &project.canvas_state,
-                                    ),
-                                );
-                            }
-                            ui.close_menu();
-                        }
-                        if self
-                            .assets
-                            .menu_item_enabled(
-                                ui,
-                                Icon::MenuFilterBulge,
-                                &t!("menu.filter.distort.bulge_pinch"),
-                                no_dialog,
-                            )
-                            .clicked()
-                        {
-                            if let Some(project) = self.active_project() {
-                                self.active_dialog = ActiveDialog::Bulge(
-                                    crate::ops::effect_dialogs::BulgeDialog::new(
-                                        &project.canvas_state,
-                                    ),
-                                );
-                            }
-                            ui.close_menu();
-                        }
-                        if self
-                            .assets
-                            .menu_item_enabled(
-                                ui,
-                                Icon::MenuFilterTwist,
-                                &t!("menu.filter.distort.twist"),
-                                no_dialog,
-                            )
-                            .clicked()
-                        {
-                            if let Some(project) = self.active_project() {
-                                self.active_dialog = ActiveDialog::Twist(
-                                    crate::ops::effect_dialogs::TwistDialog::new(
-                                        &project.canvas_state,
-                                    ),
-                                );
-                            }
-                            ui.close_menu();
-                        }
-                    });
-
-                    // -- Noise submenu --
-                    ui.menu_button(t!("menu.filter.noise"), |ui| {
-                        if self
-                            .assets
-                            .menu_item_enabled(
-                                ui,
-                                Icon::MenuFilterAddNoise,
-                                &t!("menu.filter.noise.add_noise"),
-                                no_dialog,
-                            )
-                            .clicked()
-                        {
-                            if let Some(project) = self.active_project() {
-                                self.active_dialog = ActiveDialog::AddNoise(
-                                    crate::ops::effect_dialogs::AddNoiseDialog::new(
-                                        &project.canvas_state,
-                                    ),
-                                );
-                            }
-                            ui.close_menu();
-                        }
-                        if self
-                            .assets
-                            .menu_item_enabled(
-                                ui,
-                                Icon::MenuFilterMedian,
-                                &t!("menu.filter.noise.median"),
-                                no_dialog,
-                            )
-                            .clicked()
-                        {
-                            if let Some(project) = self.active_project() {
-                                self.active_dialog = ActiveDialog::Median(
-                                    crate::ops::effect_dialogs::MedianDialog::new(
-                                        &project.canvas_state,
-                                    ),
-                                );
-                            }
-                            ui.close_menu();
-                        }
-                    });
-
-                    // -- Stylize submenu (absorbs old Artistic) --
-                    ui.menu_button(t!("menu.filter.stylize"), |ui| {
-                        if self
-                            .assets
-                            .menu_item_enabled(
-                                ui,
-                                Icon::MenuFilterGlow,
-                                &t!("menu.filter.stylize.glow"),
-                                no_dialog,
-                            )
-                            .clicked()
-                        {
-                            if let Some(project) = self.active_project() {
-                                self.active_dialog = ActiveDialog::Glow(
-                                    crate::ops::effect_dialogs::GlowDialog::new(
-                                        &project.canvas_state,
-                                    ),
-                                );
-                            }
-                            ui.close_menu();
-                        }
-                        if self
-                            .assets
-                            .menu_item_enabled(
-                                ui,
-                                Icon::MenuFilterVignette,
-                                &t!("menu.filter.stylize.vignette"),
-                                no_dialog,
-                            )
-                            .clicked()
-                        {
-                            if let Some(project) = self.active_project() {
-                                self.active_dialog = ActiveDialog::Vignette(
-                                    crate::ops::effect_dialogs::VignetteDialog::new(
-                                        &project.canvas_state,
-                                    ),
-                                );
-                            }
-                            ui.close_menu();
-                        }
-                        if self
-                            .assets
-                            .menu_item_enabled(
-                                ui,
-                                Icon::MenuFilterHalftone,
-                                &t!("menu.filter.stylize.halftone"),
-                                no_dialog,
-                            )
-                            .clicked()
-                        {
-                            if let Some(project) = self.active_project() {
-                                self.active_dialog = ActiveDialog::Halftone(
-                                    crate::ops::effect_dialogs::HalftoneDialog::new(
-                                        &project.canvas_state,
-                                    ),
-                                );
-                            }
-                            ui.close_menu();
-                        }
-                        if self
-                            .assets
-                            .menu_item_enabled(
-                                ui,
-                                Icon::MenuFilterInk,
-                                &t!("menu.filter.stylize.ink"),
-                                no_dialog,
-                            )
-                            .clicked()
-                        {
-                            if let Some(project) = self.active_project() {
-                                self.active_dialog =
-                                    ActiveDialog::Ink(crate::ops::effect_dialogs::InkDialog::new(
-                                        &project.canvas_state,
-                                    ));
-                            }
-                            ui.close_menu();
-                        }
-                        if self
-                            .assets
-                            .menu_item_enabled(
-                                ui,
-                                Icon::MenuFilterOilPainting,
-                                &t!("menu.filter.stylize.oil_painting"),
-                                no_dialog,
-                            )
-                            .clicked()
-                        {
-                            if let Some(project) = self.active_project() {
-                                self.active_dialog = ActiveDialog::OilPainting(
-                                    crate::ops::effect_dialogs::OilPaintingDialog::new(
-                                        &project.canvas_state,
-                                    ),
-                                );
-                            }
-                            ui.close_menu();
-                        }
-                        if self
-                            .assets
-                            .menu_item_enabled(
-                                ui,
-                                Icon::MenuFilterColorFilter,
-                                &t!("menu.filter.stylize.color_filter"),
-                                no_dialog,
-                            )
-                            .clicked()
-                        {
-                            if let Some(project) = self.active_project() {
-                                self.active_dialog = ActiveDialog::ColorFilter(
-                                    crate::ops::effect_dialogs::ColorFilterDialog::new(
-                                        &project.canvas_state,
-                                    ),
-                                );
-                            }
-                            ui.close_menu();
-                        }
-                    });
-
-                    // -- Glitch submenu --
-                    ui.menu_button(t!("menu.filter.glitch"), |ui| {
-                        if self
-                            .assets
-                            .menu_item_enabled(
-                                ui,
-                                Icon::MenuFilterPixelDrag,
-                                &t!("menu.filter.glitch.pixel_drag"),
-                                no_dialog,
-                            )
-                            .clicked()
-                        {
-                            if let Some(project) = self.active_project() {
-                                self.active_dialog = ActiveDialog::PixelDrag(
-                                    crate::ops::effect_dialogs::PixelDragDialog::new(
-                                        &project.canvas_state,
-                                    ),
-                                );
-                            }
-                            ui.close_menu();
-                        }
-                        if self
-                            .assets
-                            .menu_item_enabled(
-                                ui,
-                                Icon::MenuFilterRgbDisplace,
-                                &t!("menu.filter.glitch.rgb_displace"),
-                                no_dialog,
-                            )
-                            .clicked()
-                        {
-                            if let Some(project) = self.active_project() {
-                                self.active_dialog = ActiveDialog::RgbDisplace(
-                                    crate::ops::effect_dialogs::RgbDisplaceDialog::new(
-                                        &project.canvas_state,
-                                    ),
-                                );
-                            }
-                            ui.close_menu();
-                        }
-                    });
-
-                    // -- AI submenu --
-                    ui.separator();
-                    let remove_bg_resp = self.assets.menu_item_enabled(
-                        ui,
-                        Icon::MenuFilterRemoveBg,
-                        &t!("menu.filter.remove_background"),
-                        no_dialog && self.onnx_available,
-                    );
-                    if !self.onnx_available {
-                        remove_bg_resp.clone().on_disabled_hover_text(
-                            "Configure ONNX Runtime and BiRefNet model in Preferences > AI tab",
-                        );
-                    }
-                    if remove_bg_resp.clicked() {
-                        self.active_dialog = ActiveDialog::RemoveBackground(
-                            crate::ops::effect_dialogs::RemoveBackgroundDialog::new(),
-                        );
-                        ui.close_menu();
-                    }
-
-                    // -- Custom Scripts submenu (only shown if scripts exist) --
-                    if !self.custom_scripts.is_empty() {
-                        ui.separator();
-                        ui.menu_button("Custom", |ui| {
-                            let mut action: Option<CustomScriptAction> = None;
-                            for (idx, effect) in self.custom_scripts.iter().enumerate() {
-                                ui.horizontal(|ui| {
-                                    // Run button — effect name, takes remaining space
-                                    if ui.button(&effect.name).clicked() {
-                                        action = Some(CustomScriptAction::Run(idx));
-                                        ui.close_menu();
-                                    }
-                                    // Push Edit and Delete to the right
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            let del_btn = ui
-                                                .small_button(
-                                                    egui::RichText::new("Del")
-                                                        .color(egui::Color32::from_rgb(180, 80, 80))
-                                                        .size(10.0),
-                                                )
-                                                .on_hover_text("Delete this custom effect");
-                                            if del_btn.clicked() {
-                                                action = Some(CustomScriptAction::Delete(idx));
-                                                ui.close_menu();
-                                            }
-                                            let edit_btn = ui
-                                                .small_button(
-                                                    egui::RichText::new("Edit").size(10.0),
-                                                )
-                                                .on_hover_text("Edit in Script Editor");
-                                            if edit_btn.clicked() {
-                                                action = Some(CustomScriptAction::Edit(idx));
-                                                ui.close_menu();
-                                            }
-                                        },
-                                    );
-                                });
-                            }
-                            if let Some(act) = action {
-                                match act {
-                                    CustomScriptAction::Run(idx) => {
-                                        if let Some(effect) = self.custom_scripts.get(idx) {
-                                            let code = effect.code.clone();
-                                            let name = effect.name.clone();
-                                            self.run_custom_script(code, name);
-                                        }
-                                    }
-                                    CustomScriptAction::Edit(idx) => {
-                                        if let Some(effect) = self.custom_scripts.get(idx) {
-                                            self.script_editor.code = effect.code.clone();
-                                            self.window_visibility.script_editor = true;
-                                        }
-                                    }
-                                    CustomScriptAction::Delete(idx) => {
-                                        if let Some(effect) = self.custom_scripts.get(idx) {
-                                            script_editor::delete_custom_effect(&effect.name);
-                                        }
-                                        self.custom_scripts.remove(idx);
-                                    }
-                                }
-                            }
-                        });
-                    }
-                });
-
-                // ==================== GENERATE MENU (was: Effects > Render) ====================
-                ui.menu_button(t!("menu.generate"), |ui| {
-                    if self
-                        .assets
-                        .menu_item_enabled(
-                            ui,
-                            Icon::MenuGenerateGrid,
-                            &t!("menu.generate.grid"),
-                            no_dialog,
-                        )
-                        .clicked()
-                    {
-                        if let Some(project) = self.active_project() {
-                            self.active_dialog = ActiveDialog::Grid(
-                                crate::ops::effect_dialogs::GridDialog::new(&project.canvas_state),
-                            );
-                        }
-                        ui.close_menu();
-                    }
-                    if self
-                        .assets
-                        .menu_item_enabled(
-                            ui,
-                            Icon::MenuGenerateShadow,
-                            &t!("menu.generate.drop_shadow"),
-                            no_dialog,
-                        )
-                        .clicked()
-                    {
-                        if let Some(project) = self.active_project() {
-                            self.active_dialog = ActiveDialog::DropShadow(
-                                crate::ops::effect_dialogs::DropShadowDialog::new(
-                                    &project.canvas_state,
-                                ),
-                            );
-                        }
-                        ui.close_menu();
-                    }
-                    if self
-                        .assets
-                        .menu_item_enabled(
-                            ui,
-                            Icon::MenuGenerateOutline,
-                            &t!("menu.generate.outline"),
-                            no_dialog,
-                        )
-                        .clicked()
-                    {
-                        if let Some(project) = self.active_project() {
-                            self.active_dialog = ActiveDialog::Outline(
-                                crate::ops::effect_dialogs::OutlineDialog::new(
-                                    &project.canvas_state,
-                                ),
-                            );
-                        }
-                        ui.close_menu();
-                    }
-                    if self
-                        .assets
-                        .menu_item_enabled(
-                            ui,
-                            Icon::MenuGenerateContours,
-                            &t!("menu.generate.contours"),
-                            no_dialog,
-                        )
-                        .clicked()
-                    {
-                        if let Some(project) = self.active_project() {
-                            self.active_dialog = ActiveDialog::Contours(
-                                crate::ops::effect_dialogs::ContoursDialog::new(
-                                    &project.canvas_state,
-                                ),
-                            );
-                        }
-                        ui.close_menu();
-                    }
-                });
-
-                ui.menu_button(t!("menu.view"), |ui| {
-                    // Panel toggles
-                    ui.label(egui::RichText::new("Panels").strong().size(11.0));
-                    ui.checkbox(
-                        &mut self.window_visibility.tools,
-                        t!("menu.view.tools_panel"),
-                    );
-                    ui.checkbox(
-                        &mut self.window_visibility.layers,
-                        t!("menu.view.layers_panel"),
-                    );
-                    ui.checkbox(
-                        &mut self.window_visibility.history,
-                        t!("menu.view.history_panel"),
-                    );
-                    ui.checkbox(
-                        &mut self.window_visibility.colors,
-                        t!("menu.view.colors_panel"),
-                    );
-                    ui.checkbox(
-                        &mut self.window_visibility.script_editor,
-                        t!("menu.view.script_editor"),
-                    );
-
-                    ui.separator();
-
-                    // Pixel grid toggle
+                    // Pixel grid toggle (respects settings mode)
+                    let pixel_grid_mode = self.settings.pixel_grid_mode;
                     let show_grid = self
                         .active_project()
                         .map(|p| p.canvas_state.show_pixel_grid)
                         .unwrap_or(false);
-                    let mut grid_checked = show_grid;
-                    if ui
-                        .checkbox(&mut grid_checked, t!("menu.view.toggle_pixel_grid"))
-                        .changed()
-                        && let Some(project) = self.active_project_mut()
-                    {
-                        project.canvas_state.show_pixel_grid = grid_checked;
-                    }
 
-                    ui.separator();
-
-                    // Zoom controls
-                    if self
-                        .assets
-                        .menu_item_shortcut_below(
-                            ui,
-                            Icon::MenuViewZoomIn,
-                            &t!("menu.view.zoom_in"),
-                            &menu_kb,
-                            BindableAction::ViewZoomIn,
-                        )
-                        .clicked()
-                    {
-                        self.canvas.zoom_in();
-                        ui.close_menu();
-                    }
-                    if self
-                        .assets
-                        .menu_item_shortcut_below(
-                            ui,
-                            Icon::MenuViewZoomOut,
-                            &t!("menu.view.zoom_out"),
-                            &menu_kb,
-                            BindableAction::ViewZoomOut,
-                        )
-                        .clicked()
-                    {
-                        self.canvas.zoom_out();
-                        ui.close_menu();
-                    }
-                    if self
-                        .assets
-                        .menu_item_shortcut_below(
-                            ui,
-                            Icon::MenuViewFitWindow,
-                            &t!("menu.view.fit_to_window"),
-                            &menu_kb,
-                            BindableAction::ViewFitToWindow,
-                        )
-                        .clicked()
-                    {
-                        self.canvas.reset_zoom();
-                        ui.close_menu();
-                    }
-
-                    ui.separator();
-
-                    // Theme submenu
-                    ui.menu_button(t!("menu.view.theme"), |ui| {
-                        ui.set_min_width(ui.min_rect().width().max(160.0));
-                        let is_light = matches!(self.theme.mode, crate::theme::ThemeMode::Light);
-                        let is_dark = matches!(self.theme.mode, crate::theme::ThemeMode::Dark);
-                        if ui.radio(is_light, t!("menu.view.theme.light")).clicked() {
-                            if !is_light {
-                                self.theme.toggle();
-                                self.theme.apply(ctx);
-                                self.settings.theme_mode = self.theme.mode;
-                                self.settings.save();
-                            }
-                            ui.close_menu();
-                        }
-                        if ui.radio(is_dark, t!("menu.view.theme.dark")).clicked() {
-                            if !is_dark {
-                                self.theme.toggle();
-                                self.theme.apply(ctx);
-                                self.settings.theme_mode = self.theme.mode;
-                                self.settings.save();
-                            }
-                            ui.close_menu();
-                        }
-                    });
-                });
-            });
-        });
-
-        // --- Row 2: Actions + Project Tabs ---
-        let toolbar_resp = egui::TopBottomPanel::top("toolbar_tabs")
-            .frame(self.theme.toolbar_frame())
-            .show(ctx, |ui| {
-            let toolbar_height = ui.available_height();
-            ui.horizontal(|ui| {
-                // === File Actions ===
-                if self.assets.small_icon_button(ui, Icon::New).clicked() {
-                    self.new_file_dialog.load_clipboard_dimensions();
-                    self.new_file_dialog.open = true;
-                }
-                if self.assets.small_icon_button(ui, Icon::Open).clicked() {
-                    self.handle_open_file(ctx.input(|i| i.time));
-                }
-                let is_dirty = self.active_project().is_some_and(|p| p.is_dirty);
-                if self.assets.icon_button_enabled(ui, Icon::Save, is_dirty).clicked() {
-                    self.save_file_dialog.open = true;
-                }
-                
-                ui.separator();
-                
-                // === Undo/Redo ===
-                let can_undo = self.active_project().is_some_and(|p| p.history.can_undo());
-                let can_redo = self.active_project().is_some_and(|p| p.history.can_redo());
-                
-                if self.assets.icon_button_enabled(ui, Icon::Undo, can_undo).clicked() {
-                    if self.paste_overlay.is_some() {
-                        self.cancel_paste_overlay();
-                        if let Some(project) = self.active_project_mut() {
-                            project.canvas_state.clear_selection();
-                        }
-                    } else if self.tools_panel.has_active_tool_preview() {
-                        if let Some(project) = self.projects.get_mut(self.active_project_index) {
-                            self.tools_panel.cancel_active_tool(&mut project.canvas_state);
-                        }
-                    } else if let Some(project) = self.active_project_mut() {
-                        project.canvas_state.clear_selection();
-                        project.history.undo(&mut project.canvas_state);
-                    }
-                }
-                if self.assets.icon_button_enabled(ui, Icon::Redo, can_redo).clicked()
-                    && let Some(project) = self.active_project_mut() {
-                        project.history.redo(&mut project.canvas_state);
-                    }
-                
-                ui.separator();
-                
-                // === Zoom Controls ===
-                if self.assets.small_icon_button(ui, Icon::ZoomIn).clicked() {
-                    self.canvas.zoom_in();
-                }
-                if self.assets.small_icon_button(ui, Icon::ZoomOut).clicked() {
-                    self.canvas.zoom_out();
-                }
-                if self.assets.small_icon_button(ui, Icon::ResetZoom).clicked() {
-                    self.canvas.reset_zoom();
-                }
-                
-                ui.separator();
-                
-                // Pixel grid toggle (respects settings mode)
-                let pixel_grid_mode = self.settings.pixel_grid_mode;
-                let show_grid = self.active_project().map(|p| p.canvas_state.show_pixel_grid).unwrap_or(false);
-                
-                match pixel_grid_mode {
-                    PixelGridMode::Auto => {
-                        // Auto mode: Show toggle for manual override
-                        let grid_icon = if show_grid { Icon::GridOn } else { Icon::GridOff };
-                        if self.assets.small_icon_button(ui, grid_icon).clicked()
-                            && let Some(project) = self.active_project_mut() {
-                                project.canvas_state.show_pixel_grid = !project.canvas_state.show_pixel_grid;
-                            }
-                    }
-                    PixelGridMode::AlwaysOn => {
-                        if let Some(project) = self.active_project_mut() {
-                            project.canvas_state.show_pixel_grid = true;
-                        }
-                        self.assets.icon_button_enabled(ui, Icon::GridOn, false);
-                    }
-                    PixelGridMode::AlwaysOff => {
-                        if let Some(project) = self.active_project_mut() {
-                            project.canvas_state.show_pixel_grid = false;
-                        }
-                        self.assets.icon_button_enabled(ui, Icon::GridOff, false);
-                    }
-                }
-                
-                // Guidelines toggle
-                {
-                    let show_guides = self.active_project().map(|p| p.canvas_state.show_guidelines).unwrap_or(false);
-                    let guide_icon = if show_guides { Icon::GuidesOn } else { Icon::GuidesOff };
-                    if self.assets.small_icon_button(ui, guide_icon).clicked()
-                        && let Some(project) = self.active_project_mut() {
-                            project.canvas_state.show_guidelines = !project.canvas_state.show_guidelines;
-                        }
-                }
-                
-                // Mirror mode toggle (cycles: None → H → V → Quarters → None)
-                {
-                    use crate::canvas::MirrorMode;
-                    let mode = self.active_project().map(|p| p.canvas_state.mirror_mode).unwrap_or(MirrorMode::None);
-                    let mirror_icon = match mode {
-                        MirrorMode::None => Icon::MirrorOff,
-                        MirrorMode::Horizontal => Icon::MirrorH,
-                        MirrorMode::Vertical => Icon::MirrorV,
-                        MirrorMode::Quarters => Icon::MirrorQ,
-                    };
-                    if self.assets.small_icon_button(ui, mirror_icon).clicked()
-                        && let Some(project) = self.active_project_mut() {
-                            project.canvas_state.mirror_mode = project.canvas_state.mirror_mode.next();
-                        }
-                }
-                
-                ui.separator();
-                
-                // === Project Tabs Section ===
-                // Allocate remaining space for the tab tray
-                ui.allocate_ui_with_layout(
-                    egui::Vec2::new(ui.available_width(), ui.available_height()),
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        // Create a rect that spans the full toolbar height + extra padding
-                        let extra_height = 6.0; // Add extra height to ensure tabs fit
-                        let tray_rect = egui::Rect::from_min_max(
-                            egui::pos2(ui.cursor().min.x, ui.cursor().min.y - 3.0), // Raise it up 3px
-                            egui::pos2(ui.cursor().min.x + ui.available_width(), ui.cursor().min.y + toolbar_height + extra_height),
-                        );
-                        
-                        // Paint darker recessed background (inner shadow effect)
-                        let painter = ui.painter();
-                        
-                        // Main darker background
-                        painter.rect_filled(
-                            tray_rect,
-                            egui::Rounding::same(3.0),
-                            egui::Color32::from_black_alpha(25),
-                        );
-                        
-                        // Smooth left-edge gradient for recessed/shadow effect
-                        let is_neon = self.settings.neon_mode && self.theme.mode == crate::theme::ThemeMode::Dark;
-                        let gradient_width = if is_neon { 160.0 } else { 40.0 }; // 4x stretch for neon
-                        let steps = if is_neon { 64 } else { 32 }; // more steps for wider glow
-                        for i in 0..steps {
-                            let t = i as f32 / steps as f32;
-                            let eased = 1.0 - (t * t);
-                            let x = tray_rect.min.x + t * gradient_width;
-                            let next_x = tray_rect.min.x + (t + 1.0 / steps as f32) * gradient_width;
-                            let gradient_rect = egui::Rect::from_min_max(
-                                egui::pos2(x, tray_rect.min.y),
-                                egui::pos2(next_x, tray_rect.max.y),
-                            );
-                            let color = if is_neon {
-                                let [r, g, b, _] = self.theme.accent.to_array();
-                                egui::Color32::from_rgba_unmultiplied(r, g, b, (eased * 22.0) as u8)
+                    match pixel_grid_mode {
+                        PixelGridMode::Auto => {
+                            // Auto mode: Show toggle for manual override
+                            let grid_icon = if show_grid {
+                                Icon::GridOn
                             } else {
-                                egui::Color32::from_black_alpha((eased * 30.0) as u8)
+                                Icon::GridOff
                             };
-                            painter.rect_filled(gradient_rect, egui::Rounding::ZERO, color);
-                        }
-                        
-                        // Now layout the actual tabs with arrows - use TOP alignment and offset up
-                        ui.allocate_ui_with_layout(
-                            egui::Vec2::new(ui.available_width(), ui.available_height()),
-                            egui::Layout::left_to_right(egui::Align::Min),
-                            |ui| {
-                                ui.add_space(-3.0); // Negative space to pull content up
-                                ui.horizontal(|ui| {
-                            let mut tab_to_switch: Option<usize> = None;
-                            let mut tab_to_close: Option<usize> = None;
-                            
-                            ui.add_space(8.0);
-                            
-                            // Left scroll arrow (conditional - subtle chevron)
-                            // For now, always show but make it very subtle
-                            // In a more advanced version, check scroll state to hide/disable
-                            let left_chevron = egui::RichText::new("‹").size(16.0);
-                            let left_arrow = egui::Button::new(left_chevron)
-                                .frame(false)
-                                .min_size(egui::vec2(20.0, 20.0));
-                            if ui.add(left_arrow).on_hover_text("Scroll Left").clicked() {
-                                // Visual cue for scrolling
+                            if self.assets.small_icon_button(ui, grid_icon).clicked()
+                                && let Some(project) = self.active_project_mut()
+                            {
+                                project.canvas_state.show_pixel_grid =
+                                    !project.canvas_state.show_pixel_grid;
                             }
-                            
-                            ui.add_space(4.0);
-                            
-                            // Scrollable area for tabs - takes remaining width
-                            let scroll_width = ui.available_width() - 32.0; // Reserve space for right arrow
-                            ui.allocate_ui_with_layout(
-                                egui::Vec2::new(scroll_width, ui.available_height()),
-                                egui::Layout::left_to_right(egui::Align::Center),
-                                |ui| {
-                                    egui::ScrollArea::horizontal()
-                                        .id_source("project_tabs_scroll")
-                                        .show(ui, |ui| {
-                                                ui.horizontal(|ui| {
-                                                for (idx, project) in self.projects.iter().enumerate() {
-                                                    let is_active = idx == self.active_project_index;
-                                                    
-                                                    // Tab styling
-                                                    let tab_text = project.display_title();
-                                                    let text_color = if is_active {
-                                                        egui::Color32::WHITE
-                                                    } else {
-                                                        match self.theme.mode {
-                                                            crate::theme::ThemeMode::Dark => egui::Color32::from_gray(180),
-                                                            crate::theme::ThemeMode::Light => egui::Color32::from_gray(50),
-                                                        }
-                                                    };
-                                                    let text = egui::RichText::new(&tab_text).color(text_color);
-                                                    let text = if is_active { text.strong() } else { text };
-                                                    
-                                                    // Tab frame with white for inactive, accent for active
-                                                    let fill = if is_active {
-                                                        self.theme.accent
-                                                    } else {
-                                                        match self.theme.mode {
-                                                            crate::theme::ThemeMode::Dark => egui::Color32::from_gray(38),
-                                                            crate::theme::ThemeMode::Light => egui::Color32::WHITE,
-                                                        }
-                                                    };
-                                                    
-                                                    // Get the frame response to paint shadow
-                                                    egui::Frame::none()
-                                                        .fill(fill)
-                                                        .inner_margin(egui::Margin::symmetric(8.0, 2.85))
-                                                        .rounding(egui::Rounding::same(4.0))
-                                                        .show(ui, |ui| {
-                                                            ui.horizontal(|ui| {
-                                                                // Tab label (clickable)
-                                                                if ui.add(egui::Label::new(text).sense(egui::Sense::click())).clicked() {
-                                                                    tab_to_switch = Some(idx);
-                                                                }
-                                                                
-                                                                // Close button with lighter blue for active tab
-                                                                let close_btn = if is_active {
-                                                                    egui::Button::new(egui::RichText::new("×").color(self.theme.accent_strong))
-                                                                        .frame(false)
-                                                                } else {
-                                                                    egui::Button::new("×").frame(false)
-                                                                };
-                                                                if ui.add(close_btn).on_hover_text("Close").clicked() {
-                                                                    tab_to_close = Some(idx);
-                                                                }
-                                                            });
-                                                        });
-                                                    
-                                                    ui.add_space(2.0);
+                        }
+                        PixelGridMode::AlwaysOn => {
+                            if let Some(project) = self.active_project_mut() {
+                                project.canvas_state.show_pixel_grid = true;
+                            }
+                            self.assets.icon_button_enabled(ui, Icon::GridOn, false);
+                        }
+                        PixelGridMode::AlwaysOff => {
+                            if let Some(project) = self.active_project_mut() {
+                                project.canvas_state.show_pixel_grid = false;
+                            }
+                            self.assets.icon_button_enabled(ui, Icon::GridOff, false);
+                        }
+                    }
+
+                    // Guidelines toggle
+                    {
+                        let show_guides = self
+                            .active_project()
+                            .map(|p| p.canvas_state.show_guidelines)
+                            .unwrap_or(false);
+                        let guide_icon = if show_guides {
+                            Icon::GuidesOn
+                        } else {
+                            Icon::GuidesOff
+                        };
+                        if self.assets.small_icon_button(ui, guide_icon).clicked()
+                            && let Some(project) = self.active_project_mut()
+                        {
+                            project.canvas_state.show_guidelines =
+                                !project.canvas_state.show_guidelines;
+                        }
+                    }
+
+                    // Mirror mode toggle (cycles: None → H → V → Quarters → None)
+                    {
+                        use crate::canvas::MirrorMode;
+                        let mode = self
+                            .active_project()
+                            .map(|p| p.canvas_state.mirror_mode)
+                            .unwrap_or(MirrorMode::None);
+                        let mirror_icon = match mode {
+                            MirrorMode::None => Icon::MirrorOff,
+                            MirrorMode::Horizontal => Icon::MirrorH,
+                            MirrorMode::Vertical => Icon::MirrorV,
+                            MirrorMode::Quarters => Icon::MirrorQ,
+                        };
+                        if self.assets.small_icon_button(ui, mirror_icon).clicked()
+                            && let Some(project) = self.active_project_mut()
+                        {
+                            project.canvas_state.mirror_mode =
+                                project.canvas_state.mirror_mode.next();
+                        }
+                    }
+
+                    ui.separator();
+
+                    // === Project Tabs Section (clean, no tray) ===
+                    ui.add_space(4.0);
+
+                    // Collect project info before mutable operations
+                    let project_infos: Vec<(String, bool, u32, u32)> = self
+                        .projects
+                        .iter()
+                        .map(|p| {
+                            (
+                                p.name.clone(),
+                                p.is_dirty,
+                                p.canvas_state.width,
+                                p.canvas_state.height,
+                            )
+                        })
+                        .collect();
+
+                    let mut tab_to_switch: Option<usize> = None;
+                    let mut tab_to_close: Option<usize> = None;
+                    let mut tab_reorder: Option<(usize, usize)> = None; // (from, to)
+                    let _tab_count = project_infos.len();
+
+                    // Drag state IDs
+                    let drag_src_id = egui::Id::new("tab_drag_source");
+                    let dragging_tab: Option<usize> =
+                        ui.ctx().memory(|m| m.data.get_temp::<usize>(drag_src_id));
+
+                    // Collect tab rects for drop target computation
+                    let mut tab_rects: Vec<egui::Rect> = Vec::new();
+
+                    // Scrollable area for tabs — full remaining width, no arrows by default
+                    let scroll_out = egui::ScrollArea::horizontal()
+                        .id_source("project_tabs_scroll")
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 2.0;
+
+                                for (idx, (name, is_dirty, cw, ch)) in
+                                    project_infos.iter().enumerate()
+                                {
+                                    let is_active = idx == self.active_project_index;
+
+                                    // Animated crossfade
+                                    let tab_anim_id = egui::Id::new("tab_active_anim").with(idx);
+                                    let active_t = ui.ctx().animate_bool(tab_anim_id, is_active);
+
+                                    // 1-frame-delayed hover for fill computation (avoids Background layer z-order issues)
+                                    let hover_mem_id = egui::Id::new("tab_hover_mem").with(idx);
+                                    let was_hovered: bool = ui.ctx().memory(|m| {
+                                        m.data.get_temp::<bool>(hover_mem_id).unwrap_or(false)
+                                    });
+
+                                    // --- Colors ---
+                                    let (active_fill, inactive_fill, hover_fill) =
+                                        match self.theme.mode {
+                                            crate::theme::ThemeMode::Dark => (
+                                                egui::Color32::from_gray(48), // distinct lift from toolbar
+                                                egui::Color32::from_gray(36), // visible against toolbar bg
+                                                egui::Color32::from_gray(42), // visible hover
+                                            ),
+                                            crate::theme::ThemeMode::Light => (
+                                                egui::Color32::WHITE,          // crisp white
+                                                egui::Color32::from_gray(232), // visible but quiet
+                                                egui::Color32::from_gray(242), // lighter on hover
+                                            ),
+                                        };
+                                    let (active_text_color, inactive_text_color, hover_text_color) =
+                                        match self.theme.mode {
+                                            crate::theme::ThemeMode::Dark => (
+                                                egui::Color32::from_gray(245),
+                                                egui::Color32::from_gray(140),
+                                                egui::Color32::from_gray(200), // brighter on hover
+                                            ),
+                                            crate::theme::ThemeMode::Light => (
+                                                egui::Color32::from_gray(10),
+                                                egui::Color32::from_gray(100),
+                                                egui::Color32::from_gray(40),
+                                            ),
+                                        };
+
+                                    // Compute fill: active crossfade takes priority, then hover, then inactive
+                                    let fill = if active_t > 0.01 {
+                                        crate::theme::Theme::lerp_color(
+                                            inactive_fill,
+                                            active_fill,
+                                            active_t,
+                                        )
+                                    } else if was_hovered {
+                                        hover_fill
+                                    } else {
+                                        inactive_fill
+                                    };
+                                    let text_color = if active_t > 0.01 {
+                                        crate::theme::Theme::lerp_color(
+                                            inactive_text_color,
+                                            active_text_color,
+                                            active_t,
+                                        )
+                                    } else if was_hovered {
+                                        hover_text_color
+                                    } else {
+                                        inactive_text_color
+                                    };
+
+                                    // Active tab stroke for contrast
+                                    let stroke = if active_t > 0.5 {
+                                        egui::Stroke::new(
+                                            1.0,
+                                            match self.theme.mode {
+                                                crate::theme::ThemeMode::Dark => {
+                                                    egui::Color32::from_gray(62)
                                                 }
-                                                
-                                                // "+" button to create new tab
-                                                let plus_fill = match self.theme.mode {
-                                                    crate::theme::ThemeMode::Dark => egui::Color32::from_gray(38),
-                                                    crate::theme::ThemeMode::Light => egui::Color32::WHITE,
-                                                };
-                                                let plus_btn = egui::Button::new("+")
-                                                    .fill(plus_fill)
-                                                    .rounding(egui::Rounding::same(4.0));
-                                                if ui.add(plus_btn).on_hover_text("New Tab").clicked() {
-                                                    self.new_file_dialog.load_clipboard_dimensions();
-                                                    self.new_file_dialog.open = true;
+                                                crate::theme::ThemeMode::Light => {
+                                                    egui::Color32::from_gray(200)
+                                                }
+                                            },
+                                        )
+                                    } else {
+                                        egui::Stroke::NONE
+                                    };
+
+                                    // --- Build tab text ---
+                                    let tab_label = name.clone();
+                                    let text = egui::RichText::new(&tab_label).color(text_color);
+                                    let text = if is_active { text.strong() } else { text };
+
+                                    // --- Flat-bottom rounding (top-left, top-right, bottom-right, bottom-left) ---
+                                    let rounding = egui::Rounding {
+                                        nw: 5.0,
+                                        ne: 5.0,
+                                        sw: 0.0,
+                                        se: 0.0,
+                                    };
+
+                                    // --- Tab frame ---
+                                    let tab_resp = egui::Frame::none()
+                                        .fill(fill)
+                                        .stroke(stroke)
+                                        .inner_margin(egui::Margin::symmetric(10.0, 4.0))
+                                        .rounding(rounding)
+                                        .show(ui, |ui| {
+                                            ui.horizontal(|ui| {
+                                                // Dirty dot indicator
+                                                if *is_dirty {
+                                                    let dot_size = 5.0;
+                                                    let (dot_rect, _) = ui.allocate_exact_size(
+                                                        egui::vec2(dot_size, dot_size),
+                                                        egui::Sense::hover(),
+                                                    );
+                                                    let center = dot_rect.center();
+                                                    ui.painter().circle_filled(
+                                                        center,
+                                                        dot_size / 2.0,
+                                                        self.theme.accent,
+                                                    );
+                                                }
+
+                                                // Tab label (clickable + draggable for reorder)
+                                                let label_resp = ui.add(
+                                                    egui::Label::new(text)
+                                                        .sense(egui::Sense::click_and_drag()),
+                                                );
+                                                if label_resp.clicked() {
+                                                    tab_to_switch = Some(idx);
+                                                }
+                                                if label_resp.drag_started() {
+                                                    ui.ctx().memory_mut(|m| {
+                                                        m.data.insert_temp(drag_src_id, idx);
+                                                    });
+                                                }
+
+                                                // Dimension text for active tab (dimmed)
+                                                if is_active {
+                                                    let dim_text = egui::RichText::new(format!(
+                                                        "{}×{}",
+                                                        cw, ch
+                                                    ))
+                                                    .size(10.0)
+                                                    .color(match self.theme.mode {
+                                                        crate::theme::ThemeMode::Dark => {
+                                                            egui::Color32::from_gray(80)
+                                                        }
+                                                        crate::theme::ThemeMode::Light => {
+                                                            egui::Color32::from_gray(160)
+                                                        }
+                                                    });
+                                                    ui.label(dim_text);
+                                                }
+
+                                                // Close button — only on hover or active
+                                                // Use was_hovered (1-frame delayed outer frame hover) for stable detection
+                                                if is_active || was_hovered {
+                                                    let close_text = egui::RichText::new("×")
+                                                        .size(11.0)
+                                                        .color(match self.theme.mode {
+                                                            crate::theme::ThemeMode::Dark => {
+                                                                egui::Color32::from_gray(100)
+                                                            }
+                                                            crate::theme::ThemeMode::Light => {
+                                                                egui::Color32::from_gray(140)
+                                                            }
+                                                        });
+                                                    let close_btn = egui::Button::new(close_text)
+                                                        .frame(false)
+                                                        .min_size(egui::vec2(16.0, 16.0));
+                                                    let close_resp =
+                                                        ui.add(close_btn).on_hover_text("Close");
+                                                    // Red-ish highlight on close button hover
+                                                    if close_resp.hovered() {
+                                                        let cr = close_resp.rect.expand(2.0);
+                                                        ui.painter().rect_filled(
+                                                            cr,
+                                                            egui::Rounding::same(3.0),
+                                                            egui::Color32::from_rgba_unmultiplied(
+                                                                255, 80, 80, 30,
+                                                            ),
+                                                        );
+                                                    }
+                                                    if close_resp.clicked() {
+                                                        tab_to_close = Some(idx);
+                                                    }
                                                 }
                                             });
                                         });
-                                },
-                            );
-                            
-                            ui.add_space(4.0);
-                            
-                            // Right scroll arrow (subtle chevron, vertically centered)
-                            let right_chevron = egui::RichText::new("›").size(16.0);
-                            let right_arrow = egui::Button::new(right_chevron)
-                                .frame(false)
-                                .min_size(egui::vec2(20.0, 20.0));
-                            if ui.add(right_arrow).on_hover_text("Scroll Right").clicked() {
-                                // Visual cue for scrolling
-                            }
-                            
-                            ui.add_space(4.0);
-                            
-                            // Process tab actions after iteration
-                            if let Some(idx) = tab_to_switch {
-                                self.switch_to_project(idx);
-                            }
-                            if let Some(idx) = tab_to_close {
-                                self.close_project(idx);
-                            }
+
+                                    // Store hover state for next frame
+                                    let is_hovered_now = tab_resp.response.hovered();
+                                    ui.ctx().memory_mut(|m| {
+                                        m.data.insert_temp(hover_mem_id, is_hovered_now);
+                                    });
+
+                                    // Track tab rect for drag-drop
+                                    tab_rects.push(tab_resp.response.rect);
+
+                                    // Drag cursor: show grab while dragging this tab
+                                    if dragging_tab == Some(idx)
+                                        && ui.input(|i| i.pointer.any_down())
+                                    {
+                                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                                    }
+
+                                    // Accent bottom stripe for active tab (2px)
+                                    if active_t > 0.01 {
+                                        let tab_rect = tab_resp.response.rect;
+                                        let stripe_rect = egui::Rect::from_min_max(
+                                            egui::pos2(
+                                                tab_rect.left() + 2.0,
+                                                tab_rect.bottom() - 2.0,
+                                            ),
+                                            egui::pos2(tab_rect.right() - 2.0, tab_rect.bottom()),
+                                        );
+                                        let stripe_alpha = (active_t * 255.0) as u8;
+                                        let stripe_color = egui::Color32::from_rgba_unmultiplied(
+                                            self.theme.accent.r(),
+                                            self.theme.accent.g(),
+                                            self.theme.accent.b(),
+                                            stripe_alpha,
+                                        );
+                                        ui.painter().rect_filled(
+                                            stripe_rect,
+                                            egui::Rounding::same(1.0),
+                                            stripe_color,
+                                        );
+                                    }
+                                }
+
+                                // --- Drag-drop indicator + release logic ---
+                                if let Some(src_idx) = dragging_tab {
+                                    let pointer_released = ui.input(|i| i.pointer.any_released());
+                                    let pointer_pos = ui.input(|i| i.pointer.hover_pos());
+
+                                    if let Some(pos) = pointer_pos {
+                                        // Compute drop index from pointer x vs tab center positions
+                                        let mut drop_idx = tab_rects.len(); // default: after last
+                                        for (i, rect) in tab_rects.iter().enumerate() {
+                                            if pos.x < rect.center().x {
+                                                drop_idx = i;
+                                                break;
+                                            }
+                                        }
+
+                                        // Draw drop indicator line (only if drop position differs from source)
+                                        if drop_idx != src_idx && drop_idx != src_idx + 1 {
+                                            let indicator_x = if drop_idx < tab_rects.len() {
+                                                tab_rects[drop_idx].left() - 1.0
+                                            } else if !tab_rects.is_empty() {
+                                                tab_rects.last().unwrap().right() + 1.0
+                                            } else {
+                                                0.0
+                                            };
+                                            if !tab_rects.is_empty() {
+                                                let top = tab_rects[0].top();
+                                                let bottom = tab_rects[0].bottom();
+                                                ui.painter().line_segment(
+                                                    [
+                                                        egui::pos2(indicator_x, top),
+                                                        egui::pos2(indicator_x, bottom),
+                                                    ],
+                                                    egui::Stroke::new(2.0, self.theme.accent),
+                                                );
+                                            }
+                                        }
+
+                                        // On release: perform the reorder
+                                        if pointer_released {
+                                            // Adjust drop index for removal shift
+                                            let effective_drop = if drop_idx > src_idx {
+                                                drop_idx - 1
+                                            } else {
+                                                drop_idx
+                                            };
+                                            if effective_drop != src_idx {
+                                                tab_reorder = Some((src_idx, effective_drop));
+                                            }
+                                            ui.ctx().memory_mut(|m| {
+                                                m.data.remove::<usize>(drag_src_id);
+                                            });
+                                        }
+                                    } else if pointer_released {
+                                        // Released outside tab area — cancel
+                                        ui.ctx().memory_mut(|m| {
+                                            m.data.remove::<usize>(drag_src_id);
+                                        });
+                                    }
+                                }
+
+                                // "+" button — use a Frame so hover bg is behind the text
+                                ui.add_space(4.0);
+                                let plus_hover_id = egui::Id::new("plus_tab_hover");
+                                let plus_was_hovered: bool = ui.ctx().memory(|m| {
+                                    m.data.get_temp::<bool>(plus_hover_id).unwrap_or(false)
+                                });
+                                let plus_fill = if plus_was_hovered {
+                                    match self.theme.mode {
+                                        crate::theme::ThemeMode::Dark => {
+                                            egui::Color32::from_white_alpha(15)
+                                        }
+                                        crate::theme::ThemeMode::Light => {
+                                            egui::Color32::from_gray(228)
+                                        }
+                                    }
+                                } else {
+                                    egui::Color32::TRANSPARENT
+                                };
+                                let plus_color = match self.theme.mode {
+                                    crate::theme::ThemeMode::Dark => {
+                                        if plus_was_hovered {
+                                            egui::Color32::from_gray(180)
+                                        } else {
+                                            egui::Color32::from_gray(100)
+                                        }
+                                    }
+                                    crate::theme::ThemeMode::Light => {
+                                        if plus_was_hovered {
+                                            egui::Color32::from_gray(60)
+                                        } else {
+                                            egui::Color32::from_gray(140)
+                                        }
+                                    }
+                                };
+                                let plus_resp = egui::Frame::none()
+                                    .fill(plus_fill)
+                                    .rounding(egui::Rounding::same(4.0))
+                                    .inner_margin(egui::Margin::symmetric(4.0, 2.0))
+                                    .show(ui, |ui| {
+                                        let plus_text =
+                                            egui::RichText::new("+").size(14.0).color(plus_color);
+                                        ui.add(
+                                            egui::Label::new(plus_text).sense(egui::Sense::click()),
+                                        )
+                                    });
+                                ui.ctx().memory_mut(|m| {
+                                    m.data
+                                        .insert_temp(plus_hover_id, plus_resp.response.hovered());
+                                });
+                                if plus_resp.response.hovered() {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                }
+                                if plus_resp.inner.clicked() {
+                                    self.new_file_dialog.load_clipboard_dimensions();
+                                    self.new_file_dialog.open = true;
+                                }
+                            });
                         });
-                    });
-                },
-            );
-        });
-    });
+                    let _ = scroll_out;
+
+                    // Process tab actions after iteration
+                    if let Some(idx) = tab_to_switch {
+                        self.switch_to_project(idx);
+                    }
+                    if let Some(idx) = tab_to_close {
+                        self.close_project(idx);
+                    }
+                    // Reorder tabs via drag-drop
+                    if let Some((from, to)) = tab_reorder
+                        && from < self.projects.len()
+                        && to <= self.projects.len()
+                    {
+                        let project = self.projects.remove(from);
+                        let insert_at = to.min(self.projects.len());
+                        self.projects.insert(insert_at, project);
+                        // Fix active_project_index to follow the active tab
+                        if self.active_project_index == from {
+                            self.active_project_index = insert_at;
+                        } else if from < self.active_project_index
+                            && insert_at >= self.active_project_index
+                        {
+                            self.active_project_index -= 1;
+                        } else if from > self.active_project_index
+                            && insert_at <= self.active_project_index
+                        {
+                            self.active_project_index += 1;
+                        }
+                    }
+                });
+            });
 
         // Sync primary color from colors panel to tools
         self.tools_panel.properties.color = self.colors_panel.get_primary_color();
@@ -4098,107 +4503,114 @@ impl eframe::App for PaintFEApp {
             self.colors_panel.primary_color = picked_color;
         }
 
-        // Paint a downward shadow from the toolbar onto the context bar
-        // Use Middle order so it renders below menus/popups but above the panel content
+        // Thin bottom border on toolbar — subtle divider (lighter than border_color)
         {
             let toolbar_rect = toolbar_resp.response.rect;
             let screen_rect = ctx.screen_rect();
+            let line_color = match self.theme.mode {
+                crate::theme::ThemeMode::Dark => egui::Color32::from_white_alpha(12),
+                crate::theme::ThemeMode::Light => egui::Color32::from_black_alpha(18),
+            };
             let painter = ctx.layer_painter(egui::LayerId::new(
                 egui::Order::Background,
-                egui::Id::new("toolbar_shadow"),
+                egui::Id::new("toolbar_bottom_line"),
             ));
-            let shadow_height = 8.0_f32;
-            let steps = 8;
-            let is_neon =
-                self.settings.neon_mode && self.theme.mode == crate::theme::ThemeMode::Dark;
-            for i in 0..steps {
-                let t = i as f32 / steps as f32;
-                let y = toolbar_rect.bottom() + t * shadow_height;
-                let next_y = toolbar_rect.bottom() + (t + 1.0 / steps as f32) * shadow_height;
-                let rect = egui::Rect::from_min_max(
-                    egui::pos2(screen_rect.left(), y),
-                    egui::pos2(screen_rect.right(), next_y),
-                );
-                let color = if is_neon {
-                    let [r, g, b, _] = self.theme.accent.to_array();
-                    egui::Color32::from_rgba_unmultiplied(r, g, b, ((1.0 - t) * 20.0) as u8)
-                } else {
-                    egui::Color32::from_black_alpha(((1.0 - t) * 30.0) as u8)
-                };
-                painter.rect_filled(rect, 0.0, color);
-            }
+            let line_rect = egui::Rect::from_min_max(
+                egui::pos2(screen_rect.left(), toolbar_rect.bottom()),
+                egui::pos2(screen_rect.right(), toolbar_rect.bottom() + 1.0),
+            );
+            painter.rect_filled(line_rect, 0.0, line_color);
         }
 
-        // --- Row 3: Context Bar (Dynamic Tool Options / Paste Options) ---
-        egui::TopBottomPanel::top("context_bar")
-            .frame(self.theme.context_bar_frame())
-            .exact_height(36.0) // Fixed height — prevents canvas shifting when tool context bar changes size
+        // --- Floating Tool Shelf (replaces docked context bar) ---
+        // Uses a thin panel filled with the canvas background color so the
+        // rounded shelf frame visually floats on top of the canvas.
+        let shelf_panel_bg = self.theme.canvas_bg_top;
+        let shelf_margin = 6.0;
+        egui::TopBottomPanel::top("tool_shelf_strip")
+            .frame(
+                egui::Frame::none()
+                    .fill(shelf_panel_bg)
+                    .inner_margin(egui::Margin::same(shelf_margin)),
+            )
+            .exact_height(30.0) // Fixed height — tallest tool content (comboboxes) fits without resizing
             .show(ctx, |ui| {
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    if let Some(ref mut overlay) = self.paste_overlay {
-                        // --- Paste overlay context bar ---
-                        ui.label(egui::RichText::new("Paste").strong());
-                        ui.separator();
+                let shelf_frame = self.theme.tool_shelf_frame();
+                shelf_frame.show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    // Context bar label styling
+                    ui.style_mut().override_font_id =
+                        Some(egui::FontId::proportional(crate::theme::Theme::FONT_LABEL));
+                    ui.visuals_mut().override_text_color = Some(self.theme.text_color);
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        if let Some(ref mut overlay) = self.paste_overlay {
+                            // --- Paste overlay context bar ---
+                            crate::signal_widgets::tool_shelf_tag(ui, "PASTE", self.theme.accent);
+                            ui.add_space(6.0);
 
-                        // Filter mode
-                        ui.label("Filter:");
-                        let current_interp = overlay.interpolation;
-                        egui::ComboBox::from_id_source("ctx_paste_filter")
-                            .selected_text(current_interp.label())
-                            .width(110.0)
-                            .show_ui(ui, |ui| {
-                                for interp in crate::ops::transform::Interpolation::all() {
-                                    if ui
-                                        .selectable_label(*interp == current_interp, interp.label())
-                                        .clicked()
-                                    {
-                                        overlay.interpolation = *interp;
+                            // Filter mode
+                            ui.label("Filter:");
+                            let current_interp = overlay.interpolation;
+                            egui::ComboBox::from_id_source("ctx_paste_filter")
+                                .selected_text(current_interp.label())
+                                .width(110.0)
+                                .show_ui(ui, |ui| {
+                                    for interp in crate::ops::transform::Interpolation::all() {
+                                        if ui
+                                            .selectable_label(
+                                                *interp == current_interp,
+                                                interp.label(),
+                                            )
+                                            .clicked()
+                                        {
+                                            overlay.interpolation = *interp;
+                                        }
                                     }
-                                }
-                            });
+                                });
 
-                        ui.separator();
+                            ui.add_space(4.0);
 
-                        // Anti-aliasing toggle
-                        ui.checkbox(&mut overlay.anti_aliasing, "Anti-aliasing");
+                            // Anti-aliasing toggle
+                            ui.checkbox(&mut overlay.anti_aliasing, "Anti-aliasing");
 
-                        ui.separator();
+                            ui.add_space(4.0);
 
-                        // Position info
-                        ui.label(format!(
-                            "X: {:.0}  Y: {:.0}  W: {:.0}  H: {:.0}  Rot: {:.1}°",
-                            overlay.center.x
-                                - overlay.source.width() as f32 * overlay.scale_x / 2.0,
-                            overlay.center.y
-                                - overlay.source.height() as f32 * overlay.scale_y / 2.0,
-                            overlay.source.width() as f32 * overlay.scale_x,
-                            overlay.source.height() as f32 * overlay.scale_y,
-                            overlay.rotation.to_degrees(),
-                        ));
+                            // Position info
+                            ui.label(format!(
+                                "X: {:.0}  Y: {:.0}  W: {:.0}  H: {:.0}  Rot: {:.1}°",
+                                overlay.center.x
+                                    - overlay.source.width() as f32 * overlay.scale_x / 2.0,
+                                overlay.center.y
+                                    - overlay.source.height() as f32 * overlay.scale_y / 2.0,
+                                overlay.source.width() as f32 * overlay.scale_x,
+                                overlay.source.height() as f32 * overlay.scale_y,
+                                overlay.rotation.to_degrees(),
+                            ));
 
-                        ui.separator();
+                            ui.add_space(4.0);
 
-                        // Quick actions
-                        if ui
-                            .button("Reset")
-                            .on_hover_text("Reset all transforms")
-                            .clicked()
-                        {
-                            overlay.rotation = 0.0;
-                            overlay.scale_x = 1.0;
-                            overlay.scale_y = 1.0;
-                            overlay.anchor_offset = egui::Vec2::ZERO;
+                            // Quick actions
+                            if ui
+                                .button("Reset")
+                                .on_hover_text("Reset all transforms")
+                                .clicked()
+                            {
+                                overlay.rotation = 0.0;
+                                overlay.scale_x = 1.0;
+                                overlay.scale_y = 1.0;
+                                overlay.anchor_offset = egui::Vec2::ZERO;
+                            }
+                        } else {
+                            let ctx_primary = self.colors_panel.get_primary_color();
+                            let ctx_secondary = self.colors_panel.get_secondary_color();
+                            self.tools_panel.show_context_bar(
+                                ui,
+                                &self.assets,
+                                ctx_primary,
+                                ctx_secondary,
+                            );
                         }
-                    } else {
-                        let ctx_primary = self.colors_panel.get_primary_color();
-                        let ctx_secondary = self.colors_panel.get_secondary_color();
-                        self.tools_panel.show_context_bar(
-                            ui,
-                            &self.assets,
-                            ctx_primary,
-                            ctx_secondary,
-                        );
-                    }
+                    });
                 });
             });
 
@@ -4344,6 +4756,26 @@ impl eframe::App for PaintFEApp {
         self.show_floating_colors_panel(ctx, screen_size_changed);
         self.show_floating_script_editor(ctx, screen_size_changed);
 
+        // --- Tool Hint (bottom-left status text) ---
+        // Subtle text showing what the current tool does, visible at the bottom-left.
+        {
+            let hint = &self.tools_panel.tool_hint;
+            if !hint.is_empty() {
+                let screen_rect = ctx.screen_rect();
+                let painter = ctx.layer_painter(egui::LayerId::new(
+                    egui::Order::Foreground,
+                    egui::Id::new("tool_hint_overlay"),
+                ));
+                let text_color = match self.theme.mode {
+                    crate::theme::ThemeMode::Dark => egui::Color32::from_white_alpha(60),
+                    crate::theme::ThemeMode::Light => egui::Color32::from_black_alpha(80),
+                };
+                let font = egui::FontId::proportional(11.0);
+                let pos = egui::pos2(10.0, screen_rect.max.y - 22.0);
+                painter.text(pos, egui::Align2::LEFT_CENTER, hint, font, text_color);
+            }
+        }
+
         // Update last_screen_size AFTER all panels have used the flag
         self.last_screen_size = (screen_w, screen_h);
 
@@ -4380,6 +4812,26 @@ impl eframe::App for PaintFEApp {
                 project.history.push(cmd);
                 project.mark_dirty();
             }
+        }
+
+        // --- Auto-rasterize text layers when destructive tools attempt to paint on them ---
+        if let Some(layer_idx) = self.tools_panel.pending_auto_rasterize.take()
+            && let Some(project) = self.active_project_mut()
+            && layer_idx < project.canvas_state.layers.len()
+            && project.canvas_state.layers[layer_idx].is_text_layer()
+        {
+            // Snapshot before rasterization for undo
+            let mut cmd = crate::components::history::SingleLayerSnapshotCommand::new_for_layer(
+                "Rasterize Text Layer".to_string(),
+                &project.canvas_state,
+                layer_idx,
+            );
+            // Rasterize in place — convert Text→Raster, pixels are already up-to-date
+            project.canvas_state.layers[layer_idx].content = crate::canvas::LayerContent::Raster;
+            // Capture after state
+            cmd.set_after(&project.canvas_state);
+            project.history.push(Box::new(cmd));
+            project.mark_dirty();
         }
 
         // --- Async Color Removal ---
@@ -4671,14 +5123,15 @@ impl PaintFEApp {
 
             if is_pfe {
                 // PFE save — build data snapshot, serialize in background
+                project.canvas_state.ensure_all_text_layers_rasterized();
                 if let Some(path) = project.file_handler.current_path.clone() {
-                    let pfe_data = crate::io::build_pfe_v1(&project.canvas_state);
+                    let pfe_data = crate::io::build_pfe(&project.canvas_state);
                     let sender = self.io_sender.clone();
                     if self.pending_io_ops == 0 {
                         self.io_ops_start_time = Some(current_time);
                     }
                     self.pending_io_ops += 1;
-                    rayon::spawn(move || match crate::io::write_pfe_v1(&pfe_data, &path) {
+                    rayon::spawn(move || match crate::io::write_pfe(&pfe_data, &path) {
                         Ok(()) => {
                             let _ = sender.send(IoResult::SaveComplete {
                                 project_index: idx,
@@ -4699,6 +5152,7 @@ impl PaintFEApp {
                 }
             } else if is_animated {
                 // Quick-save animated format (include all layers, even hidden)
+                project.canvas_state.ensure_all_text_layers_rasterized();
                 let frames: Vec<image::RgbaImage> = project
                     .canvas_state
                     .layers
@@ -4747,6 +5201,7 @@ impl PaintFEApp {
             } else {
                 // Static image save — composite on main thread (usually cached),
                 // encode + write on background thread.
+                project.canvas_state.ensure_all_text_layers_rasterized();
                 let composite = project.canvas_state.composite();
                 let path = project.file_handler.current_path.clone().unwrap();
                 let format = project.file_handler.last_format;
@@ -4797,23 +5252,23 @@ impl PaintFEApp {
             return;
         }
         self.active_project_index = idx;
-        let project = &self.projects[idx];
+        let project = &mut self.projects[idx];
+        project.canvas_state.ensure_all_text_layers_rasterized();
         let composite = project.canvas_state.composite();
         let was_animated = project.was_animated;
         let animation_fps = project.animation_fps;
-        let frame_images: Option<Vec<image::RgbaImage>> =
-            if project.canvas_state.layers.len() > 1 {
-                Some(
-                    project
-                        .canvas_state
-                        .layers
-                        .iter()
-                        .map(|l| l.pixels.to_rgba_image())
-                        .collect(),
-                )
-            } else {
-                None
-            };
+        let frame_images: Option<Vec<image::RgbaImage>> = if project.canvas_state.layers.len() > 1 {
+            Some(
+                project
+                    .canvas_state
+                    .layers
+                    .iter()
+                    .map(|l| l.pixels.to_rgba_image())
+                    .collect(),
+            )
+        } else {
+            None
+        };
         self.save_file_dialog.reset();
         self.save_file_dialog.set_source_image(&composite);
         if let Some(frames) = frame_images.as_ref() {
@@ -4842,14 +5297,15 @@ impl PaintFEApp {
             && project.file_handler.last_format.supports_animation();
 
         if is_pfe {
+            project.canvas_state.ensure_all_text_layers_rasterized();
             if let Some(path) = project.file_handler.current_path.clone() {
-                let pfe_data = crate::io::build_pfe_v1(&project.canvas_state);
+                let pfe_data = crate::io::build_pfe(&project.canvas_state);
                 let sender = self.io_sender.clone();
                 if self.pending_io_ops == 0 {
                     self.io_ops_start_time = Some(current_time);
                 }
                 self.pending_io_ops += 1;
-                rayon::spawn(move || match crate::io::write_pfe_v1(&pfe_data, &path) {
+                rayon::spawn(move || match crate::io::write_pfe(&pfe_data, &path) {
                     Ok(()) => {
                         let _ = sender.send(IoResult::SaveComplete {
                             project_index: idx,
@@ -4869,6 +5325,7 @@ impl PaintFEApp {
                 });
             }
         } else if is_animated {
+            project.canvas_state.ensure_all_text_layers_rasterized();
             let frames: Vec<image::RgbaImage> = project
                 .canvas_state
                 .layers
@@ -4915,6 +5372,7 @@ impl PaintFEApp {
                 }
             });
         } else {
+            project.canvas_state.ensure_all_text_layers_rasterized();
             let composite = project.canvas_state.composite();
             let path = project.file_handler.current_path.clone().unwrap();
             let format = project.file_handler.last_format;
@@ -5080,6 +5538,13 @@ impl PaintFEApp {
     /// The closure receives `&mut CanvasState` and should apply the operation.
     fn do_snapshot_op(&mut self, description: &str, op: impl FnOnce(&mut CanvasState)) {
         if let Some(project) = self.active_project_mut() {
+            // Rasterize all text layers before any canvas-wide destructive op
+            project.canvas_state.ensure_all_text_layers_rasterized();
+            for layer in &mut project.canvas_state.layers {
+                if layer.is_text_layer() {
+                    layer.content = crate::canvas::LayerContent::Raster;
+                }
+            }
             let mut cmd = SnapshotCommand::new(description.to_string(), &project.canvas_state);
             op(&mut project.canvas_state);
             cmd.set_after(&project.canvas_state);
@@ -5126,6 +5591,15 @@ impl PaintFEApp {
     /// Much more memory-efficient for single-layer operations.
     fn do_layer_snapshot_op(&mut self, description: &str, op: impl FnOnce(&mut CanvasState)) {
         if let Some(project) = self.active_project_mut() {
+            // Auto-rasterize the active text layer before any destructive single-layer op
+            let idx = project.canvas_state.active_layer_index;
+            if idx < project.canvas_state.layers.len()
+                && project.canvas_state.layers[idx].is_text_layer()
+            {
+                project.canvas_state.ensure_all_text_layers_rasterized();
+                project.canvas_state.layers[idx].content =
+                    crate::canvas::LayerContent::Raster;
+            }
             let mut cmd =
                 SingleLayerSnapshotCommand::new(description.to_string(), &project.canvas_state);
             op(&mut project.canvas_state);
@@ -5144,6 +5618,15 @@ impl PaintFEApp {
     ) {
         let active_idx = self.active_project_index;
         if let Some(project) = self.projects.get_mut(active_idx) {
+            // Auto-rasterize the active text layer before any destructive GPU op
+            let idx = project.canvas_state.active_layer_index;
+            if idx < project.canvas_state.layers.len()
+                && project.canvas_state.layers[idx].is_text_layer()
+            {
+                project.canvas_state.ensure_all_text_layers_rasterized();
+                project.canvas_state.layers[idx].content =
+                    crate::canvas::LayerContent::Raster;
+            }
             let mut cmd =
                 SingleLayerSnapshotCommand::new(description.to_string(), &project.canvas_state);
             op(&mut project.canvas_state, &self.canvas.gpu_renderer);
@@ -5254,6 +5737,10 @@ impl PaintFEApp {
         if layer_idx >= state.layers.len() {
             return;
         }
+        // Convert text layer to raster so the effect isn't overwritten by re-rasterization
+        if state.layers[layer_idx].is_text_layer() {
+            state.layers[layer_idx].content = crate::canvas::LayerContent::Raster;
+        }
         let result = effect_fn(original_flat);
         state.layers[layer_idx].pixels = TiledImage::from_rgba_image(&result);
         state.mark_dirty(None);
@@ -5271,7 +5758,14 @@ impl PaintFEApp {
             ActiveDialog::ResizeImage(dlg) => match dlg.show(ctx) {
                 DialogResult::Ok((w, h, interp)) => {
                     self.active_dialog = ActiveDialog::None;
-                    if let Some(project) = self.active_project() {
+                    if let Some(project) = self.active_project_mut() {
+                        // Rasterize text layers before extracting pixels for resize
+                        project.canvas_state.ensure_all_text_layers_rasterized();
+                        for layer in &mut project.canvas_state.layers {
+                            if layer.is_text_layer() {
+                                layer.content = crate::canvas::LayerContent::Raster;
+                            }
+                        }
                         let before = CanvasSnapshot::capture(&project.canvas_state);
                         let flat_layers: Vec<RgbaImage> = project
                             .canvas_state
@@ -5314,7 +5808,14 @@ impl PaintFEApp {
                 match dlg.show(ctx, secondary) {
                     DialogResult::Ok((w, h, anchor, fill)) => {
                         self.active_dialog = ActiveDialog::None;
-                        if let Some(project) = self.active_project() {
+                        if let Some(project) = self.active_project_mut() {
+                            // Rasterize text layers before extracting pixels for canvas resize
+                            project.canvas_state.ensure_all_text_layers_rasterized();
+                            for layer in &mut project.canvas_state.layers {
+                                if layer.is_text_layer() {
+                                    layer.content = crate::canvas::LayerContent::Raster;
+                                }
+                            }
                             let before = CanvasSnapshot::capture(&project.canvas_state);
                             let old_w = project.canvas_state.width;
                             let old_h = project.canvas_state.height;
@@ -5333,10 +5834,15 @@ impl PaintFEApp {
                             self.filter_status_description = "Resize Canvas".to_string();
                             self.pending_filter_jobs += 1;
                             rayon::spawn(move || {
-                                let result_layers =
-                                    crate::ops::transform::resize_canvas_layers(
-                                        flat_layers, old_w, old_h, w, h, anchor, fill,
-                                    );
+                                let result_layers = crate::ops::transform::resize_canvas_layers(
+                                    flat_layers,
+                                    old_w,
+                                    old_h,
+                                    w,
+                                    h,
+                                    anchor,
+                                    fill,
+                                );
                                 let _ = sender.send(CanvasOpResult {
                                     project_index,
                                     before,
@@ -8905,65 +9411,50 @@ impl PaintFEApp {
         let first_show = self.tools_panel_pos.is_none();
         let (pos_x, pos_y) = self.tools_panel_pos.unwrap_or((12.0, 128.0));
 
+        let hover_id = egui::Id::new("ToolsStrip_hover");
+        let hover_t = ctx.animate_bool(hover_id, false);
         let mut window = egui::Window::new("ToolsStrip")
             .open(&mut show)
             .resizable(false)
             .collapsible(false)
-            .fixed_size(egui::vec2(60.0, 150.0))
+            .default_size(egui::vec2(120.0, 400.0))
+            .max_width(114.0)
             .title_bar(false)
-            .frame(self.theme.floating_window_frame());
+            .frame(self.theme.floating_window_frame_animated(hover_t));
 
         if first_show || screen_size_changed {
             window = window.current_pos(egui::pos2(pos_x, pos_y));
         }
 
         let resp = window.show(ctx, |ui| {
-            // Header: title left, × right
-            let header_rect = ui.available_rect_before_wrap();
-            let header_rect =
-                egui::Rect::from_min_size(header_rect.min, egui::vec2(header_rect.width(), 18.0));
-            let (header_rect, _) = ui.allocate_exact_size(header_rect.size(), egui::Sense::hover());
-            ui.painter().text(
-                header_rect.left_center(),
-                egui::Align2::LEFT_CENTER,
+            // Constrain content width to match the tool grid (3×26 + 2×6 = 90px)
+            // so the header doesn't inflate the window wider than the buttons.
+            ui.set_max_width(90.0);
+
+            // Signal Grid panel header
+            if signal_widgets::panel_header(
+                ui,
+                &self.theme,
                 "Tools",
-                egui::FontId::proportional(14.0),
-                self.theme.text_color,
-            );
-            let close_rect = egui::Rect::from_min_size(
-                egui::pos2(header_rect.right() + 13.0, header_rect.center().y - 8.0),
-                egui::vec2(16.0, 16.0),
-            );
-            let close_response = ui.allocate_rect(close_rect, egui::Sense::click());
-            // Draw button background with border on hover
-            let (bg_color, border_stroke) = if close_response.hovered() {
-                (
-                    ui.visuals().widgets.hovered.bg_fill,
-                    egui::Stroke::new(1.0, ui.visuals().widgets.hovered.bg_stroke.color),
-                )
-            } else {
-                (egui::Color32::from_black_alpha(40), egui::Stroke::NONE)
-            };
-            ui.painter().rect(close_rect, 2.0, bg_color, border_stroke);
-            ui.painter().text(
-                close_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "×",
-                egui::FontId::proportional(14.0),
-                if close_response.hovered() {
-                    ui.visuals().widgets.hovered.fg_stroke.color
-                } else {
-                    ui.visuals().text_color()
-                },
-            );
-            if close_response.clicked() {
+                Some(("TOOLS", self.theme.accent3)),
+            ) {
                 close_clicked = true;
             }
-            ui.add_space(5.0);
             // Make all text in this window slightly smaller
             ui.style_mut().override_text_style = Some(egui::TextStyle::Small);
             let primary = self.colors_panel.get_primary_color();
             let secondary = self.colors_panel.get_secondary_color();
+
+            let is_text_layer = self
+                .projects
+                .get(self.active_project_index)
+                .map(|p| {
+                    p.canvas_state
+                        .layers
+                        .get(p.canvas_state.active_layer_index)
+                        .is_some_and(|l| l.is_text_layer())
+                })
+                .unwrap_or(false);
 
             let action = self.tools_panel.show_compact(
                 ui,
@@ -8971,6 +9462,7 @@ impl PaintFEApp {
                 primary,
                 secondary,
                 &self.settings.keybindings,
+                is_text_layer,
             );
 
             match action {
@@ -8987,6 +9479,9 @@ impl PaintFEApp {
         if let Some(inner_resp) = resp {
             let win_rect = inner_resp.response.rect;
             self.tools_panel_pos = Some((win_rect.min.x, win_rect.min.y));
+            let hovered =
+                ctx.input(|i| i.pointer.hover_pos().is_some_and(|p| win_rect.contains(p)));
+            ctx.animate_bool(hover_id, hovered);
         }
 
         if close_clicked {
@@ -9009,6 +9504,8 @@ impl PaintFEApp {
         let (right_off, y_pos) = self.layers_panel_right_offset.unwrap_or((264.0, 128.0));
         let pos_x = screen_w - right_off;
 
+        let hover_id = egui::Id::new("Layers_hover");
+        let hover_t = ctx.animate_bool(hover_id, false);
         let mut window = egui::Window::new("Layers")
             .open(&mut show)
             .resizable(true)
@@ -9017,7 +9514,7 @@ impl PaintFEApp {
             .min_width(180.0)
             .min_height(200.0)
             .title_bar(false)
-            .frame(self.theme.floating_window_frame());
+            .frame(self.theme.floating_window_frame_animated(hover_t));
 
         // Only force position on first show or when screen size changes
         if first_show || screen_size_changed {
@@ -9025,28 +9522,15 @@ impl PaintFEApp {
         }
 
         let resp = window.show(ctx, |ui| {
-            // Custom left-aligned title with close button
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("Layers")
-                        .size(14.0)
-                        .color(self.theme.text_color),
-                );
-                if let Some(project) = self.projects.get(self.active_project_index) {
-                    ui.spacing_mut().item_spacing.x = 2.0;
-                    ui.label(
-                        egui::RichText::new(format!("({})", project.canvas_state.layers.len()))
-                            .size(12.0)
-                            .color(egui::Color32::GRAY),
-                    );
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("×").clicked() {
-                        close_clicked = true;
-                    }
-                });
-            });
-            ui.add_space(4.0);
+            // Signal Grid panel header
+            if signal_widgets::panel_header(
+                ui,
+                &self.theme,
+                "Layers",
+                Some(("LAYERS", self.theme.accent3)),
+            ) {
+                close_clicked = true;
+            }
             if let Some(project) = self.projects.get_mut(self.active_project_index) {
                 self.layers_panel.show(
                     ui,
@@ -9054,6 +9538,11 @@ impl PaintFEApp {
                     &self.assets,
                     &mut project.history,
                 );
+
+                // Auto-switch tool immediately when layer selection changes
+                // (same frame as click, no 1-frame delay).
+                self.tools_panel
+                    .auto_switch_tool_for_layer(&project.canvas_state);
             }
             // Drain pending GPU delete from the layers panel.
             if let Some(del_idx) = self.layers_panel.pending_gpu_delete.take() {
@@ -9115,6 +9604,15 @@ impl PaintFEApp {
                         });
                         self.layers_panel.pending_gpu_clear = true;
                     }
+                    crate::components::layers::LayerAppAction::RasterizeTextLayer(layer_idx) => {
+                        if let Some(project) = self.projects.get_mut(self.active_project_index) {
+                            self.layers_panel.rasterize_text_layer_from_app(
+                                layer_idx,
+                                &mut project.canvas_state,
+                                &mut project.history,
+                            );
+                        }
+                    }
                 }
             }
         });
@@ -9124,6 +9622,9 @@ impl PaintFEApp {
         if let Some(inner_resp) = resp {
             let win_rect = inner_resp.response.rect;
             self.layers_panel_right_offset = Some((screen_w - win_rect.min.x, win_rect.min.y));
+            let hovered =
+                ctx.input(|i| i.pointer.hover_pos().is_some_and(|p| win_rect.contains(p)));
+            ctx.animate_bool(hover_id, hovered);
         }
 
         if close_clicked {
@@ -9148,6 +9649,8 @@ impl PaintFEApp {
         let pos_x = screen_w - right_off;
         let pos_y = screen_h - bot_off;
 
+        let hover_id = egui::Id::new("History_hover");
+        let hover_t = ctx.animate_bool(hover_id, false);
         let mut window = egui::Window::new("History")
             .open(&mut show)
             .resizable(false)
@@ -9155,27 +9658,22 @@ impl PaintFEApp {
             .min_width(200.0)
             .default_size(egui::vec2(200.0, 200.0))
             .title_bar(false)
-            .frame(self.theme.floating_window_frame());
+            .frame(self.theme.floating_window_frame_animated(hover_t));
 
         if first_show || screen_size_changed {
             window = window.current_pos(egui::pos2(pos_x, pos_y));
         }
 
         let resp = window.show(ctx, |ui| {
-            // Custom left-aligned title with close button
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("History")
-                        .size(14.0)
-                        .color(self.theme.text_color),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("×").clicked() {
-                        close_clicked = true;
-                    }
-                });
-            });
-            ui.add_space(2.0);
+            // Signal Grid panel header
+            if signal_widgets::panel_header(
+                ui,
+                &self.theme,
+                "History",
+                Some(("HISTORY", self.theme.accent4)),
+            ) {
+                close_clicked = true;
+            }
             ui.style_mut().override_text_style = Some(egui::TextStyle::Small);
             if let Some(project) = self.projects.get_mut(self.active_project_index) {
                 self.history_panel.show_interactive(
@@ -9191,6 +9689,9 @@ impl PaintFEApp {
             let win_rect = inner_resp.response.rect;
             self.history_panel_right_offset =
                 Some((screen_w - win_rect.min.x, screen_h - win_rect.min.y));
+            let hovered =
+                ctx.input(|i| i.pointer.hover_pos().is_some_and(|p| win_rect.contains(p)));
+            ctx.animate_bool(hover_id, hovered);
         }
 
         if close_clicked {
@@ -9215,38 +9716,35 @@ impl PaintFEApp {
 
         // Dynamic size based on compact / expanded state
         let panel_size = if self.colors_panel.is_expanded() {
-            egui::vec2(420.0, 340.0)
+            egui::vec2(395.0, 330.0)
         } else {
-            egui::vec2(210.0, 330.0)
+            egui::vec2(168.0, 310.0)
         };
 
+        let hover_id = egui::Id::new("Colors_hover");
+        let hover_t = ctx.animate_bool(hover_id, false);
         let mut window = egui::Window::new("Colors")
             .open(&mut show)
             .resizable(false)
             .collapsible(false)
             .fixed_size(panel_size)
             .title_bar(false)
-            .frame(self.theme.floating_window_frame());
+            .frame(self.theme.floating_window_frame_animated(hover_t));
 
         if first_show || screen_size_changed {
             window = window.current_pos(egui::pos2(x_off, pos_y));
         }
 
         let resp = window.show(ctx, |ui| {
-            // Custom left-aligned title with close button
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("Colors")
-                        .size(14.0)
-                        .color(self.theme.text_color),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.small_button("×").clicked() {
-                        close_clicked = true;
-                    }
-                });
-            });
-            ui.add_space(2.0);
+            // Signal Grid panel header
+            if signal_widgets::panel_header(
+                ui,
+                &self.theme,
+                "Colors",
+                Some(("COLOR", self.theme.accent)),
+            ) {
+                close_clicked = true;
+            }
             ui.style_mut().override_text_style = Some(egui::TextStyle::Small);
             self.colors_panel.show(ui, &self.assets);
         });
@@ -9254,6 +9752,9 @@ impl PaintFEApp {
         if let Some(inner_resp) = resp {
             let win_rect = inner_resp.response.rect;
             self.colors_panel_left_offset = Some((win_rect.min.x, screen_h - win_rect.min.y));
+            let hovered =
+                ctx.input(|i| i.pointer.hover_pos().is_some_and(|p| win_rect.contains(p)));
+            ctx.animate_bool(hover_id, hovered);
         }
 
         if close_clicked {
@@ -9282,6 +9783,8 @@ impl PaintFEApp {
         let pos_x = screen_w - right_off;
         let pos_y = top_off;
 
+        let hover_id = egui::Id::new("ScriptEditor_hover");
+        let hover_t = ctx.animate_bool(hover_id, false);
         let mut window = egui::Window::new("ScriptEditor")
             .open(&mut show)
             .resizable(true)
@@ -9290,7 +9793,7 @@ impl PaintFEApp {
             .min_height(350.0)
             .default_size(egui::vec2(520.0, 500.0))
             .title_bar(false)
-            .frame(self.theme.floating_window_frame());
+            .frame(self.theme.floating_window_frame_animated(hover_t));
 
         if first_show || screen_size_changed {
             window = window.current_pos(egui::pos2(pos_x, pos_y));
@@ -9320,6 +9823,9 @@ impl PaintFEApp {
         if let Some(inner_resp) = resp {
             let win_rect = inner_resp.response.rect;
             self.script_right_offset = Some((screen_w - win_rect.min.x, win_rect.min.y));
+            let hovered =
+                ctx.input(|i| i.pointer.hover_pos().is_some_and(|p| win_rect.contains(p)));
+            ctx.animate_bool(hover_id, hovered);
         }
 
         if self.script_editor.close_requested {
