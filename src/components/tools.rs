@@ -5,7 +5,7 @@ use crate::canvas::{
 use crate::components::history::PixelPatch;
 use eframe::egui;
 use egui::{Color32, Pos2, Rect, Vec2};
-use image::{GrayImage, Luma, Rgba};
+use image::{GrayImage, Rgba};
 use rayon::prelude::*;
 use std::time::Instant;
 
@@ -466,31 +466,80 @@ pub struct SelectionToolState {
     pub drag_effective_mode: SelectionMode,
 }
 
-/// State for Magic Wand tool (color-based selection)
+/// Minimax (bottleneck) distance map computed once on click.
+/// `distances[y * width + x]` holds the minimum tolerance required to reach
+/// pixel (x,y) from the seed via any 4-connected path.
+/// Value f32::INFINITY means unreachable (disconnected by a zero-tolerance path).
 #[derive(Clone, Debug)]
+pub struct MagicWandDistanceMap {
+    pub seed: (u32, u32),
+    pub target_color: Rgba<u8>,
+    /// Per-pixel minimax distance to seed (0.0–255.0).
+    pub distances: Vec<f32>,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Async distance map result delivered from rayon background thread.
+pub enum MagicWandAsyncResult {
+    Flood(MagicWandDistanceMap),
+    Global(Rgba<u8>, Vec<f32>, u32, u32),
+}
+
+/// State for Magic Wand tool (color-based selection)
+#[derive(Debug)]
 pub struct MagicWandState {
     pub tolerance: f32,
-    pub active_selection: Option<(u32, u32, Rgba<u8>, Vec<(u32, u32)>)>,
-    pub last_preview_tolerance: f32,
-    pub tolerance_changed_at: Option<Instant>,
-    pub recalc_pending: bool,
+    /// Dijkstra minimax distance map computed once per click (flood mode).
+    pub flood_distance_map: Option<MagicWandDistanceMap>,
+    /// Per-pixel distance from seed color for global select (whole-canvas mode).
+    pub global_distance_map: Option<(Rgba<u8>, Vec<f32>, u32, u32)>,
+    pub anti_aliased: bool,
     /// Effective selection mode for the current/pending click.
     pub effective_mode: SelectionMode,
     pub global_select: bool,
     pub base_selection_mask: Option<GrayImage>,
+    /// Tracks the last tolerance + anti-alias that was applied, to skip no-op updates.
+    pub last_applied_tolerance: f32,
+    pub last_applied_aa: bool,
+    /// Channel receiver for async Dijkstra/global distance map computation.
+    pub async_rx: Option<std::sync::mpsc::Receiver<MagicWandAsyncResult>>,
+    /// True while an async computation is in flight (blocks new clicks).
+    pub computing: bool,
+}
+
+impl Clone for MagicWandState {
+    fn clone(&self) -> Self {
+        Self {
+            tolerance: self.tolerance,
+            flood_distance_map: self.flood_distance_map.clone(),
+            global_distance_map: self.global_distance_map.clone(),
+            anti_aliased: self.anti_aliased,
+            effective_mode: self.effective_mode,
+            global_select: self.global_select,
+            base_selection_mask: self.base_selection_mask.clone(),
+            last_applied_tolerance: self.last_applied_tolerance,
+            last_applied_aa: self.last_applied_aa,
+            async_rx: None,
+            computing: false,
+        }
+    }
 }
 
 impl Default for MagicWandState {
     fn default() -> Self {
         Self {
             tolerance: 5.0,
-            active_selection: None,
-            last_preview_tolerance: 5.0,
-            tolerance_changed_at: None,
-            recalc_pending: false,
+            flood_distance_map: None,
+            global_distance_map: None,
+            anti_aliased: true,
             effective_mode: SelectionMode::Replace,
             global_select: false,
             base_selection_mask: None,
+            last_applied_tolerance: -1.0,
+            last_applied_aa: false,
+            async_rx: None,
+            computing: false,
         }
     }
 }
@@ -1340,8 +1389,8 @@ pub struct ToolsPanel {
     pub selection_state: SelectionToolState,
     pub magic_wand_state: MagicWandState,
     pub fill_state: FillToolState,
-    /// Last color picked this frame; None if color picker not used.
-    pub last_picked_color: Option<Color32>,
+    /// Last color picked this frame plus its target swatch; None if color picker not used.
+    pub last_picked_color: Option<(Color32, bool)>,
     pub lasso_state: LassoState,
     pub perspective_crop_state: PerspectiveCropState,
     pub zoom_tool_state: ZoomToolState,
@@ -3768,8 +3817,19 @@ impl ToolsPanel {
         if let Some(new_val) = Self::tolerance_slider(ui, "mw_tol", self.magic_wand_state.tolerance)
         {
             self.magic_wand_state.tolerance = new_val;
-            self.magic_wand_state.tolerance_changed_at = Some(Instant::now());
-            self.magic_wand_state.recalc_pending = true;
+            // Instant re-threshold — no debounce needed with distance-map approach
+            ui.ctx().request_repaint();
+        }
+
+        ui.separator();
+
+        let old_aa = self.magic_wand_state.anti_aliased;
+        let aa_resp = ui.selectable_label(self.magic_wand_state.anti_aliased, t!("ctx.anti_alias"));
+        if aa_resp.clicked() {
+            self.magic_wand_state.anti_aliased = !self.magic_wand_state.anti_aliased;
+        }
+        aa_resp.on_hover_text(t!("ctx.anti_alias_tooltip"));
+        if self.magic_wand_state.anti_aliased != old_aa {
             ui.ctx().request_repaint();
         }
 
@@ -4067,9 +4127,17 @@ impl ToolsPanel {
         }
 
         // Auto-commit Magic Wand if tool changed away from Magic Wand tool
-        if self.active_tool != Tool::MagicWand && self.magic_wand_state.active_selection.is_some() {
+        if self.active_tool != Tool::MagicWand
+            && (self.magic_wand_state.flood_distance_map.is_some()
+                || self.magic_wand_state.global_distance_map.is_some()
+                || self.magic_wand_state.computing)
+        {
             // Selection is already in canvas_state.selection_mask, just clear state
-            self.magic_wand_state.active_selection = None;
+            self.magic_wand_state.flood_distance_map = None;
+            self.magic_wand_state.global_distance_map = None;
+            self.magic_wand_state.async_rx = None;
+            self.magic_wand_state.computing = false;
+            self.magic_wand_state.last_applied_tolerance = -1.0;
             canvas_state.mark_dirty(None);
         }
 
@@ -5093,10 +5161,43 @@ impl ToolsPanel {
                     self.magic_wand_state.effective_mode
                 };
 
+                // Poll async distance map computation
+                if let Some(rx) = &self.magic_wand_state.async_rx {
+                    if let Ok(result) = rx.try_recv() {
+                        match result {
+                            MagicWandAsyncResult::Flood(map) => {
+                                self.magic_wand_state.flood_distance_map = Some(map);
+                                self.magic_wand_state.global_distance_map = None;
+                            }
+                            MagicWandAsyncResult::Global(tc, dists, w, h) => {
+                                self.magic_wand_state.global_distance_map =
+                                    Some((tc, dists, w, h));
+                                self.magic_wand_state.flood_distance_map = None;
+                            }
+                        }
+                        self.magic_wand_state.async_rx = None;
+                        self.magic_wand_state.computing = false;
+                        // Force initial threshold
+                        self.magic_wand_state.last_applied_tolerance = -1.0;
+                        self.update_magic_wand_preview(canvas_state);
+                        ui.ctx().request_repaint();
+                    } else {
+                        // Still computing — keep repainting to poll
+                        ui.ctx().request_repaint();
+                    }
+                }
+
                 // Commit on Enter or cancel on Escape
                 if enter_pressed || esc_pressed {
-                    if self.magic_wand_state.active_selection.is_some() {
-                        self.magic_wand_state.active_selection = None;
+                    if self.magic_wand_state.flood_distance_map.is_some()
+                        || self.magic_wand_state.global_distance_map.is_some()
+                        || self.magic_wand_state.computing
+                    {
+                        self.magic_wand_state.flood_distance_map = None;
+                        self.magic_wand_state.global_distance_map = None;
+                        self.magic_wand_state.async_rx = None;
+                        self.magic_wand_state.computing = false;
+                        self.magic_wand_state.last_applied_tolerance = -1.0;
                         canvas_state.mark_dirty(None);
                         ui.ctx().request_repaint();
                     }
@@ -5107,25 +5208,32 @@ impl ToolsPanel {
 
                 // Click to start new selection (or commit current + start new)
                 if (is_primary_clicked || is_secondary_clicked)
+                    && !self.magic_wand_state.computing
                     && let Some(pos) = canvas_pos
                 {
-                    // If there's an active selection preview, commit it first
-                    if self.magic_wand_state.active_selection.is_some() {
-                        self.magic_wand_state.active_selection = None;
-                    }
-                    // Perform new selection
+                    // Clear any existing distance map before computing a new one
+                    self.magic_wand_state.flood_distance_map = None;
+                    self.magic_wand_state.global_distance_map = None;
+                    self.magic_wand_state.last_applied_tolerance = -1.0;
+                    // Perform new selection (async)
                     self.magic_wand_state.global_select = global_select;
                     self.perform_magic_wand_selection(canvas_state, pos, click_mode);
+                    ui.ctx().request_repaint();
                 }
 
-                // Update preview if tolerance changed (while selection is active)
-                if self.magic_wand_state.active_selection.is_some()
+                // Re-threshold the distance map only when tolerance or anti-alias changed
+                let has_map = self.magic_wand_state.flood_distance_map.is_some()
+                    || self.magic_wand_state.global_distance_map.is_some();
+                if has_map
                     && self.active_tool == Tool::MagicWand
+                    && ((self.magic_wand_state.tolerance
+                        - self.magic_wand_state.last_applied_tolerance)
+                        .abs()
+                        > 0.001
+                        || self.magic_wand_state.anti_aliased
+                            != self.magic_wand_state.last_applied_aa)
                 {
                     self.update_magic_wand_preview(canvas_state);
-                    if self.magic_wand_state.recalc_pending {
-                        ui.ctx().request_repaint();
-                    }
                 }
             }
 
@@ -5948,23 +6056,11 @@ impl ToolsPanel {
                                 canvas_state.preview_is_eraser = false;
                                 canvas_state.preview_downscale = 1;
                                 canvas_state.preview_flat_ready = false;
-                                canvas_state.preview_stroke_bounds =
-                                    Some(egui::Rect::from_min_max(
-                                        egui::pos2(off_x as f32, off_y as f32),
-                                        egui::pos2(
-                                            (off_x + buf_w as i32) as f32,
-                                            (off_y + buf_h as i32) as f32,
-                                        ),
-                                    ));
+                                let visible_bounds =
+                                    Self::clip_preview_bounds(canvas_state, off_x, off_y, buf_w, buf_h);
+                                canvas_state.preview_stroke_bounds = visible_bounds;
                                 if canvas_state.preview_texture_cache.is_some() {
-                                    canvas_state.preview_dirty_rect =
-                                        Some(egui::Rect::from_min_max(
-                                            egui::pos2(off_x as f32, off_y as f32),
-                                            egui::pos2(
-                                                (off_x + buf_w as i32) as f32,
-                                                (off_y + buf_h as i32) as f32,
-                                            ),
-                                        ));
+                                    canvas_state.preview_dirty_rect = visible_bounds;
                                 } else {
                                     canvas_state.preview_texture_cache = None;
                                 }
@@ -10141,7 +10237,8 @@ impl ToolsPanel {
         }
     }
 
-    /// Magic Wand selection - flood select based on color tolerance
+    /// Magic Wand selection — spawn async Dijkstra minimax distance map computation.
+    /// Result arrives via channel; tolerance changes re-threshold instantly.
     fn perform_magic_wand_selection(
         &mut self,
         canvas_state: &mut CanvasState,
@@ -10159,153 +10256,290 @@ impl ToolsPanel {
             None => return,
         };
 
-        let target_color = active_layer.pixels.get_pixel(start_pos.0, start_pos.1);
+        let target_color = *active_layer.pixels.get_pixel(start_pos.0, start_pos.1);
 
         // Save mode and base mask for merging
         self.magic_wand_state.effective_mode = mode;
         if mode != SelectionMode::Replace {
-            // Save the current selection mask as the base to merge with
             self.magic_wand_state.base_selection_mask = canvas_state.selection_mask.clone();
         } else {
             self.magic_wand_state.base_selection_mask = None;
         }
 
-        // Store the selection state for live preview
-        self.magic_wand_state.active_selection =
-            Some((start_pos.0, start_pos.1, *target_color, Vec::new()));
-        self.magic_wand_state.last_preview_tolerance = self.magic_wand_state.tolerance;
+        // Pre-extract layer as flat RGBA — avoids per-pixel TiledImage lookups during Dijkstra
+        let flat_rgba: Vec<u8> = active_layer.pixels.to_rgba_image().into_raw();
 
-        // Force immediate recalculation
-        self.magic_wand_state.recalc_pending = true;
-        self.magic_wand_state.last_preview_tolerance = -1.0; // Force update
-        self.update_magic_wand_preview(canvas_state);
-    }
-
-    /// Update magic wand preview if tolerance changed (debounced)
-    fn update_magic_wand_preview(&mut self, canvas_state: &mut CanvasState) {
-        // Only recalculate if a change is pending
-        if !self.magic_wand_state.recalc_pending {
-            return;
-        }
-
-        // Debounce: wait 50ms after last change before recalculating
-        if let Some(changed_at) = self.magic_wand_state.tolerance_changed_at
-            && changed_at.elapsed().as_millis() < 50
-        {
-            return; // Too soon, wait for the user to stop adjusting
-        }
-
-        // Check if tolerance actually changed
-        if (self.magic_wand_state.tolerance - self.magic_wand_state.last_preview_tolerance).abs()
-            < 0.01
-        {
-            self.magic_wand_state.recalc_pending = false;
-            return;
-        }
-
-        // Get active selection data
-        let (start_x, start_y, target_color, _) = match &self.magic_wand_state.active_selection {
-            Some(data) => data,
-            None => return,
-        };
-
-        // Get the active layer
-        let active_layer = match canvas_state.layers.get(canvas_state.active_layer_index) {
-            Some(layer) => layer,
-            None => return,
-        };
-
-        // Convert tolerance (0-100%) to distance threshold
-        // colors_match uses max-component distance (range 0-255), so map tolerance to that range
-        let tolerance_threshold = (self.magic_wand_state.tolerance / 100.0) * 255.0;
-
-        // Perform flood fill to find all connected pixels, or global select for all matching pixels
-        let selected_pixels = {
-            let pixels = &active_layer.pixels;
-            if self.magic_wand_state.global_select {
-                self.global_color_select(
-                    pixels,
-                    target_color,
-                    tolerance_threshold,
-                    canvas_state.width,
-                    canvas_state.height,
-                )
-            } else {
-                self.flood_fill_selection(
-                    pixels,
-                    (*start_x, *start_y),
-                    target_color,
-                    tolerance_threshold,
-                    canvas_state.width,
-                    canvas_state.height,
-                )
-            }
-        };
-
-        // Update the stored selection
-        self.magic_wand_state.active_selection =
-            Some((*start_x, *start_y, *target_color, selected_pixels.clone()));
-        self.magic_wand_state.last_preview_tolerance = self.magic_wand_state.tolerance;
-        self.magic_wand_state.recalc_pending = false;
-        self.magic_wand_state.tolerance_changed_at = None;
-
-        // Create a selection mask from the flood fill result
         let w = canvas_state.width;
         let h = canvas_state.height;
+        let global = self.magic_wand_state.global_select;
 
-        // Build the new selection from flood fill result
-        let mut new_mask = GrayImage::new(w, h);
-        for (x, y) in selected_pixels.iter() {
-            new_mask.put_pixel(*x, *y, Luma([255]));
+        // Spawn async computation
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.magic_wand_state.async_rx = Some(rx);
+        self.magic_wand_state.computing = true;
+
+        rayon::spawn(move || {
+            let result = if global {
+                let map = Self::compute_global_distance_map(&flat_rgba, &target_color, w, h);
+                MagicWandAsyncResult::Global(target_color, map, w, h)
+            } else {
+                let map = Self::compute_flood_distance_map(
+                    &flat_rgba,
+                    start_pos,
+                    &target_color,
+                    w,
+                    h,
+                );
+                MagicWandAsyncResult::Flood(map)
+            };
+            let _ = tx.send(result);
+        });
+    }
+
+    /// Re-threshold the pre-computed distance map with the current tolerance.
+    /// Only called when tolerance or anti-alias actually changed (cached check in caller).
+    /// Uses parallel threshold scan + direct raw buffer writes for speed.
+    fn update_magic_wand_preview(&mut self, canvas_state: &mut CanvasState) {
+        let w = canvas_state.width;
+        let h = canvas_state.height;
+        let n = (w as usize) * (h as usize);
+        let tolerance_threshold = (self.magic_wand_state.tolerance / 100.0) * 255.0;
+        let anti_aliased = self.magic_wand_state.anti_aliased;
+
+        // Pick the distance slice to threshold
+        let distances: &[f32] =
+            if let Some(ref map) = self.magic_wand_state.flood_distance_map {
+                &map.distances
+            } else if let Some((_, ref dists, _, _)) = self.magic_wand_state.global_distance_map {
+                dists
+            } else {
+                return;
+            };
+
+        // Parallel threshold: write directly into a raw Vec<u8> buffer
+        let mut mask_buf = vec![0u8; n];
+        if anti_aliased {
+            let aa_band = (255.0 * 0.02_f32).max(3.0);
+            mask_buf
+                .par_chunks_mut(4096)
+                .enumerate()
+                .for_each(|(chunk_idx, chunk)| {
+                    let base = chunk_idx * 4096;
+                    for (j, out) in chunk.iter_mut().enumerate() {
+                        let d = distances[base + j];
+                        *out = if d <= tolerance_threshold {
+                            255
+                        } else if d <= tolerance_threshold + aa_band {
+                            let t = (d - tolerance_threshold) / aa_band;
+                            (255.0 * (1.0 - t).max(0.0)) as u8
+                        } else {
+                            0
+                        };
+                    }
+                });
+        } else {
+            mask_buf
+                .par_chunks_mut(4096)
+                .enumerate()
+                .for_each(|(chunk_idx, chunk)| {
+                    let base = chunk_idx * 4096;
+                    for (j, out) in chunk.iter_mut().enumerate() {
+                        *out = if distances[base + j] <= tolerance_threshold {
+                            255
+                        } else {
+                            0
+                        };
+                    }
+                });
         }
 
+        // Apply selection mode by merging with base mask (direct raw buffer ops)
         let effective_mode = self.magic_wand_state.effective_mode;
-        let final_mask = match effective_mode {
-            SelectionMode::Replace => new_mask,
+        let final_buf: Vec<u8> = match effective_mode {
+            SelectionMode::Replace => mask_buf,
             SelectionMode::Add => {
-                let mut base = self
-                    .magic_wand_state
-                    .base_selection_mask
-                    .clone()
-                    .unwrap_or_else(|| GrayImage::new(w, h));
-                for (x, y) in selected_pixels.iter() {
-                    base.put_pixel(*x, *y, Luma([255]));
+                if let Some(ref base) = self.magic_wand_state.base_selection_mask {
+                    let base_raw = base.as_raw();
+                    let mut out = base_raw.clone();
+                    out.par_chunks_mut(4096)
+                        .enumerate()
+                        .for_each(|(chunk_idx, chunk)| {
+                            let base_off = chunk_idx * 4096;
+                            for (j, px) in chunk.iter_mut().enumerate() {
+                                let wand = mask_buf[base_off + j];
+                                if wand > *px {
+                                    *px = wand;
+                                }
+                            }
+                        });
+                    out
+                } else {
+                    mask_buf
                 }
-                base
             }
             SelectionMode::Subtract => {
-                let mut base = self
-                    .magic_wand_state
-                    .base_selection_mask
-                    .clone()
-                    .unwrap_or_else(|| GrayImage::new(w, h));
-                for (x, y) in selected_pixels.iter() {
-                    base.put_pixel(*x, *y, Luma([0]));
+                if let Some(ref base) = self.magic_wand_state.base_selection_mask {
+                    let base_raw = base.as_raw();
+                    let mut out = base_raw.clone();
+                    out.par_chunks_mut(4096)
+                        .enumerate()
+                        .for_each(|(chunk_idx, chunk)| {
+                            let base_off = chunk_idx * 4096;
+                            for (j, px) in chunk.iter_mut().enumerate() {
+                                *px = px.saturating_sub(mask_buf[base_off + j]);
+                            }
+                        });
+                    out
+                } else {
+                    vec![0u8; n]
                 }
-                base
             }
             SelectionMode::Intersect => {
-                let base = self
-                    .magic_wand_state
-                    .base_selection_mask
-                    .clone()
-                    .unwrap_or_else(|| GrayImage::new(w, h));
-                let selected_set: std::collections::HashSet<(u32, u32)> =
-                    selected_pixels.iter().copied().collect();
-                let mut intersect = GrayImage::new(w, h);
-                for (x, y, pixel) in base.enumerate_pixels() {
-                    if pixel[0] > 0 && selected_set.contains(&(x, y)) {
-                        intersect.put_pixel(x, y, Luma([255]));
-                    }
+                if let Some(ref base) = self.magic_wand_state.base_selection_mask {
+                    let base_raw = base.as_raw();
+                    let mut out = vec![0u8; n];
+                    out.par_chunks_mut(4096)
+                        .enumerate()
+                        .for_each(|(chunk_idx, chunk)| {
+                            let base_off = chunk_idx * 4096;
+                            for (j, px) in chunk.iter_mut().enumerate() {
+                                let b = base_raw[base_off + j];
+                                let wand = mask_buf[base_off + j];
+                                *px = ((b as u16 * wand as u16) / 255) as u8;
+                            }
+                        });
+                    out
+                } else {
+                    vec![0u8; n]
                 }
-                intersect
             }
         };
 
-        // Apply the selection to the canvas state
+        let final_mask = GrayImage::from_raw(w, h, final_buf).unwrap();
         canvas_state.selection_mask = Some(final_mask);
         canvas_state.invalidate_selection_overlay();
         canvas_state.mark_dirty(None);
+
+        self.magic_wand_state.last_applied_tolerance = self.magic_wand_state.tolerance;
+        self.magic_wand_state.last_applied_aa = self.magic_wand_state.anti_aliased;
+    }
+
+    /// Dijkstra minimax (bottleneck) distance map.
+    ///
+    /// `distances[y*w + x]` = minimum possible *maximum* per-step color distance
+    /// along any 4-connected path from the seed to (x,y).  Thresholding at `t`
+    /// selects all pixels reachable without any edge exceeding `t`, which is
+    /// **monotone** — higher tolerances never remove already-selected pixels.
+    ///
+    /// Uses a min-heap over (bottleneck_dist, pixel_index); total O(n log n).
+    fn compute_flood_distance_map(
+        flat_rgba: &[u8],
+        seed: (u32, u32),
+        target_color: &Rgba<u8>,
+        width: u32,
+        height: u32,
+    ) -> MagicWandDistanceMap {
+        use std::cmp::Reverse;
+
+        let n = (width * height) as usize;
+        let w = width as usize;
+
+        // Seed distance = direct color distance to target (usually 0 or very small)
+        let seed_idx = seed.1 as usize * w + seed.0 as usize;
+        let seed_dist = Self::pixel_color_distance(flat_rgba, seed_idx, target_color);
+
+        let mut distances = vec![f32::INFINITY; n];
+        distances[seed_idx] = seed_dist;
+
+        // Min-heap: (Reverse(distance_bits), pixel_index)
+        // We wrap f32 bits in an Ord newtype via u32 comparison (works for non-negative floats).
+        let mut heap: std::collections::BinaryHeap<(Reverse<u32>, usize)> =
+            std::collections::BinaryHeap::new();
+        heap.push((Reverse(seed_dist.to_bits()), seed_idx));
+
+        while let Some((Reverse(cost_bits), idx)) = heap.pop() {
+            let cost = f32::from_bits(cost_bits);
+            // Skip stale entries
+            if cost > distances[idx] {
+                continue;
+            }
+
+            let x = (idx % w) as u32;
+            let y = (idx / w) as u32;
+
+            // 4-connected neighbors
+            let neighbors: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
+            for (dx, dy) in neighbors {
+                let nx = x as i32 + dx;
+                let ny = y as i32 + dy;
+                if nx < 0 || ny < 0 || nx >= width as i32 || ny >= height as i32 {
+                    continue;
+                }
+                let ni = ny as usize * w + nx as usize;
+                let neighbor_dist =
+                    Self::pixel_color_distance(flat_rgba, ni, target_color);
+                // Bottleneck cost: max of current path cost and this edge's cost
+                let new_cost = cost.max(neighbor_dist);
+                if new_cost < distances[ni] {
+                    distances[ni] = new_cost;
+                    heap.push((Reverse(new_cost.to_bits()), ni));
+                }
+            }
+        }
+
+        MagicWandDistanceMap {
+            seed,
+            target_color: *target_color,
+            distances,
+            width,
+            height,
+        }
+    }
+
+    /// Global distance map: direct color distance from target for every pixel.
+    /// No connectivity; monotone by construction (pure per-pixel metric).
+    /// Parallelized for speed on large canvases.
+    fn compute_global_distance_map(
+        flat_rgba: &[u8],
+        target_color: &Rgba<u8>,
+        width: u32,
+        height: u32,
+    ) -> Vec<f32> {
+        let n = (width * height) as usize;
+        let mut out = vec![0.0f32; n];
+        let tc = *target_color;
+        out.par_chunks_mut(4096)
+            .enumerate()
+            .for_each(|(chunk_idx, chunk)| {
+                let base = chunk_idx * 4096;
+                for (j, val) in chunk.iter_mut().enumerate() {
+                    *val = Self::pixel_color_distance(flat_rgba, base + j, &tc);
+                }
+            });
+        out
+    }
+
+    /// Max-component color distance between a flat RGBA pixel at `idx` and `target`.
+    /// Returns a value in [0.0, 255.0].
+    #[inline]
+    fn pixel_color_distance(flat_rgba: &[u8], idx: usize, target: &Rgba<u8>) -> f32 {
+        let base = idx * 4;
+        let r = flat_rgba[base];
+        let g = flat_rgba[base + 1];
+        let b = flat_rgba[base + 2];
+        let a = flat_rgba[base + 3];
+
+        // Both transparent → zero distance
+        if target.0[3] == 0 && a == 0 {
+            return 0.0;
+        }
+
+        let dr = (r as f32 - target.0[0] as f32).abs();
+        let dg = (g as f32 - target.0[1] as f32).abs();
+        let db = (b as f32 - target.0[2] as f32).abs();
+        let da = (a as f32 - target.0[3] as f32).abs();
+
+        dr.max(dg).max(db).max(da)
     }
 
     /// Fill tool - flood fill with preview
@@ -10734,7 +10968,7 @@ impl ToolsPanel {
         &mut self,
         canvas_state: &mut CanvasState,
         pos: (u32, u32),
-        _use_secondary: bool,
+        use_secondary: bool,
     ) {
         // Bounds check
         if pos.0 >= canvas_state.width || pos.1 >= canvas_state.height {
@@ -10752,13 +10986,35 @@ impl ToolsPanel {
             Color32::from_rgba_unmultiplied(pixel.0[0], pixel.0[1], pixel.0[2], pixel.0[3]);
 
         // Store the picked color
-        self.last_picked_color = Some(color_32);
+        self.last_picked_color = Some((color_32, use_secondary));
 
-        // Update the appropriate color in ToolsPanel
-        self.properties.color = color_32;
+        // Keep the active primary tool color unchanged when only the secondary swatch is sampled.
+        if !use_secondary {
+            self.properties.color = color_32;
+        }
 
         // Note: The app.rs code will synchronize this to the ColorsPanel
         // We can't directly modify ColorsPanel from here due to borrow constraints
+    }
+
+    fn clip_preview_bounds(
+        canvas_state: &CanvasState,
+        off_x: i32,
+        off_y: i32,
+        buf_w: u32,
+        buf_h: u32,
+    ) -> Option<egui::Rect> {
+        let x0 = off_x.max(0) as f32;
+        let y0 = off_y.max(0) as f32;
+        let x1 = (off_x + buf_w as i32).min(canvas_state.width as i32).max(0) as f32;
+        let y1 = (off_y + buf_h as i32)
+            .min(canvas_state.height as i32)
+            .max(0) as f32;
+        if x1 > x0 && y1 > y0 {
+            Some(egui::Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1)))
+        } else {
+            None
+        }
     }
 
     /// Fast flood fill using a DFS Vec-stack on a pre-extracted flat RGBA buffer.
@@ -10885,111 +11141,6 @@ impl ToolsPanel {
             None
         };
         (mask, bbox)
-    }
-
-    /// Flood fill algorithm using queue-based traversal
-    /// Returns a vector of (x, y) coordinates of all filled pixels
-    fn flood_fill_selection(
-        &self,
-        pixels: &TiledImage,
-        start_pos: (u32, u32),
-        target_color: &Rgba<u8>,
-        tolerance_threshold: f32,
-        width: u32,
-        height: u32,
-    ) -> Vec<(u32, u32)> {
-        let mut result = Vec::new();
-        let w = width as usize;
-        let mut visited = vec![false; w * height as usize];
-        let mut queue = std::collections::VecDeque::new();
-
-        queue.push_back(start_pos);
-        visited[start_pos.1 as usize * w + start_pos.0 as usize] = true;
-
-        while let Some((x, y)) = queue.pop_front() {
-            result.push((x, y));
-
-            // Check all 4 neighbors (up, down, left, right)
-            let neighbors = [
-                (x.saturating_sub(1), y),
-                (x.saturating_add(1), y),
-                (x, y.saturating_sub(1)),
-                (x, y.saturating_add(1)),
-            ];
-
-            for (nx, ny) in neighbors.iter() {
-                // Bounds check
-                if *nx >= width || *ny >= height {
-                    continue;
-                }
-
-                // Skip if already visited
-                let vi = *ny as usize * w + *nx as usize;
-                if visited[vi] {
-                    continue;
-                }
-
-                visited[vi] = true;
-
-                // Check color similarity
-                let neighbor_color = pixels.get_pixel(*nx, *ny);
-                if self.colors_match(target_color, neighbor_color, tolerance_threshold) {
-                    queue.push_back((*nx, *ny));
-                }
-            }
-        }
-
-        result
-    }
-
-    /// Check if two colors match within tolerance
-    /// Tolerance is the maximum allowed Euclidean distance in RGB space
-    fn colors_match(&self, color1: &Rgba<u8>, color2: &Rgba<u8>, tolerance: f32) -> bool {
-        // Both transparent → match (allows flood filling transparent areas)
-        if color1.0[3] == 0 && color2.0[3] == 0 {
-            return true;
-        }
-        // One transparent, one not → only match if tolerance covers alpha gap
-        if color1.0[3] == 0 || color2.0[3] == 0 {
-            let alpha_diff = (color1.0[3] as f32 - color2.0[3] as f32).abs();
-            return alpha_diff <= tolerance;
-        }
-
-        // Convert to f32 and compute max component distance
-        let r = (color1.0[0] as f32 - color2.0[0] as f32).abs();
-        let g = (color1.0[1] as f32 - color2.0[1] as f32).abs();
-        let b = (color1.0[2] as f32 - color2.0[2] as f32).abs();
-        let a = (color1.0[3] as f32 - color2.0[3] as f32).abs();
-
-        // Use maximum component distance including alpha
-        let dist = r.max(g).max(b).max(a);
-
-        dist <= tolerance
-    }
-
-    /// Global color select: find ALL pixels matching the target color across the
-    /// entire canvas (not just connected/flood-fill). Respects tolerance.
-    fn global_color_select(
-        &self,
-        pixels: &TiledImage,
-        target_color: &Rgba<u8>,
-        tolerance_threshold: f32,
-        width: u32,
-        height: u32,
-    ) -> Vec<(u32, u32)> {
-        let mut result = Vec::new();
-
-        // Iterate every pixel in the canvas
-        for y in 0..height {
-            for x in 0..width {
-                let pixel_color = pixels.get_pixel(x, y);
-                if self.colors_match(target_color, pixel_color, tolerance_threshold) {
-                    result.push((x, y));
-                }
-            }
-        }
-
-        result
     }
 
     // ================================================================
@@ -13749,19 +13900,14 @@ impl ToolsPanel {
         canvas_state.preview_is_eraser = false;
         canvas_state.preview_downscale = 1;
         canvas_state.preview_flat_ready = false;
-        // Opt 2: Set stroke bounds to limit composite/extraction to text region only
-        canvas_state.preview_stroke_bounds = Some(egui::Rect::from_min_max(
-            egui::pos2(off_x as f32, off_y as f32),
-            egui::pos2((off_x + buf_w as i32) as f32, (off_y + buf_h as i32) as f32),
-        ));
+        // Opt 2: Limit composite/extraction to the visible portion of the text region.
+        let visible_bounds = Self::clip_preview_bounds(canvas_state, off_x, off_y, buf_w, buf_h);
+        canvas_state.preview_stroke_bounds = visible_bounds;
         // Opt 3: Use dirty_rect to signal texture update needed instead of
         // full cache invalidation. This lets the display path do a set()
         // instead of creating a brand new texture handle.
         if canvas_state.preview_texture_cache.is_some() {
-            canvas_state.preview_dirty_rect = Some(egui::Rect::from_min_max(
-                egui::pos2(off_x as f32, off_y as f32),
-                egui::pos2((off_x + buf_w as i32) as f32, (off_y + buf_h as i32) as f32),
-            ));
+            canvas_state.preview_dirty_rect = visible_bounds;
         } else {
             // First time: force texture creation
             canvas_state.preview_texture_cache = None;

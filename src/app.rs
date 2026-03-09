@@ -1431,7 +1431,8 @@ impl eframe::App for PaintFEApp {
                 || (self.tools_panel.active_tool == crate::components::tools::Tool::Line
                     && self.tools_panel.line_state.line_tool.stage
                         == crate::components::tools::LineStage::Editing);
-            if tab_applies && ctx.input(|i| i.key_pressed(egui::Key::Tab)) {
+            let tab_pressed = ctx.input(|i| i.key_pressed(egui::Key::Tab));
+            if tab_applies && tab_pressed {
                 let (cw, ch) = self
                     .active_project()
                     .map(|p| (p.canvas_state.width as f32, p.canvas_state.height as f32))
@@ -1708,6 +1709,11 @@ impl eframe::App for PaintFEApp {
                         }
                     }
                 }
+            } else if tab_pressed
+                && !(self.tools_panel.active_tool == crate::components::tools::Tool::Text
+                    && self.tools_panel.text_state.editing_text_layer)
+            {
+                self.colors_panel.swap_colors();
             }
 
             // ================================================================
@@ -4495,8 +4501,12 @@ impl eframe::App for PaintFEApp {
 
         // Sync color picker result back to colors panel
         // If the color picker tool picked a color this frame, update the colors panel
-        if let Some(picked_color) = self.tools_panel.last_picked_color.take() {
-            self.colors_panel.primary_color = picked_color;
+        if let Some((picked_color, use_secondary)) = self.tools_panel.last_picked_color.take() {
+            if use_secondary {
+                self.colors_panel.set_secondary_color(picked_color);
+            } else {
+                self.colors_panel.set_primary_color(picked_color);
+            }
         }
 
         // Thin bottom border on toolbar — subtle divider (lighter than border_color)

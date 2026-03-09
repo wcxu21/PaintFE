@@ -65,6 +65,18 @@ impl ColorsPanel {
         self.secondary_color
     }
 
+    pub fn set_primary_color(&mut self, color: Color32) {
+        self.primary_color = color;
+        self.primary_hsv = color_to_hsv(color);
+        self.editing_primary = true;
+    }
+
+    pub fn set_secondary_color(&mut self, color: Color32) {
+        self.secondary_color = color;
+        self.secondary_hsv = color_to_hsv(color);
+        self.editing_primary = false;
+    }
+
     pub fn swap_colors(&mut self) {
         std::mem::swap(&mut self.primary_color, &mut self.secondary_color);
         std::mem::swap(&mut self.primary_hsv, &mut self.secondary_hsv);

@@ -324,8 +324,8 @@ pub fn rasterize_text(
     italic: bool,
     underline: bool,
     strikethrough: bool,
-    canvas_w: u32,
-    canvas_h: u32,
+    _canvas_w: u32,
+    _canvas_h: u32,
     coverage_buf: &mut Vec<f32>,
     glyph_cache: &mut GlyphPixelCache,
     max_width: Option<f32>,
@@ -462,11 +462,14 @@ pub fn rasterize_text(
     let buf_x1 = (origin_x + max_x).ceil() as i32;
     let buf_y1 = (origin_y + max_y).ceil() as i32;
 
-    // Clamp to canvas
-    let x0 = buf_x0.max(0);
-    let y0 = buf_y0.max(0);
-    let x1 = buf_x1.min(canvas_w as i32);
-    let y1 = buf_y1.min(canvas_h as i32);
+    // Preserve the full text bounds, even when part of the preview lies
+    // outside the canvas. The later blit step clips to the canvas, but
+    // keeping the complete buffer here prevents off-canvas glyphs from being
+    // discarded before the anchor is moved back into view.
+    let x0 = buf_x0;
+    let y0 = buf_y0;
+    let x1 = buf_x1;
+    let y1 = buf_y1;
     let buf_w = (x1 - x0).max(0) as u32;
     let buf_h = (y1 - y0).max(0) as u32;
 

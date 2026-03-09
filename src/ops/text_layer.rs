@@ -278,10 +278,12 @@ impl Default for EnvelopeWarp {
 
 /// Layer-level text effects (Batch 5+6).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TextEffects {
     pub outline: Option<OutlineEffect>,
     pub shadow: Option<ShadowEffect>,
     pub inner_shadow: Option<InnerShadowEffect>,
+    pub gradient_fill: Option<GradientFillEffect>,
     pub texture_fill: Option<TextureFillEffect>,
 }
 
@@ -330,6 +332,20 @@ pub struct TextureFillEffect {
     pub offset: [f32; 2],
 }
 
+/// Gradient fill effect: fills text glyphs with a configurable linear gradient.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GradientFillEffect {
+    pub start_color: [u8; 4],
+    pub end_color: [u8; 4],
+    /// Gradient angle in degrees.
+    pub angle_degrees: f32,
+    /// Distance in pixels from start to end color.
+    pub scale: f32,
+    /// Translation of the gradient field in canvas pixels.
+    pub offset: [f32; 2],
+    pub repeat: bool,
+}
+
 impl Default for OutlineEffect {
     fn default() -> Self {
         Self {
@@ -375,12 +391,26 @@ impl Default for TextureFillEffect {
     }
 }
 
+impl Default for GradientFillEffect {
+    fn default() -> Self {
+        Self {
+            start_color: [255, 255, 255, 255],
+            end_color: [0, 0, 0, 255],
+            angle_degrees: 0.0,
+            scale: 200.0,
+            offset: [0.0, 0.0],
+            repeat: false,
+        }
+    }
+}
+
 impl TextEffects {
     /// Returns true if any effect is enabled.
     pub fn has_any(&self) -> bool {
         self.outline.is_some()
             || self.shadow.is_some()
             || self.inner_shadow.is_some()
+            || self.gradient_fill.is_some()
             || self.texture_fill.is_some()
     }
 }
@@ -2705,8 +2735,10 @@ fn apply_text_effects(text_rgba: &[u8], w: u32, h: u32, effects: &TextEffects) -
         render_outline(&coverage, w, h, outline, &mut output);
     }
 
-    // 3. Text fill (possibly with texture)
-    if let Some(ref tex) = effects.texture_fill {
+    // 3. Text fill (flat color, gradient, or texture)
+    if let Some(ref gradient) = effects.gradient_fill {
+        render_gradient_fill(&coverage, w, h, gradient, &mut output);
+    } else if let Some(ref tex) = effects.texture_fill {
         render_texture_fill(text_rgba, &coverage, w, h, tex, &mut output);
     } else {
         // Normal text fill — composite text onto output
@@ -3086,6 +3118,60 @@ fn render_inner_shadow(
             output[si + 3] = out_a.min(255) as u8;
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Gradient Fill Effect
+// ---------------------------------------------------------------------------
+
+fn render_gradient_fill(
+    coverage: &[f32],
+    w: u32,
+    h: u32,
+    gradient: &GradientFillEffect,
+    output: &mut [u8],
+) {
+    let ww = w as usize;
+    let hh = h as usize;
+    let count = ww * hh;
+    let angle = gradient.angle_degrees.to_radians();
+    let dir_x = angle.cos();
+    let dir_y = angle.sin();
+    let scale = gradient.scale.max(1.0);
+    let off_x = gradient.offset[0];
+    let off_y = gradient.offset[1];
+    let [sr, sg, sb, sa] = gradient.start_color;
+    let [er, eg, eb, ea] = gradient.end_color;
+
+    let mut filled = vec![0u8; count * 4];
+    filled
+        .par_chunks_mut(ww * 4)
+        .enumerate()
+        .for_each(|(y, row)| {
+            for x in 0..ww {
+                let cov = coverage[y * ww + x];
+                if cov < 1.0 / 255.0 {
+                    continue;
+                }
+                let proj = ((x as f32 - off_x) * dir_x + (y as f32 - off_y) * dir_y) / scale;
+                let t = if gradient.repeat {
+                    proj.rem_euclid(1.0)
+                } else {
+                    proj.clamp(0.0, 1.0)
+                };
+                let inv_t = 1.0 - t;
+                let idx = x * 4;
+                row[idx] = (sr as f32 * inv_t + er as f32 * t).round().clamp(0.0, 255.0) as u8;
+                row[idx + 1] =
+                    (sg as f32 * inv_t + eg as f32 * t).round().clamp(0.0, 255.0) as u8;
+                row[idx + 2] =
+                    (sb as f32 * inv_t + eb as f32 * t).round().clamp(0.0, 255.0) as u8;
+                let grad_alpha = sa as f32 * inv_t + ea as f32 * t;
+                row[idx + 3] = (grad_alpha * cov).round().clamp(0.0, 255.0) as u8;
+            }
+        });
+
+    composite_over(&filled, output, count);
 }
 
 // ---------------------------------------------------------------------------

@@ -6,6 +6,19 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## [1.1.3] - 2026-03-09
+
+### Improved
+- **Magic Wand tool — monotonic selection with Dijkstra distance map**: The selection no longer shrinks unexpectedly or jumps when dragging the tolerance slider. A minimax (bottleneck) Dijkstra distance map is computed once on click; tolerance changes re-threshold the map instantly (O(n) parallel scan) with no re-flood-fill. Higher tolerance always adds pixels, never removes them. Computation is now async (runs on a background rayon thread so the UI stays responsive on large canvases). Threshold scan is parallelized and writes directly to raw buffers for minimum latency on tolerance drag. Anti-alias edge softening toggle added to the context bar.
+- **Color picker secondary-swatch targeting**: Right-clicking with the color picker now directly sets the secondary color (previously always set primary).
+- **Tab key swaps primary/secondary colors**: Pressing Tab while any non-text tool is active swaps the foreground and background colors.
+- **Text gradient fill effect**: Text layers support a gradient fill effect with configurable start/end colors, angle, scale, offset, and tiling.
+
+### Fixed
+- **Off-canvas text clipping**: Text that extends outside the canvas bounds is no longer clipped at the canvas edge.
+
+---
+
 ## [1.1.2] - 2026-03-06
 
 ### Fixed

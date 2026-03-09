@@ -189,7 +189,7 @@ Yes. GitHub Copilot was used during development to help with boilerplate and Rus
 MIT licensed. No subscription, no account, no telemetry, no feature gates. Use it commercially, fork it, redistribute it.
 
 **Does it work on macOS?**
-Developed and tested on Windows and Linux. macOS is technically possible via wgpu's Metal backend but untested. Community builds welcome.
+Yes — macOS builds are available on the releases page. They are unsigned and not notarized, so Gatekeeper will block the first launch. To open it: right-click the app in Finder and choose **Open**, then click **Open** in the dialog. You only need to do this once. After that it opens normally.
 
 **Why is it called PaintFE?**
 FE is the periodic table symbol for Iron. It's built in Rust. That's the joke. Call it whatever acronym you want.

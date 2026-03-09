@@ -3,8 +3,8 @@ use crate::canvas::{BlendMode, CanvasState, Layer, LayerContent, TiledImage};
 use crate::components::history::{HistoryManager, LayerOpCommand, LayerOperation, SnapshotCommand};
 use crate::ops::dialogs::DialogColors;
 use crate::ops::text_layer::{
-    EnvelopeWarp, InnerShadowEffect, OutlineEffect, OutlinePosition, ShadowEffect, TextEffects,
-    TextWarp, TextureFillEffect,
+    EnvelopeWarp, GradientFillEffect, InnerShadowEffect, OutlineEffect, OutlinePosition,
+    ShadowEffect, TextEffects, TextWarp, TextureFillEffect,
 };
 use eframe::egui;
 use egui::{
@@ -1891,6 +1891,115 @@ impl LayersPanel {
 
         ui.add_space(4.0);
 
+        // --- Gradient Fill ---
+        {
+            let has_gradient = self.settings_state.text_effects.gradient_fill.is_some();
+            let mut gradient_on = has_gradient;
+            if ui
+                .checkbox(&mut gradient_on, t!("ctx.text.effects.gradient"))
+                .changed()
+            {
+                changed = true;
+            }
+            if gradient_on && !has_gradient {
+                self.settings_state.text_effects.gradient_fill = Some(GradientFillEffect::default());
+                self.settings_state.text_effects.texture_fill = None;
+                changed = true;
+            } else if !gradient_on && has_gradient {
+                self.settings_state.text_effects.gradient_fill = None;
+                changed = true;
+            }
+
+            if let Some(ref mut gradient) = self.settings_state.text_effects.gradient_fill {
+                ui.indent("ls_gradient_fill", |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(t!("ctx.text.effects.gradient.start"));
+                        let mut c = Color32::from_rgba_unmultiplied(
+                            gradient.start_color[0],
+                            gradient.start_color[1],
+                            gradient.start_color[2],
+                            gradient.start_color[3],
+                        );
+                        if ui.color_edit_button_srgba(&mut c).changed() {
+                            gradient.start_color = [c.r(), c.g(), c.b(), c.a()];
+                            changed = true;
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(t!("ctx.text.effects.gradient.end"));
+                        let mut c = Color32::from_rgba_unmultiplied(
+                            gradient.end_color[0],
+                            gradient.end_color[1],
+                            gradient.end_color[2],
+                            gradient.end_color[3],
+                        );
+                        if ui.color_edit_button_srgba(&mut c).changed() {
+                            gradient.end_color = [c.r(), c.g(), c.b(), c.a()];
+                            changed = true;
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(t!("ctx.text.effects.gradient.angle"));
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut gradient.angle_degrees)
+                                    .speed(1.0)
+                                    .clamp_range(-360.0..=360.0)
+                                    .suffix("deg"),
+                            )
+                            .changed()
+                        {
+                            changed = true;
+                        }
+                        ui.label(t!("ctx.text.effects.gradient.scale"));
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut gradient.scale)
+                                    .speed(1.0)
+                                    .clamp_range(1.0..=5000.0)
+                                    .suffix("px"),
+                            )
+                            .changed()
+                        {
+                            changed = true;
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(t!("ctx.text.effects.gradient.offset_x"));
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut gradient.offset[0])
+                                    .speed(0.5)
+                                    .clamp_range(-5000.0..=5000.0),
+                            )
+                            .changed()
+                        {
+                            changed = true;
+                        }
+                        ui.label(t!("ctx.text.effects.gradient.offset_y"));
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut gradient.offset[1])
+                                    .speed(0.5)
+                                    .clamp_range(-5000.0..=5000.0),
+                            )
+                            .changed()
+                        {
+                            changed = true;
+                        }
+                    });
+                    if ui
+                        .checkbox(&mut gradient.repeat, t!("ctx.text.effects.gradient.repeat"))
+                        .changed()
+                    {
+                        changed = true;
+                    }
+                });
+            }
+        }
+
+        ui.add_space(4.0);
+
         // --- Texture Fill ---
         {
             let has_texture = self.settings_state.text_effects.texture_fill.is_some();
@@ -1903,6 +2012,7 @@ impl LayersPanel {
             }
             if texture_on && !has_texture {
                 self.settings_state.text_effects.texture_fill = Some(TextureFillEffect::default());
+                self.settings_state.text_effects.gradient_fill = None;
                 changed = true;
             } else if !texture_on && has_texture {
                 self.settings_state.text_effects.texture_fill = None;
