@@ -2902,6 +2902,13 @@ pub struct Canvas {
     /// The egui widget Id of the main canvas area (used to distinguish canvas focus
     /// from text-input focus so single-key tool shortcuts are suppressed while typing).
     pub canvas_widget_id: Option<egui::Id>,
+    /// Cached checkerboard texture (screen-space tiled, Nearest filtered).
+    /// Rebuilt only when viewport size or brightness changes.
+    checkerboard_texture: Option<egui::TextureHandle>,
+    /// Brightness value used to build the cached checkerboard texture.
+    checkerboard_brightness_cached: f32,
+    /// Viewport cell dimensions of the cached checkerboard texture (cols, rows).
+    checkerboard_cached_size: (usize, usize),
 }
 
 impl Canvas {
@@ -2928,6 +2935,9 @@ impl Canvas {
             brush_tip_cursor_key: (String::new(), 0, 0),
             tool_cursor_icon: None,
             canvas_widget_id: None,
+            checkerboard_texture: None,
+            checkerboard_brightness_cached: 0.0,
+            checkerboard_cached_size: (0, 0),
         }
     }
 
@@ -3463,12 +3473,14 @@ impl Canvas {
             }
         }
 
-        // Draw checkerboard background (clipped to visible canvas area)
+        // Draw checkerboard background (clipped to visible canvas area).
+        // Static screen-space pattern: 1 textured quad, O(1) cost.
         self.draw_checkerboard(
             &painter,
             image_rect,
             canvas_rect,
             debug_settings.checkerboard_brightness,
+            ui.ctx(),
         );
 
         // Draw the composite image
@@ -3805,60 +3817,11 @@ impl Canvas {
                     // for interactive responsiveness (egui stretches the
                     // smaller texture to fill the canvas rect).
                     let ds = state.preview_downscale;
-                    let (mut color_image, _offset) = if ds > 1 {
+                    let (color_image, _offset) = if ds > 1 {
                         state.composite_partial_downscaled(sb, ds)
                     } else {
                         state.composite_partial(sb)
                     };
-
-                    // For eraser: bake the checkerboard pattern into any
-                    // semi-transparent pixels so the preview texture is fully
-                    // opaque.  This lets us paint it directly over the base
-                    // composite with no extra rects underneath — eliminating
-                    // anti-aliased edge artifacts that caused a visible seam.
-                    if state.preview_is_eraser {
-                        // Scale checker size proportionally when downscaled so
-                        // the pattern looks consistent at any preview resolution.
-                        let checker_canvas = if ds > 1 { (10 / ds).max(2) } else { 10u32 };
-                        let brightness = debug_settings.checkerboard_brightness;
-                        let light = (220.0 * brightness).clamp(0.0, 255.0);
-                        let dark = (180.0 * brightness).clamp(0.0, 255.0);
-                        let cw = color_image.size[0] as u32;
-                        let ch = color_image.size[1] as u32;
-                        let origin_x = (sb.min.x.max(0.0).floor() as u32) / ds;
-                        let origin_y = (sb.min.y.max(0.0).floor() as u32) / ds;
-                        for py in 0..ch {
-                            for px in 0..cw {
-                                let idx = (py * cw + px) as usize;
-                                let pixel = color_image.pixels[idx];
-                                let a = pixel.a();
-                                if a == 255 {
-                                    continue;
-                                } // fully opaque — no checkerboard needed
-                                let cx = (origin_x + px) / checker_canvas;
-                                let cy = (origin_y + py) / checker_canvas;
-                                let bg = if (cx + cy).is_multiple_of(2) {
-                                    light
-                                } else {
-                                    dark
-                                };
-                                let bg_u8 = bg as u8;
-                                if a == 0 {
-                                    color_image.pixels[idx] =
-                                        Color32::from_rgb(bg_u8, bg_u8, bg_u8);
-                                } else {
-                                    // Color32 stores premultiplied alpha — use
-                                    // premultiplied compositing: result = src + bg*(1-a)
-                                    // (NOT src*a + bg*(1-a), which would double-multiply).
-                                    let inv = 1.0 - a as f32 / 255.0;
-                                    let r = (pixel.r() as f32 + bg * inv).min(255.0) as u8;
-                                    let g = (pixel.g() as f32 + bg * inv).min(255.0) as u8;
-                                    let b = (pixel.b() as f32 + bg * inv).min(255.0) as u8;
-                                    color_image.pixels[idx] = Color32::from_rgb(r, g, b);
-                                }
-                            }
-                        }
-                    }
 
                     let image_data = ImageData::Color(Arc::new(color_image));
                     if let Some(ref mut tex) = state.preview_texture_cache {
@@ -3901,10 +3864,66 @@ impl Canvas {
                             sh / canvas_h * image_rect.height(),
                         ),
                     );
-                    // Eraser preview has checkerboard baked into the texture
-                    // (fully opaque), so no extra rects are needed — just paint it.
+                    // For eraser: draw the existing checkerboard texture
+                    // underneath so erased (semi-transparent) areas reveal
+                    // the correct screen-space pattern through alpha blending.
+                    // This avoids baking a canvas-resolution checkerboard
+                    // into the texture which causes moiré at non-100% zooms.
+                    if state.preview_is_eraser
+                        && let Some(ref checker_tex) = self.checkerboard_texture
+                    {
+                        let cell = 10.0_f32;
+                        let (cols, rows) = self.checkerboard_cached_size;
+                        let grid_ox = (canvas_rect.min.x / cell).floor() * cell;
+                        let grid_oy = (canvas_rect.min.y / cell).floor() * cell;
+                        let tex_w = cols as f32 * cell;
+                        let tex_h = rows as f32 * cell;
+                        let checker_uv = Rect::from_min_max(
+                            Pos2::new(
+                                (sub_rect.min.x - grid_ox) / tex_w,
+                                (sub_rect.min.y - grid_oy) / tex_h,
+                            ),
+                            Pos2::new(
+                                (sub_rect.max.x - grid_ox) / tex_w,
+                                (sub_rect.max.y - grid_oy) / tex_h,
+                            ),
+                        );
+                        painter.image(
+                            checker_tex.id(),
+                            sub_rect,
+                            checker_uv,
+                            Color32::WHITE,
+                        );
+                    }
                     painter.image(tex.id(), sub_rect, uv, Color32::WHITE);
                 } else {
+                    // For eraser on full-image preview, draw checkerboard underneath
+                    if state.preview_is_eraser
+                        && let Some(ref checker_tex) = self.checkerboard_texture
+                    {
+                        let cell = 10.0_f32;
+                        let (cols, rows) = self.checkerboard_cached_size;
+                        let grid_ox = (canvas_rect.min.x / cell).floor() * cell;
+                        let grid_oy = (canvas_rect.min.y / cell).floor() * cell;
+                        let tex_w = cols as f32 * cell;
+                        let tex_h = rows as f32 * cell;
+                        let checker_uv = Rect::from_min_max(
+                            Pos2::new(
+                                (image_rect.min.x - grid_ox) / tex_w,
+                                (image_rect.min.y - grid_oy) / tex_h,
+                            ),
+                            Pos2::new(
+                                (image_rect.max.x - grid_ox) / tex_w,
+                                (image_rect.max.y - grid_oy) / tex_h,
+                            ),
+                        );
+                        painter.image(
+                            checker_tex.id(),
+                            image_rect,
+                            checker_uv,
+                            Color32::WHITE,
+                        );
+                    }
                     painter.image(tex.id(), image_rect, uv, Color32::WHITE);
                 }
             }
@@ -5840,68 +5859,97 @@ impl Canvas {
         }
     }
 
-    fn draw_checkerboard(&self, painter: &egui::Painter, rect: Rect, clip: Rect, brightness: f32) {
-        let checker_size = 10.0 * self.zoom;
-        // Apply brightness multiplier to the base grayscale values
-        let base_light = 220.0 * brightness;
-        let base_dark = 180.0 * brightness;
-        let light = Color32::from_gray(base_light.clamp(0.0, 255.0) as u8);
-        let dark = Color32::from_gray(base_dark.clamp(0.0, 255.0) as u8);
-
-        // When zoomed out far enough that cells are too small to distinguish,
-        // just draw a solid average color.  This avoids generating tens of
-        // thousands of rect_filled calls that overwhelm egui's tessellator
-        // (e.g. ~41K rects for a 4K canvas at any zoom level).
-        if checker_size < 3.0 {
-            let avg = ((base_light + base_dark) * 0.5).clamp(0.0, 255.0) as u8;
-            painter.rect_filled(rect, 0.0, Color32::from_gray(avg));
-            return;
-        }
-
-        // Clip iteration to the visible viewport to avoid drawing off-screen
-        // cells.  At 4× zoom on a 4K image, the full grid is ~384×216 = 83K
-        // cells, but only the viewport-visible subset (~50×30) is drawn.
-        // This eliminates the need for checker_size inflation that would
-        // mismatch the baked checkerboard in eraser preview textures.
+    /// Draw a static screen-space checkerboard behind the canvas image.
+    ///
+    /// The pattern uses a fixed 10px screen-pixel cell size (independent of
+    /// zoom) and is anchored to screen coordinates — panning and zooming move
+    /// the image content over the pattern, matching Paint.NET / Photoshop.
+    ///
+    /// Implementation: a small `ColorImage` (1 pixel per cell, Nearest filter)
+    /// is cached and reused across frames.  Only 1 textured quad is drawn per
+    /// frame regardless of canvas size or zoom level.
+    fn draw_checkerboard(
+        &mut self,
+        painter: &egui::Painter,
+        rect: Rect,
+        clip: Rect,
+        brightness: f32,
+        ctx: &egui::Context,
+    ) {
         let visible = rect.intersect(clip);
         if visible.is_negative() || visible.width() < 1.0 || visible.height() < 1.0 {
             return;
         }
 
-        // Paint the light colour as one solid background rect.  Then draw
-        // only the dark squares on top.  Any sub-pixel gap between dark
-        // rects now reveals the *light* background — the correct colour —
-        // instead of the canvas background colour bleeding through.
-        painter.rect_filled(rect, 0.0, light);
+        let cell = 10.0_f32; // fixed screen-pixel cell size
 
-        // Determine which cell range is visible, anchored to image origin
-        // so the pattern aligns with canvas pixel coordinates (matches the
-        // baked checkerboard in the eraser preview texture).
-        let start_x = ((visible.min.x - rect.min.x) / checker_size).floor() as i32;
-        let start_y = ((visible.min.y - rect.min.y) / checker_size).floor() as i32;
-        let end_x = ((visible.max.x - rect.min.x) / checker_size).ceil() as i32;
-        let end_y = ((visible.max.y - rect.min.y) / checker_size).ceil() as i32;
+        // How many cells span the full viewport (canvas_rect).
+        // We build the texture to cover the viewport so the pattern is stable
+        // as the image pans within it.  +2 padding cells avoids edge gaps.
+        let cols = (clip.width() / cell).ceil() as usize + 2;
+        let rows = (clip.height() / cell).ceil() as usize + 2;
 
-        for y in start_y..end_y {
-            for x in start_x..end_x {
-                if (x + y) % 2 == 0 {
-                    continue;
-                } // light square — already painted
-                let checker_rect = Rect::from_min_size(
-                    Pos2::new(
-                        rect.min.x + x as f32 * checker_size,
-                        rect.min.y + y as f32 * checker_size,
-                    ),
-                    Vec2::splat(checker_size),
-                );
+        // Rebuild texture if brightness changed or viewport cell count changed.
+        if self.checkerboard_texture.is_none()
+            || (self.checkerboard_brightness_cached - brightness).abs() > 0.001
+            || self.checkerboard_cached_size != (cols, rows)
+        {
+            let light_val = (220.0 * brightness).clamp(0.0, 255.0) as u8;
+            let dark_val = (180.0 * brightness).clamp(0.0, 255.0) as u8;
+            let light = Color32::from_gray(light_val);
+            let dark = Color32::from_gray(dark_val);
 
-                // Only draw if within image bounds
-                let intersection = checker_rect.intersect(rect);
-                if !intersection.is_negative() {
-                    painter.rect_filled(intersection, 0.0, dark);
+            let mut pixels = vec![light; cols * rows];
+            for y in 0..rows {
+                for x in 0..cols {
+                    if (x + y) % 2 != 0 {
+                        pixels[y * cols + x] = dark;
+                    }
                 }
             }
+            let image = ColorImage {
+                size: [cols, rows],
+                pixels,
+            };
+            let tex_options = TextureOptions {
+                magnification: TextureFilter::Nearest,
+                minification: TextureFilter::Nearest,
+            };
+            if let Some(ref mut tex) = self.checkerboard_texture {
+                tex.set(ImageData::Color(Arc::new(image)), tex_options);
+            } else {
+                self.checkerboard_texture = Some(ctx.load_texture(
+                    "checkerboard_bg",
+                    ImageData::Color(Arc::new(image)),
+                    tex_options,
+                ));
+            }
+            self.checkerboard_brightness_cached = brightness;
+            self.checkerboard_cached_size = (cols, rows);
         }
+
+        let tex = self.checkerboard_texture.as_ref().unwrap();
+
+        // The texture covers `cols × rows` cells starting from the viewport
+        // top-left corner (clip.min), snapped to the cell grid so the pattern
+        // is perfectly static on screen regardless of pan position.
+        let grid_origin_x = (clip.min.x / cell).floor() * cell;
+        let grid_origin_y = (clip.min.y / cell).floor() * cell;
+
+        // Map the image_rect portion of the grid into UV coordinates.
+        // u = (screen_x - grid_origin) / (cols * cell)  (similarly for v).
+        let tex_w = cols as f32 * cell;
+        let tex_h = rows as f32 * cell;
+        let u_min = (rect.min.x - grid_origin_x) / tex_w;
+        let v_min = (rect.min.y - grid_origin_y) / tex_h;
+        let u_max = (rect.max.x - grid_origin_x) / tex_w;
+        let v_max = (rect.max.y - grid_origin_y) / tex_h;
+        let uv = Rect::from_min_max(
+            Pos2::new(u_min, v_min),
+            Pos2::new(u_max, v_max),
+        );
+
+        painter.image(tex.id(), rect, uv, Color32::WHITE);
     }
 
     /// Converts screen position to canvas pixel coordinates

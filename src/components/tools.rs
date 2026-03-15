@@ -11564,21 +11564,12 @@ impl ToolsPanel {
             let ux = dx * inv_len;
             let uy = dy * inv_len;
 
-            // Downscale during drag for responsiveness
-            let scale: u32 = if self.gradient_state.dragging {
-                let pixels = w as u64 * h as u64;
-                if pixels > 4_000_000 {
-                    4
-                } else if pixels > 1_000_000 {
-                    2
-                } else {
-                    1
-                }
-            } else {
-                1
-            };
-            let rw = w.div_ceil(scale);
-            let rh = h.div_ceil(scale);
+            // Downscale during drag for responsiveness — use the
+            // same preview_scale as the GPU path so buffer dimensions
+            // are consistent across both paths.
+            let scale: u32 = preview_scale;
+            let rw = gen_w;
+            let rh = gen_h;
             let scale_f = scale as f32;
 
             let row_stride = rw as usize * 4;
@@ -11723,10 +11714,13 @@ impl ToolsPanel {
                     dst[3] = src[3];
                 });
             canvas_state.preview_flat_ready = true;
-            // Populate preview_layer with full-res straight-alpha data so that
-            // commit_gradient (which reads preview_layer) works correctly.
-            // Display still uses preview_flat_buffer (premultiplied fast path).
-            canvas_state.preview_layer = Some(TiledImage::from_raw_rgba(w, h, &full_buf));
+            // Populate preview_layer so that commit_gradient works correctly.
+            // When downscaled (preview_scale > 1), use the actual buffer
+            // dimensions — commit will re-render at full res on mouse release
+            // (dragging=false → preview_scale=1) before commit_gradient runs.
+            let pl_w = if preview_scale > 1 { gen_w } else { w };
+            let pl_h = if preview_scale > 1 { gen_h } else { h };
+            canvas_state.preview_layer = Some(TiledImage::from_raw_rgba(pl_w, pl_h, &full_buf));
             canvas_state.preview_force_composite = false;
             canvas_state.preview_downscale = preview_scale;
         } else {

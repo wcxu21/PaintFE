@@ -6,6 +6,20 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## [1.1.4] - 2026-03-15
+
+### Improved
+- **Static screen-space checkerboard**: Transparency checkerboard is now a static screen-anchored pattern (Paint.NET / Photoshop style) rendered as a single textured quad — O(1) cost at any zoom or canvas size, eliminates the previous per-cell rect tessellation that caused panning lag at 4K.
+- **Eraser checkerboard alignment**: Eraser preview no longer bakes a canvas-resolution checkerboard into its texture (which caused moiré and misalignment at non-100% zooms). Instead, the screen-resolution checkerboard is drawn as an underlay, giving a seamless pattern at any zoom.
+- **Release binary optimization**: Added `strip = true`, `lto = true`, and `codegen-units = 1` to the release profile for smaller binaries and reduced false-positive AV heuristic triggers.
+
+### Fixed
+- **Gradient tool crash on 4K images**: Fixed crash caused by `from_raw_rgba` receiving full canvas dimensions with a downscaled buffer, and CPU fallback using a different downscale factor than the GPU path.
+- **Panning lag at intermediate zoom levels on 4K**: Root cause was checkerboard tessellation generating 41K rects at ~31% zoom. Resolved by the new texture-based approach (1 quad).
+- **History panel scrollbar position**: Scrollbar no longer appears in the middle of the panel; uses `auto_shrink(false)` to fill available width without a feedback loop.
+
+---
+
 ## [1.1.3] - 2026-03-09
 
 ### Improved

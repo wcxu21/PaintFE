@@ -1037,11 +1037,10 @@ impl HistoryPanel {
         assets: &Assets,
     ) {
         // Show history list (no undo/redo buttons - they're in the toolbar)
-        let scroll_width = ui.available_width();
         egui::ScrollArea::vertical()
             .max_height(180.0)
+            .auto_shrink(false)
             .show(ui, |ui| {
-                ui.set_max_width(scroll_width);
                 let items = history.undo_history();
                 if items.is_empty() {
                     ui.weak("No history yet");
