@@ -2038,6 +2038,24 @@ impl CanvasState {
                                         let current_a = top[3] as f32 / 255.0;
                                         let new_a = (current_a * (1.0 - mask_strength)).max(0.0);
                                         top[3] = (new_a * 255.0) as u8;
+                                    } else if matches!(preview_blend, BlendMode::Overwrite | BlendMode::Xor) {
+                                        // Coverage-weighted lerp: smoothly transition
+                                        // from original layer pixel to Overwrite result
+                                        // using the preview pixel's alpha as coverage.
+                                        // Hardness, flow, and brush geometry are all
+                                        // already baked into pp[3] via the brush LUT,
+                                        // so edge pixels (low coverage) barely change
+                                        // the original while interior pixels strongly
+                                        // shift toward the Overwrite/Xor result.
+                                        let ow = Self::blend_pixel_static(top, pp, preview_blend, 1.0);
+                                        let cov = pp[3] as f32 / 255.0;
+                                        let inv = 1.0 - cov;
+                                        top = Rgba([
+                                            (top[0] as f32 * inv + ow[0] as f32 * cov + 0.5) as u8,
+                                            (top[1] as f32 * inv + ow[1] as f32 * cov + 0.5) as u8,
+                                            (top[2] as f32 * inv + ow[2] as f32 * cov + 0.5) as u8,
+                                            (top[3] as f32 * inv + ow[3] as f32 * cov + 0.5) as u8,
+                                        ]);
                                     } else {
                                         top = Self::blend_pixel_static(top, pp, preview_blend, 1.0);
                                     }
@@ -2156,6 +2174,16 @@ impl CanvasState {
                                     let current_a = top[3] as f32 / 255.0;
                                     let new_a = (current_a * (1.0 - mask_strength)).max(0.0);
                                     top[3] = (new_a * 255.0) as u8;
+                                } else if matches!(preview_blend_mode, BlendMode::Overwrite | BlendMode::Xor) {
+                                    let ow = Self::blend_pixel_static(top, pp, preview_blend_mode, 1.0);
+                                    let cov = pp[3] as f32 / 255.0;
+                                    let inv = 1.0 - cov;
+                                    top = Rgba([
+                                        (top[0] as f32 * inv + ow[0] as f32 * cov + 0.5) as u8,
+                                        (top[1] as f32 * inv + ow[1] as f32 * cov + 0.5) as u8,
+                                        (top[2] as f32 * inv + ow[2] as f32 * cov + 0.5) as u8,
+                                        (top[3] as f32 * inv + ow[3] as f32 * cov + 0.5) as u8,
+                                    ]);
                                 } else {
                                     top =
                                         Self::blend_pixel_static(top, pp, preview_blend_mode, 1.0);
@@ -5477,7 +5505,8 @@ impl Canvas {
             );
 
             if draw_eraser_checkerboard
-                && state.preview_is_eraser
+                && (state.preview_is_eraser
+                    || matches!(state.preview_blend_mode, BlendMode::Overwrite | BlendMode::Xor))
                 && let Some(ref checker_tex) = self.checkerboard_texture
             {
                 let cell = 10.0_f32;
@@ -5502,7 +5531,8 @@ impl Canvas {
             clipped_painter.image(tex.id(), sub_rect, uv, tint);
         } else {
             if draw_eraser_checkerboard
-                && state.preview_is_eraser
+                && (state.preview_is_eraser
+                    || matches!(state.preview_blend_mode, BlendMode::Overwrite | BlendMode::Xor))
                 && let Some(ref checker_tex) = self.checkerboard_texture
             {
                 let cell = 10.0_f32;

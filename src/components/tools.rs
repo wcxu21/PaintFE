@@ -7164,7 +7164,7 @@ impl ToolsPanel {
                     self.commit_shape(canvas_state);
                 }
 
-                if let Some(pos_f) = canvas_pos_f32 {
+                if let Some(pos_f) = canvas_pos_unclamped {
                     if self.shapes_state.placed.is_some() {
                         // Shape is placed — handle move/resize/rotate
                         let hit_radius = 10.0 / zoom;
