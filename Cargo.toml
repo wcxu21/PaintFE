@@ -3,6 +3,14 @@ name = "PaintFE"
 version = "1.1.6"
 edition = "2024"
 
+[lib]
+name = "paintfe"
+path = "src/lib.rs"
+
+[[bin]]
+name = "PaintFE"
+path = "src/main.rs"
+
 [dependencies]
 eframe = "0.24.0"    # Wrapper for egui (the GUI framework)
 egui = "0.24.0"      # The core GUI library

@@ -1054,7 +1054,7 @@ fn inverse_bilinear(
 /// Catmull-Rom basis functions (cardinal spline, tau = 0.5).
 /// Returns weights for P_{i-1}, P_i, P_{i+1}, P_{i+2} given parameter t in [0,1].
 #[inline]
-fn catmull_rom_weights(t: f32) -> [f32; 4] {
+pub fn catmull_rom_weights(t: f32) -> [f32; 4] {
     let t2 = t * t;
     let t3 = t2 * t;
     [
@@ -1085,7 +1085,7 @@ fn catmull_rom_eval_1d(vals: &[[f32; 2]], i: usize, t: f32, count: usize) -> [f3
 /// where u spans [0, cols] and v spans [0, rows].
 /// `points` is row-major (rows+1) × (cols+1).
 #[inline]
-fn catmull_rom_surface(
+pub fn catmull_rom_surface(
     points: &[[f32; 2]],
     cols: usize,
     rows: usize,

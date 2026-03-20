@@ -4,30 +4,12 @@
 //   the launching terminal, then we reopen CONOUT$/CONIN$ so Rust's println!/eprintln!
 //   route through the correct handles (necessary when SUBSYSTEM:WINDOWS is set).
 #![windows_subsystem = "windows"]
-#![allow(dead_code)] // API surface kept for future features, scripting, and GPU pipelines
-#![allow(clippy::too_many_arguments)]
-#![allow(clippy::type_complexity)]
-#![allow(clippy::large_enum_variant)]
-#![allow(clippy::unnecessary_unwrap)]
 
-#[macro_use]
-mod i18n;
-mod app;
-mod assets;
-mod canvas;
-mod cli;
-mod components;
-mod gpu;
-mod io;
-mod ipc;
-pub mod logger;
-mod ops;
-mod project;
-mod signal_draw;
-mod signal_widgets;
-mod theme;
-
-use app::PaintFEApp;
+use paintfe::app::PaintFEApp;
+use paintfe::cli;
+use paintfe::i18n;
+use paintfe::ipc;
+use paintfe::logger;
 use eframe::egui;
 
 fn main() -> Result<(), eframe::Error> {

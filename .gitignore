@@ -22,3 +22,6 @@ TODO.md
 TextPlan.md
 visual_overhaul_plan.md
 *.local.html
+
+# Test failure artifacts (diffs, actual outputs)
+tests/output/

@@ -8592,7 +8592,7 @@ impl ToolsPanel {
     /// B6: Rebuild brush alpha LUT when brush properties change.
     /// The LUT maps squared-distance ratio (0..255 → 0.0..1.0 of `dist_sq/radius_sq`)
     /// to alpha (0..255).  Eliminates per-pixel `sqrt` + `smoothstep`.
-    fn rebuild_brush_lut(&mut self) {
+    pub fn rebuild_brush_lut(&mut self) {
         let params = (
             self.properties.size,
             self.properties.hardness,
@@ -8697,7 +8697,7 @@ impl ToolsPanel {
         x * x * (3.0 - 2.0 * x)
     }
 
-    fn draw_circle_no_dirty(
+    pub fn draw_circle_no_dirty(
         &self,
         target_image: &mut TiledImage,
         width: u32,
@@ -9312,7 +9312,7 @@ impl ToolsPanel {
         }
     }
 
-    fn draw_line_no_dirty(
+    pub fn draw_line_no_dirty(
         &mut self,
         target_image: &mut TiledImage,
         width: u32,
