@@ -393,8 +393,14 @@ impl PaintFEApp {
         theme.apply_overrides(&ov);
         theme.apply(&cc.egui_ctx);
 
-        // Initialize with one default project
-        let initial_project = Project::new_untitled(1, 800, 600);
+        // Initialize with one default project (or empty if disabled in settings)
+        let (initial_projects, initial_counter) = if settings.create_canvas_on_startup {
+            let w = settings.default_canvas_width.max(1);
+            let h = settings.default_canvas_height.max(1);
+            (vec![Project::new_untitled(1, w, h)], 1usize)
+        } else {
+            (Vec::new(), 0usize)
+        };
 
         // Initialize assets
         let mut assets = Assets::new();
@@ -419,11 +425,12 @@ impl PaintFEApp {
         );
 
         let canvas = Canvas::new(&settings.preferred_gpu);
+        let create_canvas_on_startup = settings.create_canvas_on_startup;
 
         Self {
-            projects: vec![initial_project],
+            projects: initial_projects,
             active_project_index: 0,
-            untitled_counter: 1,
+            untitled_counter: initial_counter,
             canvas,
             file_handler: FileHandler::new(),
             tools_panel: tools::ToolsPanel::default(),
@@ -479,7 +486,7 @@ impl PaintFEApp {
             last_autosave: std::time::Instant::now(),
             first_frame: true,
             ipc_receiver,
-            close_initial_blank: !startup_files.is_empty(),
+            close_initial_blank: !startup_files.is_empty() && create_canvas_on_startup,
             pending_startup_files: startup_files,
         }
     }
@@ -545,12 +552,8 @@ impl PaintFEApp {
 
         self.projects.remove(index);
 
-        // Adjust active index
+        // Adjust active index — allow empty state
         if self.projects.is_empty() {
-            // Create a new untitled project if all are closed
-            self.untitled_counter += 1;
-            let project = Project::new_untitled(self.untitled_counter, 800, 600);
-            self.projects.push(project);
             self.active_project_index = 0;
         } else if self.active_project_index >= self.projects.len() {
             self.active_project_index = self.projects.len() - 1;
@@ -572,9 +575,6 @@ impl PaintFEApp {
         }
         self.projects.remove(index);
         if self.projects.is_empty() {
-            self.untitled_counter += 1;
-            let project = Project::new_untitled(self.untitled_counter, 800, 600);
-            self.projects.push(project);
             self.active_project_index = 0;
         } else if self.active_project_index >= self.projects.len() {
             self.active_project_index = self.projects.len() - 1;
@@ -1838,17 +1838,21 @@ impl eframe::App for PaintFEApp {
 
             // Compute current canvas position from mouse (without borrowing self mutably).
             let cur_canvas_pos: Option<(i32, i32)> =
-                ctx.input(|i| i.pointer.hover_pos()).and_then(|pos| {
-                    canvas_rect.and_then(|rect| {
-                        self.canvas
-                            .screen_to_canvas_pub(
-                                pos,
-                                rect,
-                                &self.projects[self.active_project_index].canvas_state,
-                            )
-                            .map(|(x, y)| (x as i32, y as i32))
+                if self.active_project_index < self.projects.len() {
+                    ctx.input(|i| i.pointer.hover_pos()).and_then(|pos| {
+                        canvas_rect.and_then(|rect| {
+                            self.canvas
+                                .screen_to_canvas_pub(
+                                    pos,
+                                    rect,
+                                    &self.projects[self.active_project_index].canvas_state,
+                                )
+                                .map(|(x, y)| (x as i32, y as i32))
+                        })
                     })
-                });
+                } else {
+                    None
+                };
 
             if primary_pressed
                 && over_canvas
@@ -2272,6 +2276,7 @@ impl eframe::App for PaintFEApp {
 
         // --- Top Menu Bar ---
         let menu_kb = self.settings.keybindings.clone();
+        let has_project = !self.projects.is_empty();
         let menu_resp = egui::TopBottomPanel::top("menu_bar")
             .frame(self.theme.menu_frame())
             .exact_height(28.0)
@@ -2310,10 +2315,11 @@ impl eframe::App for PaintFEApp {
                         ui.separator();
                         if self
                             .assets
-                            .menu_item_shortcut(
+                            .menu_item_shortcut_enabled(
                                 ui,
                                 Icon::MenuFileSave,
                                 &t!("menu.file.save"),
+                                has_project,
                                 &menu_kb,
                                 BindableAction::Save,
                             )
@@ -2343,10 +2349,11 @@ impl eframe::App for PaintFEApp {
                         }
                         if self
                             .assets
-                            .menu_item_shortcut(
+                            .menu_item_shortcut_enabled(
                                 ui,
                                 Icon::MenuFileSaveAs,
                                 &t!("menu.file.save_as"),
+                                has_project,
                                 &menu_kb,
                                 BindableAction::SaveAs,
                             )
@@ -2405,7 +2412,7 @@ impl eframe::App for PaintFEApp {
                         ui.separator();
                         if self
                             .assets
-                            .menu_item(ui, Icon::MenuFilePrint, &t!("menu.file.print"))
+                            .menu_item_enabled(ui, Icon::MenuFilePrint, &t!("menu.file.print"), has_project)
                             .clicked()
                         {
                             if let Some(project) = self.active_project_mut() {
@@ -2434,6 +2441,7 @@ impl eframe::App for PaintFEApp {
                     });
 
                     ui.menu_button(t!("menu.edit"), |ui| {
+                        ui.set_enabled(has_project);
                         let can_undo = self.active_project().is_some_and(|p| p.history.can_undo());
                         let can_redo = self.active_project().is_some_and(|p| p.history.can_redo());
 
@@ -2685,6 +2693,7 @@ impl eframe::App for PaintFEApp {
                     // ==================== CANVAS MENU (was: Image) ====================
                     let no_dialog = !modal_open;
                     ui.menu_button(t!("menu.canvas"), |ui| {
+                        ui.set_enabled(has_project);
                         if self
                             .assets
                             .menu_item_shortcut_below_enabled(
@@ -2860,6 +2869,7 @@ impl eframe::App for PaintFEApp {
 
                     // ==================== COLOR MENU (was: Adjustments) ====================
                     ui.menu_button(t!("menu.color"), |ui| {
+                        ui.set_enabled(has_project);
                         // --- Instant adjustments (no dialog) ---
                         if self
                             .assets
@@ -3167,6 +3177,7 @@ impl eframe::App for PaintFEApp {
 
                     // ==================== FILTER MENU (was: Effects) ====================
                     ui.menu_button(t!("menu.filter"), |ui| {
+                        ui.set_enabled(has_project);
                         // -- Blur submenu --
                         ui.menu_button(t!("menu.filter.blur"), |ui| {
                             if self
@@ -3700,6 +3711,7 @@ impl eframe::App for PaintFEApp {
 
                     // ==================== GENERATE MENU (was: Effects > Render) ====================
                     ui.menu_button(t!("menu.generate"), |ui| {
+                        ui.set_enabled(has_project);
                         if self
                             .assets
                             .menu_item_enabled(
@@ -4568,6 +4580,7 @@ impl eframe::App for PaintFEApp {
                         Some(egui::FontId::proportional(crate::theme::Theme::FONT_LABEL));
                     ui.visuals_mut().override_text_color = Some(self.theme.text_color);
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.set_enabled(has_project);
                         if let Some(ref mut overlay) = self.paste_overlay {
                             // --- Paste overlay context bar ---
                             crate::signal_widgets::tool_shelf_tag(ui, "PASTE", self.theme.accent);

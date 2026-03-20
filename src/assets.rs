@@ -3070,6 +3070,14 @@ pub struct AppSettings {
     /// Language code (e.g. "en", "es", "fr"). Empty string = auto-detect system language.
     pub language: String,
 
+    // Startup canvas
+    /// Default canvas width for new untitled projects.
+    pub default_canvas_width: u32,
+    /// Default canvas height for new untitled projects.
+    pub default_canvas_height: u32,
+    /// Whether to create a blank canvas on startup (false = app starts empty).
+    pub create_canvas_on_startup: bool,
+
     // Behaviour
     /// Show a save-confirmation dialog when the user exits with unsaved projects.
     pub confirm_on_exit: bool,
@@ -3147,6 +3155,10 @@ impl Default for AppSettings {
             keybindings: KeyBindings::default(),
 
             language: String::new(), // empty = auto-detect on first boot
+
+            default_canvas_width: 800,
+            default_canvas_height: 600,
+            create_canvas_on_startup: true,
 
             confirm_on_exit: true,
 
@@ -3590,6 +3602,9 @@ impl AppSettings {
              onnx_runtime_path={}\n\
              birefnet_model_path={}\n\
              language={}\n\
+             default_canvas_width={}\n\
+             default_canvas_height={}\n\
+             create_canvas_on_startup={}\n\
              confirm_on_exit={}\n",
             self.gpu_acceleration,
             self.preferred_gpu,
@@ -3606,6 +3621,9 @@ impl AppSettings {
             self.onnx_runtime_path,
             self.birefnet_model_path,
             self.language,
+            self.default_canvas_width,
+            self.default_canvas_height,
+            self.create_canvas_on_startup,
             self.confirm_on_exit,
         );
         // Append keybinding lines
@@ -3790,6 +3808,15 @@ impl AppSettings {
                 }
                 "confirm_on_exit" => {
                     s.confirm_on_exit = val == "true";
+                }
+                "default_canvas_width" => {
+                    s.default_canvas_width = val.parse().unwrap_or(800u32).clamp(1, 65535);
+                }
+                "default_canvas_height" => {
+                    s.default_canvas_height = val.parse().unwrap_or(600u32).clamp(1, 65535);
+                }
+                "create_canvas_on_startup" => {
+                    s.create_canvas_on_startup = val == "true";
                 }
                 // Advanced customization fields
                 "advanced_customization" => {
@@ -4389,6 +4416,46 @@ impl SettingsWindow {
                     }
                 });
         });
+
+        // -- Startup Canvas -------------------------------------------
+        Self::section_header(ui, "Startup Canvas");
+        ui.checkbox(
+            &mut settings.create_canvas_on_startup,
+            "Create a blank canvas on startup",
+        );
+        ui.label(
+            egui::RichText::new(
+                "When disabled, the app starts empty — use File > New or the + tab to create a canvas.",
+            )
+            .small()
+            .weak(),
+        );
+        if settings.create_canvas_on_startup {
+            ui.add_space(4.0);
+            egui::Grid::new("startup_canvas_grid")
+                .num_columns(2)
+                .spacing([16.0, 6.0])
+                .min_col_width(160.0)
+                .show(ui, |ui| {
+                    ui.label("Default width:");
+                    ui.add(
+                        egui::DragValue::new(&mut settings.default_canvas_width)
+                            .clamp_range(1..=65535u32)
+                            .speed(1.0)
+                            .suffix(" px"),
+                    );
+                    ui.end_row();
+
+                    ui.label("Default height:");
+                    ui.add(
+                        egui::DragValue::new(&mut settings.default_canvas_height)
+                            .clamp_range(1..=65535u32)
+                            .speed(1.0)
+                            .suffix(" px"),
+                    );
+                    ui.end_row();
+                });
+        }
 
         // -- Behaviour -------------------------------------------------
         Self::section_header(ui, "Behaviour");
