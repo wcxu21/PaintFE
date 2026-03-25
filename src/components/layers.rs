@@ -2386,6 +2386,14 @@ impl LayersPanel {
         // The pixels are already up-to-date from the rasterize call above.
         canvas_state.layers[layer_idx].content = LayerContent::Raster;
 
+        // If this was the layer being tracked for text editing, clear the
+        // canvas-level marker so ensure_text_layers_rasterized no longer
+        // skips it and so the tools panel state can be cleaned up cleanly.
+        if canvas_state.text_editing_layer == Some(layer_idx) {
+            canvas_state.text_editing_layer = None;
+            canvas_state.clear_preview_state();
+        }
+
         snap.set_after(canvas_state);
         history.push(Box::new(snap));
 

@@ -145,6 +145,7 @@ fn multi_block_both_rasterized() {
         max_height: None,
         warp: TextWarp::None,
         glyph_overrides: Vec::new(),
+        cached_raster: None,
     });
     td.mark_dirty();
 

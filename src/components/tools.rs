@@ -1077,6 +1077,44 @@ pub enum TextBoxDragType {
     Rotate,
 }
 
+/// Saved raster text tool style, preserved across text-layer editing sessions.
+#[derive(Debug, Clone)]
+struct SavedRasterStyle {
+    font_family: String,
+    font_size: f32,
+    font_weight: u16,
+    bold: bool,
+    italic: bool,
+    underline: bool,
+    strikethrough: bool,
+    letter_spacing: f32,
+    width_scale: f32,
+    height_scale: f32,
+    line_spacing: f32,
+    alignment: crate::ops::text::TextAlignment,
+    last_color: [u8; 4],
+}
+
+impl Default for SavedRasterStyle {
+    fn default() -> Self {
+        Self {
+            font_family: "Arial".to_string(),
+            font_size: 23.0,
+            font_weight: 400,
+            bold: false,
+            italic: false,
+            underline: false,
+            strikethrough: false,
+            letter_spacing: 0.0,
+            width_scale: 1.0,
+            height_scale: 1.0,
+            line_spacing: 1.0,
+            alignment: crate::ops::text::TextAlignment::Left,
+            last_color: [0, 0, 0, 255],
+        }
+    }
+}
+
 /// State for the Text tool.
 #[derive(Debug)]
 pub struct TextToolState {
@@ -1095,6 +1133,10 @@ pub struct TextToolState {
     pub alignment: crate::ops::text::TextAlignment,
     /// Extra spacing between characters (px). Per-block, synced with TextStyle.letter_spacing.
     pub letter_spacing: f32,
+    /// Horizontal glyph scale multiplier (1.0 = normal). Synced with TextStyle.width_scale.
+    pub width_scale: f32,
+    /// Vertical glyph scale multiplier (1.0 = normal). Synced with TextStyle.height_scale.
+    pub height_scale: f32,
     /// Line height multiplier. Per-block, synced with ParagraphStyle.line_spacing.
     pub line_spacing: f32,
     pub available_fonts: Vec<String>,
@@ -1204,6 +1246,13 @@ pub struct TextToolState {
     /// Snapshot of the TextLayerData before editing started (for TextLayerEditCommand).
     /// Captured when `load_text_layer_block` is called, consumed by `commit_text_layer`.
     pub text_layer_before: Option<(usize, crate::ops::text_layer::TextLayerData)>,
+    /// Whether the text layer drag is using the fast cached preview path.
+    /// When true, layer.pixels shows all blocks EXCEPT the dragging one,
+    /// and the dragging block's pixels are in cached_raster_buf.
+    pub text_layer_drag_cached: bool,
+    /// Style properties saved before entering text-layer editing mode, restored when
+    /// starting a new raster text session so text-layer styles don't bleed through.
+    saved_raster_style: SavedRasterStyle,
 }
 
 impl Default for TextToolState {
@@ -1223,6 +1272,8 @@ impl Default for TextToolState {
             anti_alias: true,
             alignment: crate::ops::text::TextAlignment::Left,
             letter_spacing: 0.0,
+            width_scale: 1.0,
+            height_scale: 1.0,
             line_spacing: 1.0,
             available_fonts: Vec::new(),
             font_search: String::new(),
@@ -1280,6 +1331,8 @@ impl Default for TextToolState {
             glyph_overrides: Vec::new(),
             glyph_overrides_dirty: false,
             text_layer_before: None,
+            text_layer_drag_cached: false,
+            saved_raster_style: SavedRasterStyle::default(),
         }
     }
 }
@@ -1790,6 +1843,46 @@ impl ToolsPanel {
     /// Take the pending inpaint request (if any) for async dispatch
     pub fn take_pending_inpaint(&mut self) -> Option<crate::ops::inpaint::InpaintRequest> {
         self.content_aware_state.pending_inpaint.take()
+    }
+
+    /// Cancel any active text editing session without committing.
+    /// Call this whenever the layer being edited is rasterized or otherwise
+    /// converted away from `LayerContent::Text`, so that the text tool no
+    /// longer holds stale `is_editing` / `editing_text_layer` state that
+    /// would otherwise absorb canvas clicks and prevent other tools from
+    /// working.
+    pub fn cancel_text_editing(&mut self, canvas_state: &mut crate::canvas::CanvasState) {
+        if !self.text_state.is_editing && !self.text_state.editing_text_layer {
+            return;
+        }
+        self.stroke_tracker.cancel();
+        self.text_state.text.clear();
+        self.text_state.cursor_pos = 0;
+        self.text_state.is_editing = false;
+        self.text_state.editing_text_layer = false;
+        self.text_state.active_block_id = None;
+        self.text_state.selection = crate::ops::text_layer::TextSelection::default();
+        self.text_state.text_effects = crate::ops::text_layer::TextEffects::default();
+        self.text_state.text_effects_dirty = false;
+        self.text_state.text_warp = crate::ops::text_layer::TextWarp::None;
+        self.text_state.text_warp_dirty = false;
+        self.text_state.text_box_drag = None;
+        self.text_state.active_block_max_width = None;
+        self.text_state.active_block_max_height = None;
+        self.text_state.active_block_height = 0.0;
+        self.text_state.glyph_edit_mode = false;
+        self.text_state.selected_glyphs.clear();
+        self.text_state.cached_glyph_bounds.clear();
+        self.text_state.glyph_bounds_dirty = true;
+        self.text_state.glyph_drag = None;
+        self.text_state.glyph_overrides.clear();
+        self.text_state.glyph_overrides_dirty = false;
+        self.text_state.text_layer_drag_cached = false;
+        self.text_state.text_layer_before = None;
+        self.text_state.origin = None;
+        canvas_state.text_editing_layer = None;
+        canvas_state.clear_preview_state();
+        canvas_state.mark_dirty(None);
     }
 
     /// Returns true if the user is actively painting (brush/eraser stroke in progress).
@@ -5710,7 +5803,7 @@ impl ToolsPanel {
                         mw.max(font_size * 2.0)
                     } else if let Some(ref font) = self.text_state.loaded_font {
                         use ab_glyph::{Font as _, ScaleFont as _};
-                        let scaled = font.as_scaled(font_size);
+                        let scaled = font.as_scaled(ab_glyph::PxScale { x: font_size * self.text_state.width_scale, y: font_size * self.text_state.height_scale });
                         let lines: Vec<&str> = self.text_state.text.split('\n').collect();
                         let mut max_w = font_size * 2.0;
                         for line in &lines {
@@ -5831,6 +5924,103 @@ impl ToolsPanel {
                             self.text_state.drag_offset =
                                 [pos_f.0 - origin[0], pos_f.1 - origin[1]];
                         }
+                        // --- Text layer drag optimization: cache block pixels ---
+                        // At drag start, extract the active block's rasterized pixels
+                        // into cached_raster_buf and re-rasterize the layer without
+                        // the active block. During drag, we blit the cached block at
+                        // the new offset into preview_layer (avoiding per-frame
+                        // re-rasterization of the entire text layer).
+                        self.text_state.text_layer_drag_cached = false;
+                        if self.text_state.editing_text_layer
+                            && let Some(bid) = self.text_state.active_block_id
+                            && let Some(layer) = canvas_state.layers.get_mut(canvas_state.active_layer_index)
+                            && let crate::canvas::LayerContent::Text(ref mut td) = layer.content
+                            && let Some(block_idx) = td.blocks.iter().position(|b| b.id == bid)
+                        {
+                                // 1. Ensure the layer is fully rasterized first
+                                let w = canvas_state.width;
+                                let h = canvas_state.height;
+
+                                // 2. Extract the active block's tight pixel buffer.
+                                //    Use the per-block cached_raster if available,
+                                //    otherwise rasterize just this block into a temp buffer.
+                                let block = &td.blocks[block_idx];
+                                let (buf, buf_w, buf_h, off_x, off_y, origin) =
+                                    if let Some(ref cached) = block.cached_raster
+                                        && cached.buf_w > 0
+                                        && cached.buf_h > 0
+                                    {
+                                        let dx = (block.position[0] - cached.origin[0]).round() as i32;
+                                        let dy = (block.position[1] - cached.origin[1]).round() as i32;
+                                        (
+                                            cached.buf.clone(),
+                                            cached.buf_w,
+                                            cached.buf_h,
+                                            cached.off_x + dx,
+                                            cached.off_y + dy,
+                                            block.position,
+                                        )
+                                    } else {
+                                        // No per-block cache — rasterize just this block
+                                        let mut temp = crate::canvas::TiledImage::new(w, h);
+                                        let mut cov = std::mem::take(&mut canvas_state.text_coverage_buf);
+                                        let mut gc = std::mem::take(&mut canvas_state.text_glyph_cache);
+                                        crate::ops::text_layer::rasterize_single_block(
+                                            &mut td.blocks[block_idx],
+                                            td.text_content_generation,
+                                            w, h,
+                                            &mut temp,
+                                            &mut cov,
+                                            &mut gc,
+                                        );
+                                        canvas_state.text_coverage_buf = cov;
+                                        canvas_state.text_glyph_cache = gc;
+                                        // Extract tight bounds from the temp tiled image
+                                        let block_pos = td.blocks[block_idx].position;
+                                        let raw = temp.extract_region_rgba(0, 0, w, h);
+                                        // Find tight AABB of non-transparent pixels
+                                        let (bx, by, bw, bh, tight) =
+                                            crate::ops::text_layer::find_tight_bounds_rgba(&raw, w, h);
+                                        if bw > 0 && bh > 0 {
+                                            (tight, bw, bh, bx as i32, by as i32, block_pos)
+                                        } else {
+                                            (Vec::new(), 0, 0, 0, 0, block_pos)
+                                        }
+                                    };
+
+                                if buf_w > 0 && buf_h > 0 {
+                                    self.text_state.cached_raster_buf = buf;
+                                    self.text_state.cached_raster_w = buf_w;
+                                    self.text_state.cached_raster_h = buf_h;
+                                    self.text_state.cached_raster_off_x = off_x;
+                                    self.text_state.cached_raster_off_y = off_y;
+                                    self.text_state.cached_raster_origin = Some(origin);
+
+                                    // 3. Re-rasterize the layer WITHOUT the active block.
+                                    //    Temporarily empty the block's runs, rasterize, restore.
+                                    let saved_runs = std::mem::take(&mut td.blocks[block_idx].runs);
+                                    td.mark_dirty();
+                                    {
+                                        let mut cov = std::mem::take(&mut canvas_state.text_coverage_buf);
+                                        let mut gc = std::mem::take(&mut canvas_state.text_glyph_cache);
+                                        let new_pixels = td.rasterize(w, h, &mut cov, &mut gc);
+                                        td.raster_generation = td.cache_generation;
+                                        layer.pixels = new_pixels;
+                                        layer.invalidate_lod();
+                                        layer.gpu_generation += 1;
+                                        canvas_state.text_coverage_buf = cov;
+                                        canvas_state.text_glyph_cache = gc;
+                                    }
+                                    // Restore the block's runs
+                                    if let crate::canvas::LayerContent::Text(ref mut td2) = canvas_state.layers[canvas_state.active_layer_index].content {
+                                        td2.blocks[block_idx].runs = saved_runs;
+                                        // Mark dirty again so the full layer will re-rasterize on drag end
+                                        td2.mark_position_dirty();
+                                    }
+
+                                    self.text_state.text_layer_drag_cached = true;
+                                }
+                        }
                     }
                 }
 
@@ -5851,7 +6041,7 @@ impl ToolsPanel {
                         // Compute natural width for handle positioning
                         if let Some(ref font) = self.text_state.loaded_font {
                             use ab_glyph::{Font as _, ScaleFont as _};
-                            let scaled = font.as_scaled(font_size);
+                            let scaled = font.as_scaled(ab_glyph::PxScale { x: font_size * self.text_state.width_scale, y: font_size * self.text_state.height_scale });
                             let lines: Vec<&str> = self.text_state.text.split('\n').collect();
                             let mut max_w = font_size * 2.0;
                             for line in &lines {
@@ -6032,7 +6222,7 @@ impl ToolsPanel {
                         let compute_natural_width = || -> f32 {
                             if let Some(ref font) = self.text_state.loaded_font {
                                 use ab_glyph::{Font as _, ScaleFont as _};
-                                let scaled = font.as_scaled(font_size);
+                                let scaled = font.as_scaled(ab_glyph::PxScale { x: font_size * self.text_state.width_scale, y: font_size * self.text_state.height_scale });
                                 let ls = self.text_state.letter_spacing;
                                 let lines: Vec<&str> = self.text_state.text.split('\n').collect();
                                 let mut max_w = font_size * 2.0;
@@ -6206,10 +6396,61 @@ impl ToolsPanel {
                     let new_y = pos_f.1 - self.text_state.drag_offset[1];
                     self.text_state.origin = Some([new_x, new_y]);
 
-                    if self.text_state.editing_text_layer {
-                        // Text layer: update block position directly and force-rasterize.
-                        // Using the cached raster overlay would leave a ghost at the old position
-                        // because the layer's own rasterized pixels aren't cleared.
+                    if self.text_state.editing_text_layer
+                        && self.text_state.text_layer_drag_cached
+                    {
+                        // Fast path: use cached block pixels + preview layer.
+                        // layer.pixels already shows all blocks EXCEPT the dragging one
+                        // (set up at drag start). We just blit the cached block at the
+                        // new offset — zero re-rasterization per frame.
+                        if let Some(cached_origin) = self.text_state.cached_raster_origin {
+                            let dx = new_x - cached_origin[0];
+                            let dy = new_y - cached_origin[1];
+                            let off_x = self.text_state.cached_raster_off_x + dx as i32;
+                            let off_y = self.text_state.cached_raster_off_y + dy as i32;
+                            let buf_w = self.text_state.cached_raster_w;
+                            let buf_h = self.text_state.cached_raster_h;
+
+                            let mut preview =
+                                TiledImage::new(canvas_state.width, canvas_state.height);
+                            preview.blit_rgba_at(
+                                off_x,
+                                off_y,
+                                buf_w,
+                                buf_h,
+                                &self.text_state.cached_raster_buf,
+                            );
+
+                            canvas_state.preview_layer = Some(preview);
+                            canvas_state.preview_blend_mode = BlendMode::Normal;
+                            canvas_state.preview_force_composite = false;
+                            canvas_state.preview_is_eraser = false;
+                            canvas_state.preview_downscale = 1;
+                            canvas_state.preview_flat_ready = false;
+                            let visible_bounds =
+                                Self::clip_preview_bounds(canvas_state, off_x, off_y, buf_w, buf_h);
+                            // Merge old + new preview bounds so both regions get recomposited
+                            let combined_bounds = if let Some(old) = canvas_state.preview_stroke_bounds {
+                                Some(old.union(visible_bounds.unwrap_or(old)))
+                            } else {
+                                visible_bounds
+                            };
+                            canvas_state.preview_stroke_bounds = combined_bounds;
+                            if canvas_state.preview_texture_cache.is_some() {
+                                canvas_state.preview_dirty_rect = combined_bounds;
+                            } else {
+                                canvas_state.preview_texture_cache = None;
+                            }
+                            // Use targeted dirty rect instead of full-canvas dirty
+                            if let Some(bounds) = combined_bounds {
+                                canvas_state.mark_dirty(Some(bounds));
+                            } else {
+                                canvas_state.mark_dirty(None);
+                            }
+                        }
+                        self.text_state.preview_dirty = false;
+                    } else if self.text_state.editing_text_layer {
+                        // Fallback: force-rasterize (only if cached drag setup failed)
                         if let Some(layer) =
                             canvas_state.layers.get_mut(canvas_state.active_layer_index)
                             && let crate::canvas::LayerContent::Text(ref mut td) = layer.content
@@ -6217,7 +6458,7 @@ impl ToolsPanel {
                             && let Some(block) = td.blocks.iter_mut().find(|b| b.id == bid)
                         {
                             block.position = [new_x, new_y];
-                            td.mark_dirty();
+                            td.mark_position_dirty();
                         }
                         let idx = canvas_state.active_layer_index;
                         canvas_state.force_rasterize_text_layer(idx);
@@ -6273,6 +6514,26 @@ impl ToolsPanel {
                 }
 
                 if is_primary_released {
+                    // Finalize text layer drag: apply final position, re-rasterize once
+                    if self.text_state.dragging_handle
+                        && self.text_state.text_layer_drag_cached
+                        && self.text_state.editing_text_layer
+                    {
+                        if let Some(origin) = self.text_state.origin
+                            && let Some(layer) = canvas_state.layers.get_mut(canvas_state.active_layer_index)
+                            && let crate::canvas::LayerContent::Text(ref mut td) = layer.content
+                            && let Some(bid) = self.text_state.active_block_id
+                            && let Some(block) = td.blocks.iter_mut().find(|b| b.id == bid)
+                        {
+                            block.position = [origin[0], origin[1]];
+                            td.mark_position_dirty();
+                        }
+                        let idx = canvas_state.active_layer_index;
+                        canvas_state.force_rasterize_text_layer(idx);
+                        canvas_state.preview_layer = None;
+                        canvas_state.mark_dirty(None);
+                        self.text_state.text_layer_drag_cached = false;
+                    }
                     self.text_state.dragging_handle = false;
                     // Finish glyph drag
                     if self.text_state.glyph_drag.is_some() {
@@ -6350,6 +6611,8 @@ impl ToolsPanel {
                                                             self.text_state.font_size,
                                                             mw,
                                                             ls,
+                                                            self.text_state.width_scale,
+                                                            self.text_state.height_scale,
                                                         )
                                                     })
                                                     .collect();
@@ -6395,6 +6658,8 @@ impl ToolsPanel {
                                                     self.text_state.font_size,
                                                     mw,
                                                     ls,
+                                                    self.text_state.width_scale,
+                                                    self.text_state.height_scale,
                                                 )
                                             } else {
                                                 // No wrapping — use logical line mapping
@@ -6465,6 +6730,7 @@ impl ToolsPanel {
                                     self.text_state.text.clear();
                                     self.text_state.cursor_pos = 0;
                                     self.text_state.preview_dirty = true;
+                                    self.restore_raster_style();
                                     self.stroke_tracker.start_preview_tool(
                                         canvas_state.active_layer_index,
                                         "Text",
@@ -6487,6 +6753,7 @@ impl ToolsPanel {
                                 self.text_state.text.clear();
                                 self.text_state.cursor_pos = 0;
                                 self.text_state.preview_dirty = true;
+                                self.restore_raster_style();
                                 self.stroke_tracker
                                     .start_preview_tool(canvas_state.active_layer_index, "Text");
                             }
@@ -6532,6 +6799,7 @@ impl ToolsPanel {
                                 self.text_state.text.clear();
                                 self.text_state.cursor_pos = 0;
                                 self.text_state.preview_dirty = true;
+                                self.restore_raster_style();
                                 self.stroke_tracker
                                     .start_preview_tool(canvas_state.active_layer_index, "Text");
                             }
@@ -12568,6 +12836,8 @@ impl ToolsPanel {
         font_size: f32,
         max_width: f32,
         letter_spacing: f32,
+        width_scale: f32,
+        height_scale: f32,
     ) -> (usize, usize) {
         let logical_lines: Vec<&str> = text.split('\n').collect();
         let mut logical_byte_start = 0usize;
@@ -12582,6 +12852,8 @@ impl ToolsPanel {
                     font_size,
                     max_width,
                     letter_spacing,
+                    width_scale,
+                    height_scale,
                 );
                 let (vl, vc) =
                     Self::map_char_to_visual_line(logical_line, char_in_logical, &visual);
@@ -12593,6 +12865,8 @@ impl ToolsPanel {
                 font_size,
                 max_width,
                 letter_spacing,
+                width_scale,
+                height_scale,
             );
             visual_line_offset += visual.len();
             logical_byte_start = logical_byte_end + 1;
@@ -12610,6 +12884,8 @@ impl ToolsPanel {
         font_size: f32,
         max_width: f32,
         letter_spacing: f32,
+        width_scale: f32,
+        height_scale: f32,
     ) -> usize {
         let logical_lines: Vec<&str> = text.split('\n').collect();
         let mut logical_byte_start = 0usize;
@@ -12621,6 +12897,8 @@ impl ToolsPanel {
                 font_size,
                 max_width,
                 letter_spacing,
+                width_scale,
+                height_scale,
             );
             let visual_count = visual.len();
             if visual_line < visual_line_offset + visual_count {
@@ -12653,6 +12931,8 @@ impl ToolsPanel {
         font_size: f32,
         max_width: f32,
         letter_spacing: f32,
+        width_scale: f32,
+        height_scale: f32,
     ) -> Vec<(String, usize)> {
         let mut result = Vec::new();
         let logical_lines: Vec<&str> = text.split('\n').collect();
@@ -12664,6 +12944,8 @@ impl ToolsPanel {
                 font_size,
                 max_width,
                 letter_spacing,
+                width_scale,
+                height_scale,
             );
             let logical_chars: Vec<char> = logical_line.chars().collect();
             let mut char_consumed = 0usize;
@@ -12778,7 +13060,7 @@ impl ToolsPanel {
         let ls = self.text_state.letter_spacing;
         let line_height = if let Some(ref font) = self.text_state.loaded_font {
             use ab_glyph::{Font as _, ScaleFont as _};
-            font.as_scaled(font_size).height() * self.text_state.line_spacing
+            font.as_scaled(ab_glyph::PxScale { x: font_size * self.text_state.width_scale, y: font_size * self.text_state.height_scale }).height() * self.text_state.line_spacing
         } else {
             font_size * 1.2 * self.text_state.line_spacing
         };
@@ -12789,13 +13071,13 @@ impl ToolsPanel {
         // Compute natural text width (from font metrics)
         let natural_width = if let Some(ref font) = self.text_state.loaded_font {
             use ab_glyph::{Font as _, ScaleFont as _};
-            let scaled = font.as_scaled(font_size);
+            let scaled = font.as_scaled(ab_glyph::PxScale { x: font_size * self.text_state.width_scale, y: font_size * self.text_state.height_scale });
             // If max_width is set, word-wrap to compute visual lines
             if let Some(mw) = self.text_state.active_block_max_width {
                 let visual_lines: Vec<String> = lines
                     .iter()
                     .flat_map(|line| {
-                        crate::ops::text::word_wrap_line(line, font, font_size, mw, ls)
+                        crate::ops::text::word_wrap_line(line, font, font_size, mw, ls, self.text_state.width_scale, self.text_state.height_scale)
                     })
                     .collect();
                 let mut max_w = font_size * 2.0;
@@ -12850,7 +13132,7 @@ impl ToolsPanel {
         ) {
             let visual_lines: Vec<String> = lines
                 .iter()
-                .flat_map(|line| crate::ops::text::word_wrap_line(line, font, font_size, mw, ls))
+                .flat_map(|line| crate::ops::text::word_wrap_line(line, font, font_size, mw, ls, self.text_state.width_scale, self.text_state.height_scale))
                 .collect();
             visual_lines.len().max(1)
         } else {
@@ -13123,7 +13405,7 @@ impl ToolsPanel {
                 self.text_state.active_block_max_width,
                 &self.text_state.loaded_font,
             ) {
-                Self::compute_visual_lines_with_byte_offsets(full_text, font, font_size, mw, ls)
+                Self::compute_visual_lines_with_byte_offsets(full_text, font, font_size, mw, ls, self.text_state.width_scale, self.text_state.height_scale)
             } else {
                 // No wrapping — one visual line per logical line
                 let mut result = Vec::new();
@@ -13152,7 +13434,7 @@ impl ToolsPanel {
                                 .unwrap_or(0.0)
                         } else if let Some(ref font) = self.text_state.loaded_font {
                             use ab_glyph::{Font as _, ScaleFont as _};
-                            let scaled = font.as_scaled(font_size);
+                            let scaled = font.as_scaled(ab_glyph::PxScale { x: font_size * self.text_state.width_scale, y: font_size * self.text_state.height_scale });
                             let mut x = 0.0f32;
                             let mut prev = None;
                             for ch in line_text[..byte_in_line].chars() {
@@ -13179,7 +13461,7 @@ impl ToolsPanel {
                         } else {
                             let line_w = if let Some(ref font) = self.text_state.loaded_font {
                                 use ab_glyph::{Font as _, ScaleFont as _};
-                                let scaled = font.as_scaled(font_size);
+                                let scaled = font.as_scaled(ab_glyph::PxScale { x: font_size * self.text_state.width_scale, y: font_size * self.text_state.height_scale });
                                 let mut w = 0.0f32;
                                 let mut prev = None;
                                 for ch in line_text.chars() {
@@ -13257,6 +13539,8 @@ impl ToolsPanel {
                             font_size,
                             mw,
                             ls,
+                            self.text_state.width_scale,
+                            self.text_state.height_scale,
                         )
                     } else {
                         // No wrapping — use logical line mapping
@@ -13275,7 +13559,7 @@ impl ToolsPanel {
                     } else if let Some(ref font) = self.text_state.loaded_font {
                         // Fallback: compute from font metrics for the visual line text
                         use ab_glyph::{Font as _, ScaleFont as _};
-                        let scaled = font.as_scaled(font_size);
+                        let scaled = font.as_scaled(ab_glyph::PxScale { x: font_size * self.text_state.width_scale, y: font_size * self.text_state.height_scale });
                         // Get the visual line text to measure
                         let text_before = &self.text_state.text[..self.text_state.cursor_pos];
                         let last_line = text_before.rsplit('\n').next().unwrap_or(text_before);
@@ -13320,7 +13604,7 @@ impl ToolsPanel {
                             .text
                             .split('\n')
                             .flat_map(|line| {
-                                crate::ops::text::word_wrap_line(line, font, font_size, mw, ls)
+                                crate::ops::text::word_wrap_line(line, font, font_size, mw, ls, self.text_state.width_scale, self.text_state.height_scale)
                             })
                             .collect();
                         all_visual.get(cursor_line).cloned().unwrap_or_default()
@@ -13329,7 +13613,7 @@ impl ToolsPanel {
                     };
                     let line_w = if let Some(ref font) = self.text_state.loaded_font {
                         use ab_glyph::{Font as _, ScaleFont as _};
-                        let scaled = font.as_scaled(font_size);
+                        let scaled = font.as_scaled(ab_glyph::PxScale { x: font_size * self.text_state.width_scale, y: font_size * self.text_state.height_scale });
                         let mut w = 0.0f32;
                         let mut prev = None;
                         for ch in current_line_text.chars() {
@@ -13357,7 +13641,7 @@ impl ToolsPanel {
 
             let csx = canvas_rect.min.x + cx * zoom;
             let csy = canvas_rect.min.y + cy * zoom;
-            let cursor_h = font_size * zoom;
+            let cursor_h = font_size * self.text_state.height_scale * zoom;
 
             let cursor_top = Pos2::new(csx, csy);
             let cursor_bot = Pos2::new(csx, csy + cursor_h);
@@ -14331,8 +14615,34 @@ impl ToolsPanel {
             .add(
                 egui::DragValue::new(&mut self.text_state.letter_spacing)
                     .speed(0.1)
-                    .clamp_range(-20.0..=50.0)
                     .suffix("px"),
+            )
+            .changed()
+        {
+            self.text_state.preview_dirty = true;
+        }
+
+        ui.separator();
+        ui.label("Letter Width");
+        if ui
+            .add(
+                egui::DragValue::new(&mut self.text_state.width_scale)
+                    .speed(0.01)
+                    .clamp_range(0.01..=f32::MAX)
+                    .suffix("×"),
+            )
+            .changed()
+        {
+            self.text_state.preview_dirty = true;
+        }
+
+        ui.label("Letter Height");
+        if ui
+            .add(
+                egui::DragValue::new(&mut self.text_state.height_scale)
+                    .speed(0.01)
+                    .clamp_range(0.01..=f32::MAX)
+                    .suffix("×"),
             )
             .changed()
         {
@@ -14462,6 +14772,14 @@ impl ToolsPanel {
                     run.style.letter_spacing = self.text_state.letter_spacing;
                     changed = true;
                 }
+                if run.style.width_scale.to_bits() != self.text_state.width_scale.to_bits() {
+                    run.style.width_scale = self.text_state.width_scale;
+                    changed = true;
+                }
+                if run.style.height_scale.to_bits() != self.text_state.height_scale.to_bits() {
+                    run.style.height_scale = self.text_state.height_scale;
+                    changed = true;
+                }
             }
             if changed {
                 td.mark_dirty();
@@ -14507,6 +14825,8 @@ impl ToolsPanel {
                 active_max_width,
                 self.text_state.letter_spacing,
                 self.text_state.line_spacing,
+                self.text_state.width_scale,
+                self.text_state.height_scale,
             );
             self.text_state.cached_line_advances = metrics.line_advances;
             self.text_state.cached_line_height = metrics.line_height;
@@ -14552,6 +14872,8 @@ impl ToolsPanel {
             active_max_width,
             self.text_state.letter_spacing,
             self.text_state.line_spacing,
+            self.text_state.width_scale,
+            self.text_state.height_scale,
         );
 
         // Cache cursor metrics from rasterization (Opt 7)
@@ -14608,6 +14930,29 @@ impl ToolsPanel {
     /// Load a text layer's data into the text tool state for editing.
     fn load_text_layer_for_editing(&mut self, canvas_state: &mut CanvasState) {
         self.load_text_layer_block(canvas_state, None, None);
+    }
+
+    /// Restore the raster text tool style that was saved before entering text-layer editing.
+    /// Call this when starting a new raster text session to prevent text-layer properties
+    /// from bleeding into the raster text tool.
+    fn restore_raster_style(&mut self) {
+        let s = self.text_state.saved_raster_style.clone();
+        self.text_state.font_family = s.font_family;
+        self.text_state.font_size = s.font_size;
+        self.text_state.font_weight = s.font_weight;
+        self.text_state.bold = s.bold;
+        self.text_state.italic = s.italic;
+        self.text_state.underline = s.underline;
+        self.text_state.strikethrough = s.strikethrough;
+        self.text_state.letter_spacing = s.letter_spacing;
+        self.text_state.width_scale = s.width_scale;
+        self.text_state.height_scale = s.height_scale;
+        self.text_state.line_spacing = s.line_spacing;
+        self.text_state.alignment = s.alignment;
+        self.text_state.last_color = s.last_color;
+        // Force font reload for the restored family
+        self.text_state.loaded_font_key.clear();
+        self.text_state.loaded_font = None;
     }
 
     /// Load a specific block from a text layer for editing.
@@ -14698,6 +15043,26 @@ impl ToolsPanel {
             return;
         };
 
+        // Save raster text style before overwriting with text-layer properties, so we can
+        // restore it when the user switches back to a raster layer.
+        if !self.text_state.editing_text_layer {
+            self.text_state.saved_raster_style = SavedRasterStyle {
+                font_family: self.text_state.font_family.clone(),
+                font_size: self.text_state.font_size,
+                font_weight: self.text_state.font_weight,
+                bold: self.text_state.bold,
+                italic: self.text_state.italic,
+                underline: self.text_state.underline,
+                strikethrough: self.text_state.strikethrough,
+                letter_spacing: self.text_state.letter_spacing,
+                width_scale: self.text_state.width_scale,
+                height_scale: self.text_state.height_scale,
+                line_spacing: self.text_state.line_spacing,
+                alignment: self.text_state.alignment,
+                last_color: self.text_state.last_color,
+            };
+        }
+
         self.text_state.origin = Some(position);
         self.text_state.text = block_text.clone();
         self.text_state.cursor_pos = block_text.len();
@@ -14714,6 +15079,8 @@ impl ToolsPanel {
         self.text_state.strikethrough = style.strikethrough;
         self.text_state.last_color = style.color;
         self.text_state.letter_spacing = style.letter_spacing;
+        self.text_state.width_scale = style.width_scale;
+        self.text_state.height_scale = style.height_scale;
         self.text_state.line_spacing = block_line_spacing;
         self.text_state.preview_dirty = true;
         self.text_state.active_block_max_width = block_max_width;
@@ -14980,7 +15347,7 @@ impl ToolsPanel {
             self.text_state.active_block_max_width,
             &self.text_state.loaded_font,
         ) {
-            Self::byte_pos_to_visual(text, self.text_state.cursor_pos, font, font_size, mw, ls)
+            Self::byte_pos_to_visual(text, self.text_state.cursor_pos, font, font_size, mw, ls, self.text_state.width_scale, self.text_state.height_scale)
         } else {
             // No wrapping — use logical lines
             let before = &text[..self.text_state.cursor_pos];
@@ -14995,7 +15362,7 @@ impl ToolsPanel {
             &self.text_state.loaded_font,
         ) {
             text.split('\n')
-                .flat_map(|line| crate::ops::text::word_wrap_line(line, font, font_size, mw, ls))
+                .flat_map(|line| crate::ops::text::word_wrap_line(line, font, font_size, mw, ls, self.text_state.width_scale, self.text_state.height_scale))
                 .count()
         } else {
             text.split('\n').count()
@@ -15056,7 +15423,7 @@ impl ToolsPanel {
             self.text_state.active_block_max_width,
             &self.text_state.loaded_font,
         ) {
-            Self::visual_to_byte_pos(text, target_line, target_char, font, font_size, mw, ls)
+            Self::visual_to_byte_pos(text, target_line, target_char, font, font_size, mw, ls, self.text_state.width_scale, self.text_state.height_scale)
         } else {
             // No wrapping — use logical lines
             let lines: Vec<&str> = text.split('\n').collect();
@@ -15230,6 +15597,8 @@ impl ToolsPanel {
             color,
             letter_spacing: self.text_state.letter_spacing,
             baseline_offset: 0.0,
+            width_scale: self.text_state.width_scale,
+            height_scale: self.text_state.height_scale,
         };
 
         // Update the TextLayerData on the active layer
@@ -15322,6 +15691,7 @@ impl ToolsPanel {
         self.text_state.glyph_drag = None;
         self.text_state.glyph_overrides.clear();
         self.text_state.glyph_overrides_dirty = false;
+        self.text_state.text_layer_drag_cached = false;
         self.text_state.text_layer_before = None;
         self.text_state.origin = None;
         canvas_state.text_editing_layer = None;

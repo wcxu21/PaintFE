@@ -41,6 +41,26 @@ pub struct TextLayerData {
     pub cached_text_w: u32,
     #[serde(skip)]
     pub cached_text_h: u32,
+    /// Generation counter for block position changes (not content).
+    #[serde(skip)]
+    pub position_generation: u64,
+    /// The position generation at which `cached_text_rgba` was last computed.
+    #[serde(skip)]
+    pub cached_position_generation: u64,
+}
+
+/// Cached rasterization result for a single text block.
+/// Stores the tight pixel buffer and the origin used to compute offsets.
+/// On position-only change, new offsets are derived without re-rasterizing.
+#[derive(Clone, Debug)]
+pub struct CachedBlockRaster {
+    pub buf: Vec<u8>,
+    pub buf_w: u32,
+    pub buf_h: u32,
+    pub off_x: i32,
+    pub off_y: i32,
+    pub origin: [f32; 2],
+    pub content_generation: u64,
 }
 
 /// A single text block (paragraph/text field) within a text layer.
@@ -67,6 +87,9 @@ pub struct TextBlock {
     /// Per-glyph vertex overrides for manual glyph editing (Phase 5 — Batch 9).
     #[serde(default)]
     pub glyph_overrides: Vec<GlyphOverride>,
+    /// Cached rasterized buffer for fast position-only updates.
+    #[serde(skip)]
+    pub cached_raster: Option<CachedBlockRaster>,
 }
 
 // ---------------------------------------------------------------------------
@@ -127,6 +150,8 @@ pub struct TextStyle {
     pub color: [u8; 4],
     pub letter_spacing: f32,
     pub baseline_offset: f32,
+    pub width_scale: f32,
+    pub height_scale: f32,
 }
 
 /// Paragraph-level formatting.
@@ -487,6 +512,8 @@ impl Default for TextStyle {
             color: [255, 255, 255, 255],
             letter_spacing: 0.0,
             baseline_offset: 0.0,
+            width_scale: 1.0,
+            height_scale: 1.0,
         }
     }
 }
@@ -517,6 +544,7 @@ impl Default for TextLayerData {
                 max_height: None,
                 warp: TextWarp::None,
                 glyph_overrides: Vec::new(),
+                cached_raster: None,
             }],
             effects: TextEffects::default(),
             cache_generation: 1,
@@ -527,6 +555,8 @@ impl Default for TextLayerData {
             cached_text_generation: 0,
             cached_text_w: 0,
             cached_text_h: 0,
+            position_generation: 0,
+            cached_position_generation: 0,
         }
     }
 }
@@ -545,11 +575,19 @@ impl TextLayerData {
     pub fn mark_dirty(&mut self) {
         self.cache_generation = self.cache_generation.wrapping_add(1);
         self.text_content_generation = self.text_content_generation.wrapping_add(1);
+        self.position_generation = self.position_generation.wrapping_add(1);
     }
 
     /// Mark only effects as dirty (text content unchanged — can reuse cached text RGBA).
     pub fn mark_effects_dirty(&mut self) {
         self.cache_generation = self.cache_generation.wrapping_add(1);
+    }
+
+    /// Mark as dirty due to position-only change (preserves text content cache).
+    /// The glyph pixel cache will NOT be cleared since text_content_generation is unchanged.
+    pub fn mark_position_dirty(&mut self) {
+        self.cache_generation = self.cache_generation.wrapping_add(1);
+        self.position_generation = self.position_generation.wrapping_add(1);
     }
 
     /// Concatenate all text from all blocks into a single flat string
@@ -593,6 +631,7 @@ impl TextLayerData {
             max_height: None,
             warp: TextWarp::None,
             glyph_overrides: Vec::new(),
+            cached_raster: None,
         });
         self.mark_dirty();
         id
@@ -626,22 +665,23 @@ impl TextLayerData {
     ) -> TiledImage {
         let has_effects = self.effects.has_any();
 
-        // If text content hasn't changed, reuse cached text RGBA for effects-only updates.
+        // If text content AND positions haven't changed, reuse cached text RGBA.
         let text_rgba_valid = self.cached_text_generation == self.text_content_generation
+            && self.cached_position_generation == self.position_generation
             && !self.cached_text_rgba.is_empty()
             && self.cached_text_w == canvas_w
             && self.cached_text_h == canvas_h;
 
         if has_effects {
             // We need the raw text RGBA (no effects) to apply effects on top.
-            let text_rgba = if text_rgba_valid {
-                &self.cached_text_rgba
-            } else {
+            if !text_rgba_valid {
                 // Rasterize text into a flat RGBA buffer
                 let mut text_tiled = TiledImage::new(canvas_w, canvas_h);
-                for block in &self.blocks {
+                let content_gen = self.text_content_generation;
+                for i in 0..self.blocks.len() {
                     rasterize_block_multirun(
-                        block,
+                        &mut self.blocks[i],
+                        content_gen,
                         canvas_w,
                         canvas_h,
                         &mut text_tiled,
@@ -651,20 +691,85 @@ impl TextLayerData {
                 }
                 self.cached_text_rgba = text_tiled.extract_region_rgba(0, 0, canvas_w, canvas_h);
                 self.cached_text_generation = self.text_content_generation;
+                self.cached_position_generation = self.position_generation;
                 self.cached_text_w = canvas_w;
                 self.cached_text_h = canvas_h;
-                &self.cached_text_rgba
-            };
+            }
 
-            // Apply all effects to the text RGBA and produce a final composited buffer
-            let final_rgba = apply_text_effects(text_rgba, canvas_w, canvas_h, &self.effects);
-            TiledImage::from_raw_rgba(canvas_w, canvas_h, &final_rgba)
+            // Compute the maximum padding required by active effects.
+            // Shadow: offset + blur_radius + spread.  Outline: width.
+            let mut pad = 0.0f32;
+            if let Some(ref shadow) = self.effects.shadow {
+                pad = pad.max(
+                    shadow.offset_x.abs()
+                        + shadow.offset_y.abs()
+                        + shadow.blur_radius * 3.0
+                        + shadow.spread,
+                );
+            }
+            if let Some(ref outline) = self.effects.outline {
+                pad = pad.max(outline.width.ceil() + 2.0);
+            }
+            if let Some(ref inner) = self.effects.inner_shadow {
+                pad = pad.max(
+                    inner.offset_x.abs() + inner.offset_y.abs() + inner.blur_radius * 3.0,
+                );
+            }
+            let pad_px = (pad.ceil() as u32).max(4);
+
+            // Find tight AABB of non-transparent text pixels
+            let (bx, by, bw, bh, _) =
+                find_tight_bounds_rgba(&self.cached_text_rgba, canvas_w, canvas_h);
+
+            if bw == 0 || bh == 0 {
+                // No visible text — return empty
+                return TiledImage::new(canvas_w, canvas_h);
+            }
+
+            // Expand bounds by effect padding, clamped to canvas
+            let rx = (bx as i32 - pad_px as i32).max(0) as u32;
+            let ry = (by as i32 - pad_px as i32).max(0) as u32;
+            let rx2 = (bx + bw + pad_px).min(canvas_w);
+            let ry2 = (by + bh + pad_px).min(canvas_h);
+            let rw = rx2 - rx;
+            let rh = ry2 - ry;
+
+            // If the region covers most of the canvas, fall back to full-canvas path
+            let region_area = (rw as u64) * (rh as u64);
+            let canvas_area = (canvas_w as u64) * (canvas_h as u64);
+            if region_area * 2 >= canvas_area {
+                let final_rgba =
+                    apply_text_effects(&self.cached_text_rgba, canvas_w, canvas_h, &self.effects);
+                TiledImage::from_raw_rgba(canvas_w, canvas_h, &final_rgba)
+            } else {
+                // Extract tight region from cached RGBA
+                let cw = canvas_w as usize;
+                let mut region_in = vec![0u8; (rw as usize) * (rh as usize) * 4];
+                for row in 0..rh as usize {
+                    let src_off = ((ry as usize + row) * cw + rx as usize) * 4;
+                    let dst_off = row * rw as usize * 4;
+                    let len = rw as usize * 4;
+                    region_in[dst_off..dst_off + len]
+                        .copy_from_slice(&self.cached_text_rgba[src_off..src_off + len]);
+                }
+
+                let region_out = apply_text_effects(&region_in, rw, rh, &self.effects);
+
+                // Blit the effects result back into a TiledImage at the correct offset
+                let mut result = TiledImage::new(canvas_w, canvas_h);
+                result.blit_rgba_at(rx as i32, ry as i32, rw, rh, &region_out);
+                result
+            }
         } else {
-            // No effects — standard rasterization
+            // No effects — standard rasterization.
+            // Skip the full-canvas cache extraction (it's only needed when
+            // effects are added later, and will be populated on demand).
             let mut result = TiledImage::new(canvas_w, canvas_h);
-            for block in &self.blocks {
+            let content_gen = self.text_content_generation;
+            for i in 0..self.blocks.len() {
                 rasterize_block_multirun(
-                    block,
+                    &mut self.blocks[i],
+                    content_gen,
                     canvas_w,
                     canvas_h,
                     &mut result,
@@ -672,11 +777,13 @@ impl TextLayerData {
                     glyph_cache,
                 );
             }
-            // Cache text RGBA for potential future effect additions
-            self.cached_text_rgba = result.extract_region_rgba(0, 0, canvas_w, canvas_h);
-            self.cached_text_generation = self.text_content_generation;
-            self.cached_text_w = canvas_w;
-            self.cached_text_h = canvas_h;
+            // Invalidate cached text RGBA — it will be recomputed if effects are
+            // added later. This avoids a full-canvas extract_region_rgba every frame.
+            self.cached_text_rgba.clear();
+            self.cached_text_generation = 0;
+            self.cached_position_generation = 0;
+            self.cached_text_w = 0;
+            self.cached_text_h = 0;
             result
         }
     }
@@ -998,11 +1105,58 @@ fn maybe_rotate_and_blit(
     }
 }
 
+/// Public wrapper to rasterize a single block (by mutable ref) into a target TiledImage.
+/// Used by the text layer drag optimization to extract a single block's pixels.
+pub fn rasterize_single_block(
+    block: &mut TextBlock,
+    content_generation: u64,
+    canvas_w: u32,
+    canvas_h: u32,
+    target: &mut crate::canvas::TiledImage,
+    coverage_buf: &mut Vec<f32>,
+    glyph_cache: &mut GlyphPixelCache,
+) {
+    rasterize_block_multirun(block, content_generation, canvas_w, canvas_h, target, coverage_buf, glyph_cache);
+}
+
+/// Find the tight AABB of non-transparent pixels in an RGBA buffer.
+/// Returns (x, y, w, h, cropped_buf). Returns (0, 0, 0, 0, vec![]) if empty.
+pub fn find_tight_bounds_rgba(data: &[u8], w: u32, h: u32) -> (u32, u32, u32, u32, Vec<u8>) {
+    let (w_us, h_us) = (w as usize, h as usize);
+    let mut min_x = w_us;
+    let mut min_y = h_us;
+    let mut max_x = 0usize;
+    let mut max_y = 0usize;
+    for y in 0..h_us {
+        for x in 0..w_us {
+            if data[(y * w_us + x) * 4 + 3] > 0 {
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+            }
+        }
+    }
+    if max_x < min_x || max_y < min_y {
+        return (0, 0, 0, 0, Vec::new());
+    }
+    let tw = max_x - min_x + 1;
+    let th = max_y - min_y + 1;
+    let mut out = vec![0u8; tw * th * 4];
+    for y in 0..th {
+        let src_off = ((min_y + y) * w_us + min_x) * 4;
+        let dst_off = y * tw * 4;
+        out[dst_off..dst_off + tw * 4].copy_from_slice(&data[src_off..src_off + tw * 4]);
+    }
+    (min_x as u32, min_y as u32, tw as u32, th as u32, out)
+}
+
 /// Rasterize a single block with multi-run support.
 /// Each run can have a different font/size/weight/color. Runs on the same line
 /// share a common baseline (derived from the tallest ascent on that line).
 fn rasterize_block_multirun(
-    block: &TextBlock,
+    block: &mut TextBlock,
+    content_generation: u64,
     canvas_w: u32,
     canvas_h: u32,
     target: &mut TiledImage,
@@ -1022,8 +1176,8 @@ fn rasterize_block_multirun(
 
     // Precompute rotation pivot (matches UI overlay center)
     let rot_pivot = if has_rotation {
-        let layout = compute_block_layout(block);
-        Some(block_rotation_pivot(block, &layout))
+        let layout = compute_block_layout(&*block);
+        Some(block_rotation_pivot(&*block, &layout))
     } else {
         None
     };
@@ -1034,7 +1188,7 @@ fn rasterize_block_multirun(
             // Per-glyph into temp, then rotate the whole block result
             let mut temp = TiledImage::new(canvas_w, canvas_h);
             rasterize_block_per_glyph(
-                block,
+                &*block,
                 canvas_w,
                 canvas_h,
                 &mut temp,
@@ -1071,7 +1225,7 @@ fn rasterize_block_multirun(
                 }
             }
         } else {
-            rasterize_block_per_glyph(block, canvas_w, canvas_h, target, coverage_buf, glyph_cache);
+            rasterize_block_per_glyph(&*block, canvas_w, canvas_h, target, coverage_buf, glyph_cache);
         }
         return;
     }
@@ -1080,7 +1234,37 @@ fn rasterize_block_multirun(
         block.runs.len() <= 1 || block.runs.windows(2).all(|w| w[0].style == w[1].style);
 
     if single_style {
-        // Fast path: single style for the whole block
+        // Fast path: check per-block cache for position-only changes
+        if let Some(ref cached) = block.cached_raster
+            && cached.content_generation == content_generation
+            && cached.buf_w > 0
+            && cached.buf_h > 0
+        {
+            let dx = (block.position[0] - cached.origin[0]).round() as i32;
+            let dy = (block.position[1] - cached.origin[1]).round() as i32;
+            let adj_off_x = cached.off_x + dx;
+            let adj_off_y = cached.off_y + dy;
+            if has_warp {
+                if let Some((warped, ww, wh, wox, woy)) =
+                    apply_block_warp(&cached.buf, cached.buf_w, cached.buf_h, &block.warp)
+                {
+                    maybe_rotate_and_blit(
+                        target, &warped, ww, wh,
+                        adj_off_x + wox, adj_off_y + woy,
+                        block.rotation, canvas_w, canvas_h, rot_pivot,
+                    );
+                }
+            } else {
+                maybe_rotate_and_blit(
+                    target, &cached.buf, cached.buf_w, cached.buf_h,
+                    adj_off_x, adj_off_y,
+                    block.rotation, canvas_w, canvas_h, rot_pivot,
+                );
+            }
+            return;
+        }
+
+        // Cache miss: full rasterization
         let style = block.runs.first().map(|r| &r.style).unwrap_or_else(|| {
             static DEFAULT: std::sync::OnceLock<TextStyle> = std::sync::OnceLock::new();
             DEFAULT.get_or_init(TextStyle::default)
@@ -1117,7 +1301,22 @@ fn rasterize_block_multirun(
             block.max_width,
             style.letter_spacing,
             block.paragraph.line_spacing,
+            style.width_scale,
+            style.height_scale,
         );
+
+        // Cache the rasterized buffer for fast position-only updates
+        if rasterized.buf_w > 0 && rasterized.buf_h > 0 {
+            block.cached_raster = Some(CachedBlockRaster {
+                buf: rasterized.buf.clone(),
+                buf_w: rasterized.buf_w,
+                buf_h: rasterized.buf_h,
+                off_x: rasterized.off_x,
+                off_y: rasterized.off_y,
+                origin: block.position,
+                content_generation,
+            });
+        }
 
         if rasterized.buf_w > 0 && rasterized.buf_h > 0 {
             if has_warp {
@@ -1160,24 +1359,50 @@ fn rasterize_block_multirun(
 
     // Multi-run path: lay out each run segment with its own font/size,
     // sharing a baseline per line (tallest ascent wins).
-    if has_warp {
-        // Rasterize into a temporary TiledImage, then warp the combined result.
+
+    // Check per-block cache for position-only changes (multi-run).
+    // The cached buffer stores the tight pre-warp/pre-rotation raster.
+    if let Some(ref cached) = block.cached_raster
+        && cached.content_generation == content_generation
+        && cached.buf_w > 0
+        && cached.buf_h > 0
+    {
+        let dx = (block.position[0] - cached.origin[0]).round() as i32;
+        let dy = (block.position[1] - cached.origin[1]).round() as i32;
+        let adj_off_x = cached.off_x + dx;
+        let adj_off_y = cached.off_y + dy;
+        if has_warp {
+            if let Some((warped, ww, wh, wox, woy)) =
+                apply_block_warp(&cached.buf, cached.buf_w, cached.buf_h, &block.warp)
+            {
+                maybe_rotate_and_blit(
+                    target, &warped, ww, wh,
+                    adj_off_x + wox, adj_off_y + woy,
+                    block.rotation, canvas_w, canvas_h, rot_pivot,
+                );
+            }
+        } else {
+            maybe_rotate_and_blit(
+                target, &cached.buf, cached.buf_w, cached.buf_h,
+                adj_off_x, adj_off_y,
+                block.rotation, canvas_w, canvas_h, rot_pivot,
+            );
+        }
+        return;
+    }
+
+    // Cache miss — full multi-run rasterization, then cache the tight result.
+    let rasterize_multirun_and_extract = |block: &TextBlock,
+                                           canvas_w: u32, canvas_h: u32,
+                                           coverage_buf: &mut Vec<f32>,
+                                           glyph_cache: &mut GlyphPixelCache|
+        -> Option<(Vec<u8>, u32, u32, i32, i32)>
+    {
         let mut temp = TiledImage::new(canvas_w, canvas_h);
         rasterize_block_multirun_slow(
-            block,
-            canvas_w,
-            canvas_h,
-            &mut temp,
-            coverage_buf,
-            glyph_cache,
+            block, canvas_w, canvas_h, &mut temp, coverage_buf, glyph_cache,
         );
-        // Extract the block region — compute approximate bbox from block position
-        // and a generous margin based on font size.
-        let max_font = block
-            .runs
-            .iter()
-            .map(|r| r.style.font_size)
-            .fold(0.0f32, f32::max);
+        let max_font = block.runs.iter().map(|r| r.style.font_size).fold(0.0f32, f32::max);
         let margin = (max_font * 2.0) as u32 + 20;
         let bx = (block.position[0] as i32 - margin as i32).max(0) as u32;
         let by = (block.position[1] as i32 - margin as i32).max(0) as u32;
@@ -1186,70 +1411,47 @@ fn rasterize_block_multirun(
         let bw = bx2.saturating_sub(bx);
         let bh = by2.saturating_sub(by);
         if bw == 0 || bh == 0 {
-            return;
+            return None;
         }
-        let buf = temp.extract_region_rgba(bx, by, bw, bh);
-        // Trim to tight non-empty bounds to avoid warping large empty areas.
-        if let Some((tx, ty, tw, th, trimmed)) = trim_to_content(&buf, bw, bh)
-            && let Some((warped, ww, wh, wox, woy)) =
-                apply_block_warp(&trimmed, tw, th, &block.warp)
-        {
-            maybe_rotate_and_blit(
-                target,
-                &warped,
-                ww,
-                wh,
-                bx as i32 + tx as i32 + wox,
-                by as i32 + ty as i32 + woy,
-                block.rotation,
-                canvas_w,
-                canvas_h,
-                rot_pivot,
-            );
+        let region = temp.extract_region_rgba(bx, by, bw, bh);
+        if let Some((tx, ty, tw, th, trimmed)) = trim_to_content(&region, bw, bh) {
+            Some((trimmed, tw, th, bx as i32 + tx as i32, by as i32 + ty as i32))
+        } else {
+            None
         }
-    } else if block.rotation.abs() > 0.001 {
-        // Multi-run, no warp, but has rotation:
-        // rasterize into temp, extract block region, rotate, blit.
-        let mut temp = TiledImage::new(canvas_w, canvas_h);
-        rasterize_block_multirun_slow(
-            block,
-            canvas_w,
-            canvas_h,
-            &mut temp,
-            coverage_buf,
-            glyph_cache,
-        );
-        let max_font = block
-            .runs
-            .iter()
-            .map(|r| r.style.font_size)
-            .fold(0.0f32, f32::max);
-        let margin = (max_font * 2.0) as u32 + 20;
-        let bx = (block.position[0] as i32 - margin as i32).max(0) as u32;
-        let by = (block.position[1] as i32 - margin as i32).max(0) as u32;
-        let bx2 = (block.position[0] as u32 + canvas_w / 2 + margin).min(canvas_w);
-        let by2 = (block.position[1] as u32 + canvas_h / 2 + margin).min(canvas_h);
-        let bw = bx2.saturating_sub(bx);
-        let bh = by2.saturating_sub(by);
-        if bw > 0 && bh > 0 {
-            let region = temp.extract_region_rgba(bx, by, bw, bh);
-            if let Some((tx, ty, tw, th, trimmed)) = trim_to_content(&region, bw, bh) {
+    };
+
+    if let Some((buf, tw, th, off_x, off_y)) =
+        rasterize_multirun_and_extract(&*block, canvas_w, canvas_h, coverage_buf, glyph_cache)
+    {
+        // Cache the tight buffer for fast position-only updates
+        block.cached_raster = Some(CachedBlockRaster {
+            buf: buf.clone(),
+            buf_w: tw,
+            buf_h: th,
+            off_x,
+            off_y,
+            origin: block.position,
+            content_generation,
+        });
+
+        if has_warp {
+            if let Some((warped, ww, wh, wox, woy)) =
+                apply_block_warp(&buf, tw, th, &block.warp)
+            {
                 maybe_rotate_and_blit(
-                    target,
-                    &trimmed,
-                    tw,
-                    th,
-                    bx as i32 + tx as i32,
-                    by as i32 + ty as i32,
-                    block.rotation,
-                    canvas_w,
-                    canvas_h,
-                    rot_pivot,
+                    target, &warped, ww, wh,
+                    off_x + wox, off_y + woy,
+                    block.rotation, canvas_w, canvas_h, rot_pivot,
                 );
             }
+        } else {
+            maybe_rotate_and_blit(
+                target, &buf, tw, th,
+                off_x, off_y,
+                block.rotation, canvas_w, canvas_h, rot_pivot,
+            );
         }
-    } else {
-        rasterize_block_multirun_slow(block, canvas_w, canvas_h, target, coverage_buf, glyph_cache);
     }
 }
 
@@ -1327,6 +1529,8 @@ fn rasterize_block_per_glyph(
             None,
             style.letter_spacing,
             1.0,
+            style.width_scale,
+            style.height_scale,
         );
 
         if rasterized.buf_w == 0 || rasterized.buf_h == 0 {
@@ -1503,7 +1707,7 @@ fn rasterize_block_multirun_slow(
             Some(f) => f,
             None => continue,
         };
-        let scaled = font.as_scaled(run.style.font_size);
+        let scaled = font.as_scaled(ab_glyph::PxScale { x: run.style.font_size * run.style.width_scale, y: run.style.font_size * run.style.height_scale });
 
         let parts: Vec<&str> = run.text.split('\n').collect();
         for (pi, part) in parts.iter().enumerate() {
@@ -1604,6 +1808,8 @@ fn rasterize_block_multirun_slow(
                 None, // word wrap handled at segment level
                 seg.style.letter_spacing,
                 block.paragraph.line_spacing,
+                seg.style.width_scale,
+                seg.style.height_scale,
             );
 
             if rasterized.buf_w > 0 && rasterized.buf_h > 0 {
@@ -1657,7 +1863,7 @@ pub fn compute_block_layout(block: &TextBlock) -> BlockLayout {
                 continue;
             }
         };
-        let scaled = font.as_scaled(run.style.font_size);
+        let scaled = font.as_scaled(ab_glyph::PxScale { x: run.style.font_size * run.style.width_scale, y: run.style.font_size * run.style.height_scale });
         let ascent = scaled.ascent();
         let lh = scaled.height();
 
@@ -1768,10 +1974,12 @@ pub fn compute_block_layout(block: &TextBlock) -> BlockLayout {
                             run.style.font_size,
                             mw,
                             run.style.letter_spacing,
+                            run.style.width_scale,
+                            run.style.height_scale,
                         )
                     })
                     .collect();
-                let scaled = font.as_scaled(run.style.font_size);
+                let scaled = font.as_scaled(ab_glyph::PxScale { x: run.style.font_size * run.style.width_scale, y: run.style.font_size * run.style.height_scale });
                 total_height = wrapped_lines.len().max(1) as f32
                     * scaled.height()
                     * block.paragraph.line_spacing;
@@ -1821,6 +2029,8 @@ pub fn compute_glyph_bounds(block: &TextBlock) -> Vec<GlyphBounds> {
         text: String,
         font: FontArc,
         font_size: f32,
+        width_scale: f32,
+        height_scale: f32,
         ascent: f32,
         line_height: f32,
         advance: f32,
@@ -1833,7 +2043,7 @@ pub fn compute_glyph_bounds(block: &TextBlock) -> Vec<GlyphBounds> {
             Some(f) => f,
             None => continue,
         };
-        let scaled = font.as_scaled(run.style.font_size);
+        let scaled = font.as_scaled(ab_glyph::PxScale { x: run.style.font_size * run.style.width_scale, y: run.style.font_size * run.style.height_scale });
         let parts: Vec<&str> = run.text.split('\n').collect();
         for (pi, part) in parts.iter().enumerate() {
             if pi > 0 {
@@ -1853,6 +2063,8 @@ pub fn compute_glyph_bounds(block: &TextBlock) -> Vec<GlyphBounds> {
                 text: part.to_string(),
                 font: font.clone(),
                 font_size: run.style.font_size,
+                width_scale: run.style.width_scale,
+                height_scale: run.style.height_scale,
                 ascent: scaled.ascent(),
                 line_height: scaled.height(),
                 advance,
@@ -1883,7 +2095,7 @@ pub fn compute_glyph_bounds(block: &TextBlock) -> Vec<GlyphBounds> {
 
         for seg in segs {
             let font = &seg.font;
-            let scaled = font.as_scaled(seg.font_size);
+            let scaled = font.as_scaled(ab_glyph::PxScale { x: seg.font_size * seg.width_scale, y: seg.font_size * seg.height_scale });
             let baseline_y = block.position[1] + y_pos + max_ascent;
             let seg_ascent = seg.ascent;
             let mut prev_glyph: Option<ab_glyph::GlyphId> = None;

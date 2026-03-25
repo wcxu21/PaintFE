@@ -4853,23 +4853,38 @@ impl eframe::App for PaintFEApp {
         }
 
         // --- Auto-rasterize text layers when destructive tools attempt to paint on them ---
-        if let Some(layer_idx) = self.tools_panel.pending_auto_rasterize.take()
-            && let Some(project) = self.active_project_mut()
-            && layer_idx < project.canvas_state.layers.len()
-            && project.canvas_state.layers[layer_idx].is_text_layer()
-        {
-            // Snapshot before rasterization for undo
-            let mut cmd = crate::components::history::SingleLayerSnapshotCommand::new_for_layer(
-                "Rasterize Text Layer".to_string(),
-                &project.canvas_state,
-                layer_idx,
-            );
-            // Rasterize in place — convert Text→Raster, pixels are already up-to-date
-            project.canvas_state.layers[layer_idx].content = crate::canvas::LayerContent::Raster;
-            // Capture after state
-            cmd.set_after(&project.canvas_state);
-            project.history.push(Box::new(cmd));
-            project.mark_dirty();
+        if let Some(layer_idx) = self.tools_panel.pending_auto_rasterize.take() {
+            let active_idx = self.active_project_index;
+            if active_idx < self.projects.len()
+                && layer_idx < self.projects[active_idx].canvas_state.layers.len()
+                && self.projects[active_idx].canvas_state.layers[layer_idx].is_text_layer()
+            {
+                {
+                    let project = &mut self.projects[active_idx];
+                    // Snapshot before rasterization for undo
+                    let mut cmd =
+                        crate::components::history::SingleLayerSnapshotCommand::new_for_layer(
+                            "Rasterize Text Layer".to_string(),
+                            &project.canvas_state,
+                            layer_idx,
+                        );
+                    // Rasterize in place — convert Text→Raster, pixels are already up-to-date
+                    project.canvas_state.layers[layer_idx].content =
+                        crate::canvas::LayerContent::Raster;
+                    // Clear canvas-level text editing marker for this layer
+                    if project.canvas_state.text_editing_layer == Some(layer_idx) {
+                        project.canvas_state.text_editing_layer = None;
+                        project.canvas_state.clear_preview_state();
+                    }
+                    // Capture after state
+                    cmd.set_after(&project.canvas_state);
+                    project.history.push(Box::new(cmd));
+                    project.mark_dirty();
+                } // `project` borrow ends here — allows split-borrow below
+                // Cancel any stale text editing session (different field from projects)
+                self.tools_panel
+                    .cancel_text_editing(&mut self.projects[active_idx].canvas_state);
+            }
         }
 
         // --- Async Color Removal ---
@@ -9575,6 +9590,24 @@ impl PaintFEApp {
                     &mut project.history,
                 );
 
+                // If the layer being text-edited was rasterized inside show()
+                // (e.g. via right-click → "Rasterize Text Layer"), cancel any
+                // stale text editing state so tools don't remain locked.
+                if project
+                    .canvas_state
+                    .text_editing_layer
+                    .is_some_and(|idx| {
+                        project
+                            .canvas_state
+                            .layers
+                            .get(idx)
+                            .is_some_and(|l| !l.is_text_layer())
+                    })
+                {
+                    self.tools_panel
+                        .cancel_text_editing(&mut project.canvas_state);
+                }
+
                 // Auto-switch tool immediately when layer selection changes
                 // (same frame as click, no 1-frame delay).
                 self.tools_panel
@@ -9647,6 +9680,10 @@ impl PaintFEApp {
                                 &mut project.canvas_state,
                                 &mut project.history,
                             );
+                            // Clean up any active text editing session so the text tool
+                            // does not remain in editing mode on the now-raster layer.
+                            self.tools_panel
+                                .cancel_text_editing(&mut project.canvas_state);
                         }
                     }
                 }
