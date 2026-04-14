@@ -404,8 +404,8 @@ impl PasteOverlay {
             scale_y: 1.0,
             rotation: 0.0,
             anchor_offset: Vec2::ZERO,
-            interpolation: Interpolation::Bilinear,
-            anti_aliasing: true,
+            interpolation: Interpolation::Nearest,
+            anti_aliasing: false,
             active_handle: None,
             drag_start_mouse: None,
             drag_start_center: Pos2::ZERO,
@@ -455,6 +455,24 @@ impl PasteOverlay {
             self.source.width() as f32 * self.scale_x / 2.0,
             self.source.height() as f32 * self.scale_y / 2.0,
         )
+    }
+
+    /// Snap `center` so the image's top-left corner lands on a whole canvas pixel.
+    /// This matches the rounding that `commit()` uses when blending pixels, so
+    /// the drag preview and the committed result are always pixel-aligned.
+    /// Only applied when the overlay has no rotation (rotating introduces
+    /// sub-pixel placement by design).
+    pub fn snap_center_to_pixel(&mut self) {
+        if self.rotation != 0.0 {
+            return;
+        }
+        let sh = self.scaled_half();
+        let top_left_x = self.center.x - sh.x;
+        let top_left_y = self.center.y - sh.y;
+        self.center = Pos2::new(
+            top_left_x.round() + sh.x,
+            top_left_y.round() + sh.y,
+        );
     }
 
     /// Rotation origin in canvas coords.
@@ -596,9 +614,16 @@ impl PasteOverlay {
         };
 
         // A11: reuse existing TextureHandle via tex.set() instead of allocating new
+        // Derive filter mode from the anti_aliasing setting so nearest-neighbour
+        // paste (pixel art) is not blurred during drag.
+        let tex_filter = if self.anti_aliasing {
+            egui::TextureFilter::Linear
+        } else {
+            egui::TextureFilter::Nearest
+        };
         let tex_options = egui::TextureOptions {
-            magnification: egui::TextureFilter::Linear,
-            minification: egui::TextureFilter::Linear,
+            magnification: tex_filter,
+            minification: tex_filter,
         };
         let image_data = egui::ImageData::Color(std::sync::Arc::new(color_image));
         if let Some(ref mut tex) = self.gpu_texture {
@@ -945,6 +970,7 @@ impl PasteOverlay {
                         self.drag_start_center.x + delta_canvas.x,
                         self.drag_start_center.y + delta_canvas.y,
                     );
+                    self.snap_center_to_pixel();
                 }
                 HandleKind::Anchor => {
                     self.anchor_offset = Vec2::new(
@@ -1193,6 +1219,17 @@ impl PasteOverlay {
                         || local_y < -0.5
                         || local_x >= scaled_w as f32 + 0.5
                         || local_y >= scaled_h as f32 + 0.5
+                    {
+                        continue;
+                    }
+
+                    // For nearest-neighbour mode enforce tight pixel-grid bounds to
+                    // eliminate the edge-bleed that the ±0.5 AA window can cause.
+                    if !use_aa
+                        && (local_x < 0.0
+                            || local_y < 0.0
+                            || local_x >= scaled_w as f32
+                            || local_y >= scaled_h as f32)
                     {
                         continue;
                     }

@@ -2,6 +2,7 @@ use eframe::egui;
 use egui::Rect;
 use image::Rgba;
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 use crate::assets::{Assets, Icon};
 use crate::canvas::{CanvasState, LayerContent, TiledImage};
@@ -649,6 +650,7 @@ pub struct CanvasSnapshot {
     pub height: u32,
     pub layers: Vec<LayerSnapshot>,
     pub active_layer_index: usize,
+    pub selection_mask: Option<image::GrayImage>,
 }
 
 #[derive(Clone)]
@@ -667,6 +669,7 @@ impl CanvasSnapshot {
             width: state.width,
             height: state.height,
             active_layer_index: state.active_layer_index,
+            selection_mask: state.selection_mask.clone(),
             layers: state
                 .layers
                 .iter()
@@ -701,6 +704,7 @@ impl CanvasSnapshot {
             layer.content = snap.content.clone();
             state.layers.push(layer);
         }
+        state.selection_mask = self.selection_mask.clone();
         state.composite_cache = None;
         state.clear_preview_state();
         state.invalidate_selection_overlay();
@@ -971,6 +975,59 @@ impl Command for TextLayerEditCommand {
                 + 200
         });
         before_size + after_size
+    }
+}
+
+// ============================================================================
+// SELECTION COMMAND - Undo/redo for selection mask changes
+// ============================================================================
+
+/// Command that stores the selection-mask state before and after an operation.
+/// The `Arc<image::GrayImage>` wrapper lets before/after share heap storage cheaply.
+pub struct SelectionCommand {
+    description: String,
+    before: Option<Arc<image::GrayImage>>,
+    after: Option<Arc<image::GrayImage>>,
+}
+
+impl SelectionCommand {
+    pub fn new(
+        description: impl Into<String>,
+        before: Option<image::GrayImage>,
+        after: Option<image::GrayImage>,
+    ) -> Self {
+        Self {
+            description: description.into(),
+            before: before.map(Arc::new),
+            after: after.map(Arc::new),
+        }
+    }
+}
+
+impl Command for SelectionCommand {
+    fn undo(&self, canvas: &mut CanvasState) {
+        canvas.selection_mask = self.before.as_ref().map(|a| (**a).clone());
+        canvas.invalidate_selection_overlay();
+        canvas.mark_dirty(None);
+    }
+
+    fn redo(&self, canvas: &mut CanvasState) {
+        canvas.selection_mask = self.after.as_ref().map(|a| (**a).clone());
+        canvas.invalidate_selection_overlay();
+        canvas.mark_dirty(None);
+    }
+
+    fn description(&self) -> String {
+        self.description.clone()
+    }
+
+    fn memory_size(&self) -> usize {
+        fn mask_size(m: &Option<Arc<image::GrayImage>>) -> usize {
+            m.as_ref()
+                .map(|a| (a.width() * a.height()) as usize)
+                .unwrap_or(0)
+        }
+        mask_size(&self.before) + mask_size(&self.after)
     }
 }
 

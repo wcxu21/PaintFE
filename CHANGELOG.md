@@ -6,6 +6,46 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## [1.1.11] - 2026-04-14
+
+### Added
+- **Interactive save preview**: The Save As dialog preview panel now supports zoom
+  and pan. Scroll to zoom, drag to pan, double-click to reset to fit. NEAREST
+  filtering activates automatically when zoom exceeds 2× for pixel-crisp display.
+  Scrollbar indicators and a zoom strip (−, %, +, Fit) are shown below the panel.
+
+### Fixed
+- **Minimum selection drag threshold**: Accidental single-pixel drags no longer
+  create a selection; a minimum drag distance is now required.
+  *(Reported by wigiliuszek-byte — closes #31)*
+- **Paste overlay pixel alignment**: Pasted content could land on sub-pixel
+  positions, causing edge fringing. The overlay center is now snapped to whole
+  pixels on every move, arrow-key nudge, and Tab-center.
+  *(Reported by wigiliuszek-byte — closes #32)*
+- **Shift key conflict in selection mode**: Holding Shift while using a selection
+  tool no longer inadvertently triggered the fill shortcut.
+  *(Reported by wigiliuszek-byte — closes #33)*
+- **Magic Wand selection behaviour**: Corrected edge cases where the Magic Wand
+  tool produced unexpected or empty selections.
+  *(Reported by wigiliuszek-byte — closes #34)*
+- **Ctrl++ zoom shortcut not working**: The zoom-in keybind now correctly responds
+  to Ctrl++ (which sends Shift on physical keyboards) in addition to Ctrl+=.
+  *(Reported by wigiliuszek-byte — closes #35)*
+- **Selection changes not tracked in undo/redo**: Selecting, deselecting, and
+  Ctrl+A are now tracked with `SelectionCommand`; the selection mask is also
+  captured and restored in canvas snapshots, so cut/paste no longer discards the
+  selection on undo.
+  *(Reported by wigiliuszek-byte — closes #36)*
+- **Shift+Fill not working globally**: Shift+Fill with the Fill tool now correctly
+  applies a global flood fill regardless of selection state.
+  *(Reported by wigiliuszek-byte — closes #37)*
+- **Drawing tablet pressure not recognized on Wayland**: Tablet input events on
+  Wayland are now handled via the correct libinput path, restoring pressure
+  sensitivity for stylus users.
+  *(Reported by Yasumora — closes #39)*
+
+---
+
 ## [1.1.10] - 2026-03-25
 
 ### Fixed

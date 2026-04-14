@@ -2,7 +2,7 @@ use crate::assets::{Assets, BRUSH_SIZE_PRESETS, Icon, KeyCombo, TEXT_SIZE_PRESET
 use crate::canvas::{
     BlendMode, CHUNK_SIZE, CanvasState, SelectionMode, SelectionShape, TiledImage,
 };
-use crate::components::history::PixelPatch;
+use crate::components::history::{PixelPatch, SelectionCommand};
 use eframe::egui;
 use egui::{Color32, Pos2, Rect, Vec2};
 use image::{GrayImage, Rgba};
@@ -654,6 +654,8 @@ pub struct FillToolState {
     pub last_preview_tolerance: f32,
     pub fill_color_u8: Option<Rgba<u8>>,
     pub use_secondary_color: bool,
+    /// When true, fills ALL pixels matching the target color (Shift+click).
+    pub global_fill: bool,
     pub tolerance_changed_at: Option<Instant>,
     pub recalc_pending: bool,
     pub last_preview_aa: bool,
@@ -674,6 +676,7 @@ impl Clone for FillToolState {
             last_preview_tolerance: self.last_preview_tolerance,
             fill_color_u8: self.fill_color_u8,
             use_secondary_color: self.use_secondary_color,
+            global_fill: self.global_fill,
             tolerance_changed_at: self.tolerance_changed_at,
             recalc_pending: self.recalc_pending,
             last_preview_aa: self.last_preview_aa,
@@ -695,6 +698,7 @@ impl Default for FillToolState {
             last_preview_tolerance: 5.0,
             fill_color_u8: None,
             use_secondary_color: false,
+            global_fill: false,
             tolerance_changed_at: None,
             recalc_pending: false,
             last_preview_aa: true,
@@ -4534,10 +4538,33 @@ impl ToolsPanel {
             self.commit_shape(canvas_state);
         }
 
-        let is_primary_down = ui.input(|i| i.pointer.primary_down());
-        let is_primary_released = ui.input(|i| i.pointer.primary_released());
+        // On Wayland the stylus may fire Touch events instead of Pointer events,
+        // so augment each pointer query with a Touch-event fallback.
+        let is_primary_down = ui.input(|i| {
+            i.pointer.primary_down()
+                || i.events.iter().any(|e| {
+                    matches!(
+                        e,
+                        egui::Event::Touch {
+                            phase: egui::TouchPhase::Start | egui::TouchPhase::Move,
+                            ..
+                        }
+                    )
+                })
+        });
+        let is_primary_released = ui.input(|i| {
+            i.pointer.primary_released()
+                || i.events.iter().any(|e| {
+                    matches!(e, egui::Event::Touch { phase: egui::TouchPhase::End, .. })
+                })
+        });
         let is_primary_clicked = ui.input(|i| i.pointer.primary_clicked());
-        let is_primary_pressed = ui.input(|i| i.pointer.primary_pressed()); // Just pressed this frame
+        let is_primary_pressed = ui.input(|i| {
+            i.pointer.primary_pressed()
+                || i.events.iter().any(|e| {
+                    matches!(e, egui::Event::Touch { phase: egui::TouchPhase::Start, .. })
+                })
+        }); // Just pressed this frame
         let is_secondary_down = ui.input(|i| i.pointer.secondary_down());
         let is_secondary_released = ui.input(|i| i.pointer.secondary_released());
         let is_secondary_clicked = ui.input(|i| i.pointer.secondary_clicked());
@@ -5380,8 +5407,6 @@ impl ToolsPanel {
                         SelectionMode::Subtract
                     } else if shift_held && alt_held {
                         SelectionMode::Intersect
-                    } else if shift_held {
-                        SelectionMode::Add
                     } else if alt_held {
                         SelectionMode::Subtract
                     } else {
@@ -5427,8 +5452,12 @@ impl ToolsPanel {
                         let max_x = (raw_max_x as u32).min(canvas_state.width.saturating_sub(1));
                         let max_y = (raw_max_y as u32).min(canvas_state.height.saturating_sub(1));
 
-                        // Ignore tiny accidental clicks (< 2px)
-                        if max_x.saturating_sub(min_x) > 1 && max_y.saturating_sub(min_y) > 1 {
+                        let sel_before = canvas_state.selection_mask.clone();
+
+                        // Allow single-pixel selections for pixel art accuracy.
+                        // Deselect only happens on a zero-size drag (start == end,
+                        // which resolves to a single point).
+                        if max_x > min_x || max_y > min_y {
                             let shape = match self.active_tool {
                                 Tool::RectangleSelect => SelectionShape::Rectangle {
                                     min_x,
@@ -5449,10 +5478,19 @@ impl ToolsPanel {
                             canvas_state.apply_selection_shape(&shape, effective_mode);
                             canvas_state.mark_dirty(None);
                         } else {
-                            // Tiny click => deselect
+                            // Zero-size click => deselect
                             canvas_state.clear_selection();
                             canvas_state.mark_dirty(None);
                         }
+
+                        let sel_after = canvas_state.selection_mask.clone();
+                        let tool_name = match self.active_tool {
+                            Tool::RectangleSelect => "Rectangle Select",
+                            _ => "Ellipse Select",
+                        };
+                        self.pending_history_commands.push(Box::new(
+                            SelectionCommand::new(tool_name, sel_before, sel_after),
+                        ));
                     }
 
                     self.selection_state.drag_start = None;
@@ -5654,12 +5692,14 @@ impl ToolsPanel {
                     if self.fill_state.active_fill.is_some() {
                         self.commit_fill_preview(canvas_state);
                     }
-                    // Start new fill
+                    // Start new fill; Shift+click fills ALL pixels of matching color
                     let use_secondary = is_secondary_clicked;
+                    let global_fill = shift_held;
                     self.perform_flood_fill(
                         canvas_state,
                         pos,
                         use_secondary,
+                        global_fill,
                         primary_color_f32,
                         secondary_color_f32,
                         gpu_renderer.as_deref_mut(),
@@ -8382,8 +8422,6 @@ impl ToolsPanel {
                         SelectionMode::Subtract
                     } else if shift_held && alt_held_l {
                         SelectionMode::Intersect
-                    } else if shift_held {
-                        SelectionMode::Add
                     } else if alt_held_l {
                         SelectionMode::Subtract
                     } else {
@@ -8439,6 +8477,7 @@ impl ToolsPanel {
                     let effective_mode = self.lasso_state.drag_effective_mode;
                     self.lasso_state.dragging = false;
                     let pts = std::mem::take(&mut self.lasso_state.points);
+                    let sel_before = canvas_state.selection_mask.clone();
                     if pts.len() >= 3 {
                         // Scanline-fill the polygon into the selection mask
                         Self::apply_lasso_selection(canvas_state, &pts, effective_mode);
@@ -8448,6 +8487,10 @@ impl ToolsPanel {
                         canvas_state.clear_selection();
                         canvas_state.mark_dirty(None);
                     }
+                    let sel_after = canvas_state.selection_mask.clone();
+                    self.pending_history_commands.push(Box::new(
+                        SelectionCommand::new("Lasso Select", sel_before, sel_after),
+                    ));
                     ui.ctx().request_repaint();
                 }
             }
@@ -10868,6 +10911,9 @@ impl ToolsPanel {
         self.magic_wand_state.last_applied_tolerance = -1.0;
         self.magic_wand_state.raw_mask = None;
         self.magic_wand_state.final_mask = None;
+        // Force a fresh texture upload on the next click so stale GPU state
+        // cannot cause the wand to seed from the wrong pixel.
+        self.magic_wand_state.cached_flat_rgba = None;
     }
 
     #[inline]
@@ -11296,6 +11342,19 @@ impl ToolsPanel {
             self.magic_wand_state.preview_pending = false;
             self.magic_wand_state.tolerance_changed_at = None;
             self.magic_wand_state.raw_mask = None;
+            // Record for undo/redo (after snapshot already captured before any
+            // tolerances were applied, reuse base_selection_mask as "before").
+            let before = self
+                .magic_wand_state
+                .base_selection_mask
+                .clone()
+                .or_else(|| canvas_state.selection_mask.clone());
+            let after = canvas_state.selection_mask.clone();
+            if before != after {
+                self.pending_history_commands.push(Box::new(
+                    SelectionCommand::new("Magic Wand Select", before, after),
+                ));
+            }
             return;
         }
 
@@ -11344,6 +11403,21 @@ impl ToolsPanel {
         self.magic_wand_state.last_applied_aa = self.magic_wand_state.anti_aliased;
         self.magic_wand_state.preview_pending = false;
         self.magic_wand_state.tolerance_changed_at = None;
+        // Record undo/redo entry for the CPU path (base_selection_mask is the pre-click state).
+        let before = self
+            .magic_wand_state
+            .base_selection_mask
+            .clone()
+            .or_else(|| canvas_state.selection_mask.clone());
+        let after = canvas_state.selection_mask.clone();
+        if before != after {
+            self.pending_history_commands
+                .push(Box::new(SelectionCommand::new(
+                    "Magic Wand Select",
+                    before,
+                    after,
+                )));
+        }
     }
 
     fn maybe_spawn_magic_wand_preview(
@@ -11624,6 +11698,7 @@ impl ToolsPanel {
         self.fill_state.preview_request_id = request_id;
         self.fill_state.preview_in_flight = true;
         self.fill_state.recalc_pending = false;
+        let global_fill = self.fill_state.global_fill;
 
         let (tx, rx) = std::sync::mpsc::channel();
         self.fill_state.async_rx = Some(rx);
@@ -11636,13 +11711,22 @@ impl ToolsPanel {
                         active_fill.fill_bbox,
                     )
                 } else {
-                    let region_index = Self::compute_flood_distance_map(
-                        &flat_rgba,
-                        (active_fill.start_x, active_fill.start_y),
-                        &active_fill.target_color,
-                        width,
-                        height,
-                    );
+                    let region_index = if global_fill {
+                        Self::compute_global_distance_map(
+                            &flat_rgba,
+                            &active_fill.target_color,
+                            width,
+                            height,
+                        )
+                    } else {
+                        Self::compute_flood_distance_map(
+                            &flat_rgba,
+                            (active_fill.start_x, active_fill.start_y),
+                            &active_fill.target_color,
+                            width,
+                            height,
+                        )
+                    };
                     let fill_mask = Self::build_threshold_mask(&region_index, threshold, false);
                     let fill_bbox = region_index.threshold_bbox(threshold);
                     (Some(region_index), fill_mask, fill_bbox)
@@ -11902,6 +11986,7 @@ impl ToolsPanel {
         canvas_state: &mut CanvasState,
         start_pos: (u32, u32),
         use_secondary: bool,
+        global_fill: bool,
         primary_color_f32: [f32; 4],
         secondary_color_f32: [f32; 4],
         gpu_renderer: Option<&mut crate::gpu::GpuRenderer>,
@@ -11945,6 +12030,7 @@ impl ToolsPanel {
         self.fill_state.last_preview_aa = !self.fill_state.anti_aliased;
         self.fill_state.fill_color_u8 = Some(fill_color_u8);
         self.fill_state.use_secondary_color = use_secondary;
+        self.fill_state.global_fill = global_fill;
         self.fill_state.tolerance_changed_at = None;
         self.fill_state.recalc_pending = true;
         self.fill_state.preview_in_flight = false;
@@ -11967,17 +12053,29 @@ impl ToolsPanel {
             if let Some(flat_rgba) = flat_rgba {
                 let input_key = flat_rgba.as_ref().as_ptr() as usize;
                 let mut distances = Vec::new();
-                let ok = gpu.flood_fill_pipeline.compute_flood_distances(
-                    &gpu.ctx,
-                    flat_rgba.as_ref(),
-                    input_key,
-                    target_color.0,
-                    start_pos.0,
-                    start_pos.1,
-                    canvas_state.width,
-                    canvas_state.height,
-                    &mut distances,
-                );
+                let ok = if global_fill {
+                    gpu.flood_fill_pipeline.compute_global_distances(
+                        &gpu.ctx,
+                        flat_rgba.as_ref(),
+                        input_key,
+                        target_color.0,
+                        canvas_state.width,
+                        canvas_state.height,
+                        &mut distances,
+                    )
+                } else {
+                    gpu.flood_fill_pipeline.compute_flood_distances(
+                        &gpu.ctx,
+                        flat_rgba.as_ref(),
+                        input_key,
+                        target_color.0,
+                        start_pos.0,
+                        start_pos.1,
+                        canvas_state.width,
+                        canvas_state.height,
+                        &mut distances,
+                    )
+                };
                 if ok {
                     let region_index = ThresholdRegionIndex::from_distances(
                         distances,

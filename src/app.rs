@@ -3,7 +3,9 @@ use crate::assets::{
 };
 use crate::canvas::{BlendMode, Canvas, CanvasState, Layer, TiledImage};
 use crate::components::dialogs::{NewFileDialog, SaveFileDialog, SaveFormat, TiffCompression};
-use crate::components::history::{CanvasSnapshot, SingleLayerSnapshotCommand, SnapshotCommand};
+use crate::components::history::{
+    CanvasSnapshot, SelectionCommand, SingleLayerSnapshotCommand, SnapshotCommand,
+};
 use crate::components::*;
 use crate::io::FileHandler;
 use crate::ops::clipboard::PasteOverlay;
@@ -394,6 +396,9 @@ impl PaintFEApp {
         let ov = settings.build_theme_overrides();
         theme.apply_overrides(&ov);
         theme.apply(&cc.egui_ctx);
+        // Disable egui's built-in Ctrl+/Ctrl- keyboard zoom so it doesn't
+        // intercept Ctrl++ before our canvas-zoom keybind handler fires.
+        cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
 
         // Initialize with one default project (or empty if disabled in settings)
         let (initial_projects, initial_counter) = if settings.create_canvas_on_startup {
@@ -1289,8 +1294,34 @@ impl eframe::App for PaintFEApp {
                 );
             }
 
-            // Ctrl++ — Zoom In
-            if kb.is_pressed(ctx, BindableAction::ViewZoomIn) {
+            // Ctrl++ / Ctrl+= — Zoom In
+            // egui 0.24 requires exact shift match in consume_key, so Ctrl+=
+            // (shift=false) and Ctrl++ (shift=true, physical Shift+=) need
+            // separate handling. We scan raw events and require only ctrl.
+            let zoom_in_pressed = kb.is_pressed(ctx, BindableAction::ViewZoomIn)
+                || ctx.input_mut(|i| {
+                    let ctrl = i.modifiers.ctrl || i.modifiers.command;
+                    if !ctrl {
+                        return false;
+                    }
+                    let pos = i.events.iter().position(|e| {
+                        matches!(
+                            e,
+                            egui::Event::Key {
+                                key: egui::Key::PlusEquals,
+                                pressed: true,
+                                ..
+                            }
+                        )
+                    });
+                    if let Some(idx) = pos {
+                        i.events.remove(idx);
+                        true
+                    } else {
+                        false
+                    }
+                });
+            if zoom_in_pressed {
                 self.canvas.zoom_in();
             }
 
@@ -1432,6 +1463,7 @@ impl eframe::App for PaintFEApp {
                     let cy = ch / 2.0;
                     if let Some(ref mut overlay) = self.paste_overlay {
                         overlay.center = egui::Pos2::new(cx, cy);
+                        overlay.snap_center_to_pixel();
                     } else if self.tools_panel.active_tool == crate::components::tools::Tool::Shapes
                     {
                         if let Some(ref mut placed) = self.tools_panel.shapes_state.placed {
@@ -1506,30 +1538,36 @@ impl eframe::App for PaintFEApp {
             if !script_editor_open
                 && !text_tool_editing
                 && kb.is_pressed(ctx, BindableAction::SelectAll)
+                && let Some(project) = self.active_project_mut()
             {
-                let is_selection_tool = matches!(
-                    self.tools_panel.active_tool,
-                    crate::components::tools::Tool::RectangleSelect
-                        | crate::components::tools::Tool::EllipseSelect
-                        | crate::components::tools::Tool::MovePixels
-                        | crate::components::tools::Tool::MoveSelection
-                );
-                if is_selection_tool && let Some(project) = self.active_project_mut() {
-                    let w = project.canvas_state.width;
-                    let h = project.canvas_state.height;
-                    let mask = image::GrayImage::from_pixel(w, h, image::Luma([255u8]));
-                    project.canvas_state.selection_mask = Some(mask);
-                    project.canvas_state.invalidate_selection_overlay();
-                    project.canvas_state.mark_dirty(None);
-                }
+                let w = project.canvas_state.width;
+                let h = project.canvas_state.height;
+                let sel_before = project.canvas_state.selection_mask.clone();
+                let mask = image::GrayImage::from_pixel(w, h, image::Luma([255u8]));
+                project.canvas_state.selection_mask = Some(mask.clone());
+                project.canvas_state.invalidate_selection_overlay();
+                project.canvas_state.mark_dirty(None);
+                project
+                    .history
+                    .push(Box::new(SelectionCommand::new(
+                        "Select All",
+                        sel_before,
+                        Some(mask),
+                    )));
             }
 
             // Ctrl+D — Deselect
             if kb.is_pressed(ctx, BindableAction::Deselect)
                 && let Some(project) = self.active_project_mut()
             {
+                let sel_before = project.canvas_state.selection_mask.clone();
                 project.canvas_state.clear_selection();
                 project.canvas_state.mark_dirty(None);
+                if sel_before.is_some() {
+                    project
+                        .history
+                        .push(Box::new(SelectionCommand::new("Deselect", sel_before, None)));
+                }
             }
 
             // Arrow keys — Move paste overlay (not rebindable)
@@ -1556,6 +1594,7 @@ impl eframe::App for PaintFEApp {
                         };
                         overlay.center.x += dx_dir * step_x;
                         overlay.center.y += dy_dir * step_y;
+                        overlay.snap_center_to_pixel();
                     }
                 }
             }

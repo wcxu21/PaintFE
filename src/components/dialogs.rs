@@ -976,8 +976,11 @@ pub struct SaveAction {
 // SAVE FILE DIALOG
 // ============================================================================
 
-/// Maximum size for preview thumbnail (keeps preview generation fast)
-const PREVIEW_MAX_SIZE: u32 = 256;
+/// Maximum size for preview thumbnail (keeps preview generation fast).
+/// 512 gives enough resolution to zoom in meaningfully on large images.
+const PREVIEW_MAX_SIZE: u32 = 512;
+/// Pixel size of the interactive preview panel (square).
+const PREVIEW_PANEL_SIZE: f32 = 320.0;
 
 pub struct SaveFileDialog {
     pub open: bool,
@@ -996,6 +999,16 @@ pub struct SaveFileDialog {
     last_preview_format: SaveFormat,
     last_preview_quality: u8,
     needs_preview_update: bool,
+
+    // Interactive preview pan/zoom
+    /// 0.0 = not yet computed (will auto-fit on first frame)
+    preview_zoom: f32,
+    /// Top-left visible corner in source-pixel coordinates
+    preview_pan: egui::Vec2,
+    /// (start screen pos, start pan) when a drag is in progress
+    preview_drag_start: Option<(egui::Pos2, egui::Vec2)>,
+    /// Whether the texture was last uploaded with NEAREST filter
+    preview_texture_is_nearest: bool,
 
     // Animation options
     animated: bool,     // "Animated" checkbox
@@ -1030,6 +1043,10 @@ impl Default for SaveFileDialog {
             last_preview_format: SaveFormat::Png,
             last_preview_quality: 90,
             needs_preview_update: true,
+            preview_zoom: 0.0,
+            preview_pan: egui::Vec2::ZERO,
+            preview_drag_start: None,
+            preview_texture_is_nearest: false,
             // Animation
             animated: false,
             animation_fps: 10.0,
@@ -1057,6 +1074,10 @@ impl SaveFileDialog {
         self.preview_file_size = 0;
         self.estimated_full_size = 0;
         self.needs_preview_update = true;
+        self.preview_zoom = 0.0;
+        self.preview_pan = egui::Vec2::ZERO;
+        self.preview_drag_start = None;
+        self.preview_texture_is_nearest = false;
         // Animation reset
         self.animated = false;
         self.animation_fps = 10.0;
@@ -1077,6 +1098,11 @@ impl SaveFileDialog {
         self.source_dimensions = (image.width(), image.height());
         self.source_thumbnail = Some(create_thumbnail(image, PREVIEW_MAX_SIZE));
         self.needs_preview_update = true;
+        // Reset pan/zoom so auto-fit recalculates for the new image.
+        self.preview_zoom = 0.0;
+        self.preview_pan = egui::Vec2::ZERO;
+        self.preview_drag_start = None;
+        self.preview_texture_is_nearest = false;
     }
 
     /// Set animation info and per-frame thumbnails for the save dialog.
@@ -1219,7 +1245,7 @@ impl SaveFileDialog {
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
                     let colors = DialogColors::from_ctx(ctx);
-                    ui.set_min_width(560.0);
+                    ui.set_min_width(640.0);
 
                     // ── Header ──────────────────────────────────────────────
                     paint_dialog_header(ui, &colors, "\u{1F4BE}", "Save As");
@@ -1229,25 +1255,33 @@ impl SaveFileDialog {
                     ui.horizontal(|ui| {
                         // ── LEFT: Preview ────────────────────────────────────
                         ui.vertical(|ui| {
-                            ui.set_width(PREVIEW_MAX_SIZE as f32);
+                            ui.set_width(PREVIEW_PANEL_SIZE);
 
-                            let preview_size = egui::vec2(PREVIEW_MAX_SIZE as f32, PREVIEW_MAX_SIZE as f32);
-                            let (rect, _response) = ui.allocate_exact_size(preview_size, egui::Sense::hover());
+                            let preview_size = egui::vec2(PREVIEW_PANEL_SIZE, PREVIEW_PANEL_SIZE);
+                            let (rect, response) = ui.allocate_exact_size(preview_size, egui::Sense::click_and_drag());
 
-                            // Checkerboard background
-                            let painter = ui.painter_at(rect);
-                            let grid_size = 8.0;
-                            let light = Color32::from_gray(200);
-                            let dark  = Color32::from_gray(160);
-                            for y in 0..((rect.height() / grid_size).ceil() as i32) {
-                                for x in 0..((rect.width() / grid_size).ceil() as i32) {
-                                    let color = if (x + y) % 2 == 0 { light } else { dark };
-                                    let cell_rect = egui::Rect::from_min_size(
-                                        rect.min + egui::vec2(x as f32 * grid_size, y as f32 * grid_size),
-                                        egui::vec2(grid_size, grid_size),
-                                    ).intersect(rect);
-                                    painter.rect_filled(cell_rect, 0.0, color);
-                                }
+                            // Choose texture filter based on zoom level
+                            let use_nearest = self.preview_zoom > 2.0;
+                            let tex_opts = if use_nearest { TextureOptions::NEAREST } else { TextureOptions::LINEAR };
+
+                            // Reload textures if filter changed
+                            if use_nearest != self.preview_texture_is_nearest {
+                                self.preview_texture = None;
+                                self.frame_textures.iter_mut().for_each(|t| *t = None);
+                                self.preview_texture_is_nearest = use_nearest;
+                            }
+
+                            // Load still preview texture on demand
+                            if !show_anim_controls
+                                && self.preview_texture.is_none()
+                                && let Some(thumb) = &self.source_thumbnail
+                            {
+                                let color_image = rgba_to_color_image(thumb);
+                                self.preview_texture = Some(ctx.load_texture(
+                                    "save_preview",
+                                    color_image,
+                                    tex_opts,
+                                ));
                             }
 
                             // Determine which texture to show
@@ -1258,7 +1292,7 @@ impl SaveFileDialog {
                                     self.frame_textures[idx] = Some(ctx.load_texture(
                                         format!("frame_preview_{}", idx),
                                         color_image,
-                                        TextureOptions::LINEAR,
+                                        tex_opts,
                                     ));
                                 }
                                 self.frame_textures[idx].as_ref()
@@ -1266,24 +1300,153 @@ impl SaveFileDialog {
                                 self.preview_texture.as_ref()
                             };
 
-                            // Centered preview image
+                            // Auto-fit: compute initial zoom when zoom == 0.0
                             if let Some(texture) = display_texture {
                                 let tex_size = texture.size_vec2();
-                                let scale = (preview_size.x / tex_size.x).min(preview_size.y / tex_size.y).min(1.0);
-                                let scaled_size = tex_size * scale;
-                                let offset = (preview_size - scaled_size) / 2.0;
-                                let image_rect = egui::Rect::from_min_size(rect.min + offset, scaled_size);
-                                painter.image(
-                                    texture.id(),
-                                    image_rect,
-                                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                                    Color32::WHITE,
-                                );
+                                if self.preview_zoom == 0.0 {
+                                    let fit = (PREVIEW_PANEL_SIZE / tex_size.x).min(PREVIEW_PANEL_SIZE / tex_size.y);
+                                    self.preview_zoom = if fit < 1.0 { fit } else { fit.min(32.0) };
+                                    let vis_w = PREVIEW_PANEL_SIZE / self.preview_zoom;
+                                    let vis_h = PREVIEW_PANEL_SIZE / self.preview_zoom;
+                                    self.preview_pan = egui::Vec2::new(
+                                        (tex_size.x - vis_w) / 2.0,
+                                        (tex_size.y - vis_h) / 2.0,
+                                    );
+                                }
                             }
+
+                            // Drag to pan
+                            if response.dragged() {
+                                self.preview_pan -= response.drag_delta() / self.preview_zoom;
+                            }
+
+                            // Scroll to zoom (centered on cursor)
+                            let scroll_dy = ctx.input(|i| i.scroll_delta.y);
+                            let hover_pos = ctx.input(|i| i.pointer.hover_pos());
+                            if rect.contains(hover_pos.unwrap_or(egui::Pos2::ZERO)) && scroll_dy != 0.0 {
+                                let old_zoom = self.preview_zoom;
+                                let factor = if scroll_dy > 0.0 { 1.15_f32 } else { 1.0 / 1.15 };
+                                self.preview_zoom = (self.preview_zoom * factor).clamp(0.05, 64.0);
+                                if let Some(cursor) = hover_pos {
+                                    let off = cursor - rect.min;
+                                    let src_x = self.preview_pan.x + off.x / old_zoom;
+                                    let src_y = self.preview_pan.y + off.y / old_zoom;
+                                    self.preview_pan = egui::Vec2::new(
+                                        src_x - off.x / self.preview_zoom,
+                                        src_y - off.y / self.preview_zoom,
+                                    );
+                                }
+                                ctx.request_repaint();
+                            }
+
+                            // Double-click: reset to auto-fit
+                            if response.double_clicked() {
+                                self.preview_zoom = 0.0;
+                                self.preview_pan = egui::Vec2::ZERO;
+                            }
+
+                            // Clamp pan to valid range
+                            if let Some(texture) = display_texture {
+                                let ts = texture.size_vec2();
+                                let vis_w = PREVIEW_PANEL_SIZE / self.preview_zoom;
+                                let vis_h = PREVIEW_PANEL_SIZE / self.preview_zoom;
+                                self.preview_pan.x = self.preview_pan.x
+                                    .clamp((0.0_f32).min(ts.x - vis_w), (ts.x - vis_w).max(0.0));
+                                self.preview_pan.y = self.preview_pan.y
+                                    .clamp((0.0_f32).min(ts.y - vis_h), (ts.y - vis_h).max(0.0));
+                            }
+
+                            // Checkerboard background
+                            let painter = ui.painter_at(rect);
+                            let grid_size = 8.0;
+                            let light = Color32::from_gray(200);
+                            let dark  = Color32::from_gray(160);
+                            for row in 0..((rect.height() / grid_size).ceil() as i32) {
+                                for col in 0..((rect.width() / grid_size).ceil() as i32) {
+                                    let color = if (col + row) % 2 == 0 { light } else { dark };
+                                    let cell_rect = egui::Rect::from_min_size(
+                                        rect.min + egui::vec2(col as f32 * grid_size, row as f32 * grid_size),
+                                        egui::vec2(grid_size, grid_size),
+                                    ).intersect(rect);
+                                    painter.rect_filled(cell_rect, 0.0, color);
+                                }
+                            }
+
+                            // Draw preview via UV rect for zoom/pan
+                            if let Some(texture) = display_texture {
+                                let ts = texture.size_vec2();
+                                let vis_w = PREVIEW_PANEL_SIZE / self.preview_zoom;
+                                let vis_h = PREVIEW_PANEL_SIZE / self.preview_zoom;
+                                let uv = egui::Rect::from_min_max(
+                                    egui::pos2(self.preview_pan.x / ts.x, self.preview_pan.y / ts.y),
+                                    egui::pos2(
+                                        (self.preview_pan.x + vis_w) / ts.x,
+                                        (self.preview_pan.y + vis_h) / ts.y,
+                                    ),
+                                );
+                                painter.image(texture.id(), rect, uv, Color32::WHITE);
+
+                                // Thin scrollbar indicators
+                                let bar_color = Color32::from_rgba_premultiplied(120, 120, 120, 160);
+                                let bar_w = 4.0;
+                                if vis_w < ts.x {
+                                    let ratio = self.preview_pan.x / (ts.x - vis_w).max(1.0);
+                                    let bar_len = (PREVIEW_PANEL_SIZE * (vis_w / ts.x)).max(16.0);
+                                    let bar_x = rect.min.x + ratio * (PREVIEW_PANEL_SIZE - bar_len);
+                                    painter.rect_filled(
+                                        egui::Rect::from_min_size(
+                                            egui::pos2(bar_x, rect.max.y - bar_w - 1.0),
+                                            egui::vec2(bar_len, bar_w),
+                                        ),
+                                        2.0, bar_color,
+                                    );
+                                }
+                                if vis_h < ts.y {
+                                    let ratio = self.preview_pan.y / (ts.y - vis_h).max(1.0);
+                                    let bar_len = (PREVIEW_PANEL_SIZE * (vis_h / ts.y)).max(16.0);
+                                    let bar_y = rect.min.y + ratio * (PREVIEW_PANEL_SIZE - bar_len);
+                                    painter.rect_filled(
+                                        egui::Rect::from_min_size(
+                                            egui::pos2(rect.max.x - bar_w - 1.0, bar_y),
+                                            egui::vec2(bar_w, bar_len),
+                                        ),
+                                        2.0, bar_color,
+                                    );
+                                }
+                            }
+
+                            // Zoom controls strip
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                if ui.small_button("\u{2212}").clicked() {
+                                    self.preview_zoom = (self.preview_zoom / 1.25).max(0.05);
+                                }
+                                let zoom_pct = (self.preview_zoom * 100.0).round() as u32;
+                                if ui.small_button(format!("{}%", zoom_pct)).clicked() {
+                                    // Click zoom label → jump to 100 %
+                                    self.preview_zoom = 1.0;
+                                    if let Some(texture) = display_texture {
+                                        let ts = texture.size_vec2();
+                                        let vis_w = PREVIEW_PANEL_SIZE / self.preview_zoom;
+                                        let vis_h = PREVIEW_PANEL_SIZE / self.preview_zoom;
+                                        self.preview_pan = egui::Vec2::new(
+                                            (ts.x - vis_w) / 2.0,
+                                            (ts.y - vis_h) / 2.0,
+                                        );
+                                    }
+                                }
+                                if ui.small_button("\u{2B}").clicked() {
+                                    self.preview_zoom = (self.preview_zoom * 1.25).min(64.0);
+                                }
+                                if ui.small_button("\u{229E} Fit").clicked() {
+                                    self.preview_zoom = 0.0;
+                                    self.preview_pan = egui::Vec2::ZERO;
+                                }
+                            });
 
                             // Animation playback controls
                             if show_anim_controls {
-                                ui.add_space(4.0);
+                                ui.add_space(2.0);
                                 ui.horizontal(|ui| {
                                     if ui.small_button("\u{23EE}").clicked() {
                                         self.anim_current_frame = 0;
@@ -1315,7 +1478,6 @@ impl SaveFileDialog {
                                 });
                                 ui.small(format!("Frame {} / {}", self.anim_current_frame + 1, self.frame_thumbnails.len()));
                             } else {
-                                ui.add_space(4.0);
                                 let size_text = format!("Est. {}", Self::format_file_size(self.estimated_full_size));
                                 ui.label(egui::RichText::new(size_text).size(11.0).color(colors.text_muted));
                             }

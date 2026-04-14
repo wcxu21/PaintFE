@@ -4371,8 +4371,22 @@ impl Canvas {
             let ui_blocking =
                 ui.ctx().memory(|mem| mem.any_popup_open()) || ui.ctx().is_pointer_over_area();
 
-            // Get mouse position and check if over canvas
-            let mouse_pos = ui.input(|i| i.pointer.interact_pos());
+            // Get mouse position and check if over canvas.
+            // On Wayland with a graphics tablet the stylus may route events as
+            // Touch rather than Pointer, so fall back to the most recent touch
+            // position when the pointer position is unavailable.
+            let mouse_pos = ui.input(|i| {
+                i.pointer.interact_pos().or_else(|| {
+                    i.events.iter().rev().find_map(|e| match e {
+                        egui::Event::Touch {
+                            phase: egui::TouchPhase::Start | egui::TouchPhase::Move,
+                            pos,
+                            ..
+                        } => Some(*pos),
+                        _ => None,
+                    })
+                })
+            });
             let pointer_over_canvas = mouse_pos.is_some_and(|pos| canvas_rect.contains(pos));
 
             // Get canvas position (will be None if not over image)
@@ -4440,7 +4454,10 @@ impl Canvas {
                 || tools.lasso_state.dragging
                 || tools.gradient_state.dragging
                 || tools.text_state.text_box_drag.is_some()
-                || tools.text_state.dragging_handle;
+                || tools.text_state.dragging_handle
+                // Magic Wand reacts to a single click; block only if pointer genuinely
+                // left the canvas, not because a UI panel is "over" the viewport rect.
+                || tools.active_tool == crate::components::tools::Tool::MagicWand;
             // When editing a text layer block, handles (rotation, delete) can be drawn outside
             // canvas bounds — allow input so the user can click/drag them.
             // This also overrides ui_blocking, because the handles may overlap panels.
