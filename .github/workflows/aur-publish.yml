@@ -1,0 +1,59 @@
+name: Publish to AUR
+
+# Runs automatically after the Release workflow succeeds.
+# Publishes both paintfe (source build) and paintfe-bin (prebuilt binary) packages.
+# Requires three repository secrets — see packaging/aur/PKGBUILD comments and AUR_SETUP_GUIDE.md.
+#   AUR_SSH_PRIVATE_KEY  — private half of the AUR deploy SSH key
+#   AUR_USERNAME         — your AUR / git author username (e.g. kylejckson)
+#   AUR_EMAIL            — your AUR / git author email
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+
+permissions: read-all
+
+jobs:
+  aur-publish:
+    name: Publish ${{ matrix.pkgname }} to AUR
+    runs-on: ubuntu-latest
+    # Only run when the Release workflow succeeded and was triggered by a version tag
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_branch, 'v')
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pkgname: paintfe
+            pkgbuild_path: packaging/aur/PKGBUILD
+          - pkgname: paintfe-bin
+            pkgbuild_path: packaging/aur/PKGBUILD-bin
+
+    steps:
+      - name: Checkout at release commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${{ github.event.workflow_run.head_branch }}"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v3.0.1
+        with:
+          pkgname: ${{ matrix.pkgname }}
+          pkgver: ${{ steps.version.outputs.version }}
+          pkgbuild_path: ${{ matrix.pkgbuild_path }}
+          commit_username: ${{ secrets.AUR_USERNAME }}
+          commit_email: ${{ secrets.AUR_EMAIL }}
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to v${{ steps.version.outputs.version }}"
+          updpkgsums: true
+          test: false
+          allow_empty_commits: false
