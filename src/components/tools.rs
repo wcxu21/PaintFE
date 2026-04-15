@@ -5372,6 +5372,7 @@ impl ToolsPanel {
             Tool::RectangleSelect | Tool::EllipseSelect => {
                 let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
                 let alt_held = ui.input(|i| i.modifiers.alt);
+                let ctrl_held = ui.input(|i| i.modifiers.command);
                 let is_secondary_pressed =
                     ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary));
 
@@ -5389,10 +5390,10 @@ impl ToolsPanel {
                 // Start drag on primary OR secondary press.
                 // At drag start, lock the effective mode from modifier keys:
                 //   Shift+Alt → Intersect
-                //   Shift      → Add
-                //   Alt        → Subtract
+                //   Ctrl      → Add
+                //   Alt       → Subtract
                 //   Right-click → Subtract (when context bar mode is Replace)
-                //   else       → context bar mode
+                //   else      → context bar mode
                 if (is_primary_pressed || is_secondary_pressed)
                     && !self.selection_state.dragging
                     && let Some(pos_f) = canvas_pos_unclamped
@@ -5407,6 +5408,8 @@ impl ToolsPanel {
                         SelectionMode::Subtract
                     } else if shift_held && alt_held {
                         SelectionMode::Intersect
+                    } else if ctrl_held {
+                        SelectionMode::Add
                     } else if alt_held {
                         SelectionMode::Subtract
                     } else {
@@ -8412,6 +8415,7 @@ impl ToolsPanel {
                 }
 
                 // Start lasso drag — lock effective mode from modifier keys at drag start
+                let ctrl_held_l = ui.input(|i| i.modifiers.command);
                 if (is_primary_pressed || is_secondary_pressed)
                     && !self.lasso_state.dragging
                     && let Some(pos_f) = canvas_pos_unclamped
@@ -8422,6 +8426,8 @@ impl ToolsPanel {
                         SelectionMode::Subtract
                     } else if shift_held && alt_held_l {
                         SelectionMode::Intersect
+                    } else if ctrl_held_l {
+                        SelectionMode::Add
                     } else if alt_held_l {
                         SelectionMode::Subtract
                     } else {

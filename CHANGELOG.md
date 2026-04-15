@@ -6,6 +6,25 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## [1.1.12] - 2026-04-15
+
+### Added
+- **Ctrl+LMB adds to selection**: Holding Ctrl while starting a drag with the
+  Rectangle Select, Ellipse Select, or Lasso tool now enters Add mode, matching
+  the behaviour of Shift (Union) and Alt (Subtract).
+- **Step arrows and reset buttons in Settings**: Every slider and number input in
+  the Settings window now has ◀/▶ buttons to increment or decrement by one step,
+  and a ↺ reset button (dimmed when the value already equals the default) to
+  restore the factory default without reopening the window.
+- **Keyboard shortcuts for Color, Filter, and Generate menus**: All 51 menu
+  actions across the Color, Filter, and Generate menus are now rebindable via
+  Settings > Keybindings. Instant Color adjustments (Auto Levels, Desaturate,
+  Invert Colors, Invert Alpha, Sepia Tone) apply immediately; all dialog-based
+  actions open their respective dialogs. Remove Background additionally requires
+  ONNX Runtime to be configured.
+
+---
+
 ## [1.1.11] - 2026-04-14
 
 ### Added

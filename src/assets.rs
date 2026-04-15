@@ -2551,6 +2551,60 @@ pub enum BindableAction {
     BrushResizeDragModifier,
     BrushSizeDecrease,
     BrushSizeIncrease,
+    // Color — instant (no dialog)
+    ColorAutoLevels,
+    ColorDesaturate,
+    ColorInvertColors,
+    ColorInvertAlpha,
+    ColorSepiaTone,
+    // Color — dialog
+    ColorBrightnessContrast,
+    ColorCurves,
+    ColorExposure,
+    ColorHighlightsShadows,
+    ColorHueSaturation,
+    ColorLevels,
+    ColorTemperatureTint,
+    ColorVibrance,
+    ColorThreshold,
+    ColorPosterize,
+    ColorBalance,
+    ColorGradientMap,
+    ColorBlackAndWhite,
+    // Filter — blur
+    FilterGaussianBlur,
+    FilterBokehBlur,
+    FilterMotionBlur,
+    FilterBoxBlur,
+    FilterZoomBlur,
+    // Filter — sharpen/noise
+    FilterSharpen,
+    FilterReduceNoise,
+    FilterAddNoise,
+    FilterMedian,
+    // Filter — distort
+    FilterCrystallize,
+    FilterDents,
+    FilterPixelate,
+    FilterBulge,
+    FilterTwist,
+    // Filter — stylize
+    FilterGlow,
+    FilterVignette,
+    FilterHalftone,
+    FilterInk,
+    FilterOilPainting,
+    FilterColorFilter,
+    // Filter — glitch
+    FilterPixelDrag,
+    FilterRgbDisplace,
+    // Filter — AI
+    FilterRemoveBackground,
+    // Generate
+    GenerateGrid,
+    GenerateDropShadow,
+    GenerateOutline,
+    GenerateContours,
 }
 
 impl BindableAction {
@@ -2596,6 +2650,54 @@ impl BindableAction {
             Self::BrushResizeDragModifier => t!("keybind.brush_resize_drag_modifier"),
             Self::BrushSizeDecrease => t!("keybind.brush_size_decrease"),
             Self::BrushSizeIncrease => t!("keybind.brush_size_increase"),
+            // Color
+            Self::ColorAutoLevels => t!("menu.color.auto_levels"),
+            Self::ColorDesaturate => t!("menu.color.desaturate"),
+            Self::ColorInvertColors => t!("menu.color.invert_colors"),
+            Self::ColorInvertAlpha => t!("menu.color.invert_alpha"),
+            Self::ColorSepiaTone => t!("menu.color.sepia_tone"),
+            Self::ColorBrightnessContrast => t!("menu.color.brightness_contrast"),
+            Self::ColorCurves => t!("menu.color.curves"),
+            Self::ColorExposure => t!("menu.color.exposure"),
+            Self::ColorHighlightsShadows => t!("menu.color.highlights_shadows"),
+            Self::ColorHueSaturation => t!("menu.color.hue_saturation"),
+            Self::ColorLevels => t!("menu.color.levels"),
+            Self::ColorTemperatureTint => t!("menu.color.temperature_tint"),
+            Self::ColorVibrance => t!("menu.color.vibrance"),
+            Self::ColorThreshold => t!("menu.color.threshold"),
+            Self::ColorPosterize => t!("menu.color.posterize"),
+            Self::ColorBalance => t!("menu.color.color_balance"),
+            Self::ColorGradientMap => t!("menu.color.gradient_map"),
+            Self::ColorBlackAndWhite => t!("menu.color.black_and_white"),
+            // Filter
+            Self::FilterGaussianBlur => t!("menu.filter.blur.gaussian"),
+            Self::FilterBokehBlur => t!("menu.filter.blur.bokeh"),
+            Self::FilterMotionBlur => t!("menu.filter.blur.motion"),
+            Self::FilterBoxBlur => t!("menu.filter.blur.box"),
+            Self::FilterZoomBlur => t!("menu.filter.blur.zoom"),
+            Self::FilterSharpen => t!("menu.filter.sharpen.sharpen"),
+            Self::FilterReduceNoise => t!("menu.filter.sharpen.reduce_noise"),
+            Self::FilterAddNoise => t!("menu.filter.noise.add_noise"),
+            Self::FilterMedian => t!("menu.filter.noise.median"),
+            Self::FilterCrystallize => t!("menu.filter.distort.crystallize"),
+            Self::FilterDents => t!("menu.filter.distort.dents"),
+            Self::FilterPixelate => t!("menu.filter.distort.pixelate"),
+            Self::FilterBulge => t!("menu.filter.distort.bulge_pinch"),
+            Self::FilterTwist => t!("menu.filter.distort.twist"),
+            Self::FilterGlow => t!("menu.filter.stylize.glow"),
+            Self::FilterVignette => t!("menu.filter.stylize.vignette"),
+            Self::FilterHalftone => t!("menu.filter.stylize.halftone"),
+            Self::FilterInk => t!("menu.filter.stylize.ink"),
+            Self::FilterOilPainting => t!("menu.filter.stylize.oil_painting"),
+            Self::FilterColorFilter => t!("menu.filter.stylize.color_filter"),
+            Self::FilterPixelDrag => t!("menu.filter.glitch.pixel_drag"),
+            Self::FilterRgbDisplace => t!("menu.filter.glitch.rgb_displace"),
+            Self::FilterRemoveBackground => t!("menu.filter.remove_background"),
+            // Generate
+            Self::GenerateGrid => t!("menu.generate.grid"),
+            Self::GenerateDropShadow => t!("menu.generate.drop_shadow"),
+            Self::GenerateOutline => t!("menu.generate.outline"),
+            Self::GenerateContours => t!("menu.generate.contours"),
         }
     }
 
@@ -2638,6 +2740,51 @@ impl BindableAction {
             Self::BrushResizeDragModifier | Self::BrushSizeDecrease | Self::BrushSizeIncrease => {
                 t!("keybind_category.brush")
             }
+            Self::ColorAutoLevels
+            | Self::ColorDesaturate
+            | Self::ColorInvertColors
+            | Self::ColorInvertAlpha
+            | Self::ColorSepiaTone
+            | Self::ColorBrightnessContrast
+            | Self::ColorCurves
+            | Self::ColorExposure
+            | Self::ColorHighlightsShadows
+            | Self::ColorHueSaturation
+            | Self::ColorLevels
+            | Self::ColorTemperatureTint
+            | Self::ColorVibrance
+            | Self::ColorThreshold
+            | Self::ColorPosterize
+            | Self::ColorBalance
+            | Self::ColorGradientMap
+            | Self::ColorBlackAndWhite => t!("keybind_category.color"),
+            Self::FilterGaussianBlur
+            | Self::FilterBokehBlur
+            | Self::FilterMotionBlur
+            | Self::FilterBoxBlur
+            | Self::FilterZoomBlur
+            | Self::FilterSharpen
+            | Self::FilterReduceNoise
+            | Self::FilterAddNoise
+            | Self::FilterMedian
+            | Self::FilterCrystallize
+            | Self::FilterDents
+            | Self::FilterPixelate
+            | Self::FilterBulge
+            | Self::FilterTwist
+            | Self::FilterGlow
+            | Self::FilterVignette
+            | Self::FilterHalftone
+            | Self::FilterInk
+            | Self::FilterOilPainting
+            | Self::FilterColorFilter
+            | Self::FilterPixelDrag
+            | Self::FilterRgbDisplace
+            | Self::FilterRemoveBackground => t!("keybind_category.filter"),
+            Self::GenerateGrid
+            | Self::GenerateDropShadow
+            | Self::GenerateOutline
+            | Self::GenerateContours => t!("keybind_category.generate"),
         }
     }
 
@@ -2684,6 +2831,54 @@ impl BindableAction {
             BrushResizeDragModifier,
             BrushSizeDecrease,
             BrushSizeIncrease,
+            // Color
+            ColorAutoLevels,
+            ColorDesaturate,
+            ColorInvertColors,
+            ColorInvertAlpha,
+            ColorSepiaTone,
+            ColorBrightnessContrast,
+            ColorCurves,
+            ColorExposure,
+            ColorHighlightsShadows,
+            ColorHueSaturation,
+            ColorLevels,
+            ColorTemperatureTint,
+            ColorVibrance,
+            ColorThreshold,
+            ColorPosterize,
+            ColorBalance,
+            ColorGradientMap,
+            ColorBlackAndWhite,
+            // Filter
+            FilterGaussianBlur,
+            FilterBokehBlur,
+            FilterMotionBlur,
+            FilterBoxBlur,
+            FilterZoomBlur,
+            FilterSharpen,
+            FilterReduceNoise,
+            FilterAddNoise,
+            FilterMedian,
+            FilterCrystallize,
+            FilterDents,
+            FilterPixelate,
+            FilterBulge,
+            FilterTwist,
+            FilterGlow,
+            FilterVignette,
+            FilterHalftone,
+            FilterInk,
+            FilterOilPainting,
+            FilterColorFilter,
+            FilterPixelDrag,
+            FilterRgbDisplace,
+            FilterRemoveBackground,
+            // Generate
+            GenerateGrid,
+            GenerateDropShadow,
+            GenerateOutline,
+            GenerateContours,
         ]
     }
 }
@@ -2825,6 +3020,51 @@ impl KeyBindings {
             "BrushResizeDragModifier" => Some(BindableAction::BrushResizeDragModifier),
             "BrushSizeDecrease" => Some(BindableAction::BrushSizeDecrease),
             "BrushSizeIncrease" => Some(BindableAction::BrushSizeIncrease),
+            "ColorAutoLevels" => Some(BindableAction::ColorAutoLevels),
+            "ColorDesaturate" => Some(BindableAction::ColorDesaturate),
+            "ColorInvertColors" => Some(BindableAction::ColorInvertColors),
+            "ColorInvertAlpha" => Some(BindableAction::ColorInvertAlpha),
+            "ColorSepiaTone" => Some(BindableAction::ColorSepiaTone),
+            "ColorBrightnessContrast" => Some(BindableAction::ColorBrightnessContrast),
+            "ColorCurves" => Some(BindableAction::ColorCurves),
+            "ColorExposure" => Some(BindableAction::ColorExposure),
+            "ColorHighlightsShadows" => Some(BindableAction::ColorHighlightsShadows),
+            "ColorHueSaturation" => Some(BindableAction::ColorHueSaturation),
+            "ColorLevels" => Some(BindableAction::ColorLevels),
+            "ColorTemperatureTint" => Some(BindableAction::ColorTemperatureTint),
+            "ColorVibrance" => Some(BindableAction::ColorVibrance),
+            "ColorThreshold" => Some(BindableAction::ColorThreshold),
+            "ColorPosterize" => Some(BindableAction::ColorPosterize),
+            "ColorBalance" => Some(BindableAction::ColorBalance),
+            "ColorGradientMap" => Some(BindableAction::ColorGradientMap),
+            "ColorBlackAndWhite" => Some(BindableAction::ColorBlackAndWhite),
+            "FilterGaussianBlur" => Some(BindableAction::FilterGaussianBlur),
+            "FilterBokehBlur" => Some(BindableAction::FilterBokehBlur),
+            "FilterMotionBlur" => Some(BindableAction::FilterMotionBlur),
+            "FilterBoxBlur" => Some(BindableAction::FilterBoxBlur),
+            "FilterZoomBlur" => Some(BindableAction::FilterZoomBlur),
+            "FilterSharpen" => Some(BindableAction::FilterSharpen),
+            "FilterReduceNoise" => Some(BindableAction::FilterReduceNoise),
+            "FilterAddNoise" => Some(BindableAction::FilterAddNoise),
+            "FilterMedian" => Some(BindableAction::FilterMedian),
+            "FilterCrystallize" => Some(BindableAction::FilterCrystallize),
+            "FilterDents" => Some(BindableAction::FilterDents),
+            "FilterPixelate" => Some(BindableAction::FilterPixelate),
+            "FilterBulge" => Some(BindableAction::FilterBulge),
+            "FilterTwist" => Some(BindableAction::FilterTwist),
+            "FilterGlow" => Some(BindableAction::FilterGlow),
+            "FilterVignette" => Some(BindableAction::FilterVignette),
+            "FilterHalftone" => Some(BindableAction::FilterHalftone),
+            "FilterInk" => Some(BindableAction::FilterInk),
+            "FilterOilPainting" => Some(BindableAction::FilterOilPainting),
+            "FilterColorFilter" => Some(BindableAction::FilterColorFilter),
+            "FilterPixelDrag" => Some(BindableAction::FilterPixelDrag),
+            "FilterRgbDisplace" => Some(BindableAction::FilterRgbDisplace),
+            "FilterRemoveBackground" => Some(BindableAction::FilterRemoveBackground),
+            "GenerateGrid" => Some(BindableAction::GenerateGrid),
+            "GenerateDropShadow" => Some(BindableAction::GenerateDropShadow),
+            "GenerateOutline" => Some(BindableAction::GenerateOutline),
+            "GenerateContours" => Some(BindableAction::GenerateContours),
             _ => None,
         };
         if let Some(action) = action
@@ -4362,12 +4602,7 @@ impl SettingsWindow {
             .min_col_width(160.0)
             .show(ui, |ui| {
                 ui.label(t!("settings.general.max_undo_steps"));
-                ui.add(
-                    egui::DragValue::new(&mut settings.max_undo_steps)
-                        .clamp_range(10..=500)
-                        .speed(1.0)
-                        .suffix(" steps"),
-                );
+                Self::settings_drag_usize(ui, &mut settings.max_undo_steps, 10..=500, " steps", 50);
                 ui.end_row();
 
                 ui.label("Auto-save interval:");
@@ -4463,21 +4698,11 @@ impl SettingsWindow {
                 .min_col_width(160.0)
                 .show(ui, |ui| {
                     ui.label("Default width:");
-                    ui.add(
-                        egui::DragValue::new(&mut settings.default_canvas_width)
-                            .clamp_range(1..=65535u32)
-                            .speed(1.0)
-                            .suffix(" px"),
-                    );
+                    Self::settings_drag_u32(ui, &mut settings.default_canvas_width, 1..=65535u32, " px", 800);
                     ui.end_row();
 
                     ui.label("Default height:");
-                    ui.add(
-                        egui::DragValue::new(&mut settings.default_canvas_height)
-                            .clamp_range(1..=65535u32)
-                            .speed(1.0)
-                            .suffix(" px"),
-                    );
+                    Self::settings_drag_u32(ui, &mut settings.default_canvas_height, 1..=65535u32, " px", 600);
                     ui.end_row();
                 });
         }
@@ -4816,14 +5041,7 @@ impl SettingsWindow {
                 ui.end_row();
 
                 ui.label(t!("settings.interface.brightness"));
-                if ui
-                    .add(
-                        egui::Slider::new(&mut settings.checkerboard_brightness, 0.5..=2.0)
-                            .step_by(0.1)
-                            .text(""),
-                    )
-                    .changed()
-                {
+                if Self::settings_slider(ui, &mut settings.checkerboard_brightness, 0.5..=2.0, 0.1, 1.0) {
                     settings.save();
                 }
                 ui.end_row();
@@ -5034,13 +5252,7 @@ impl SettingsWindow {
                     });
                     ui.horizontal(|ui| {
                         ui.label("Grid Opacity:");
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut settings.canvas_grid_opacity, 0.0..=1.0)
-                                    .step_by(0.05),
-                            )
-                            .changed()
-                        {
+                        if Self::settings_slider(ui, &mut settings.canvas_grid_opacity, 0.0..=1.0, 0.05, 0.4) {
                             self.dirty = true;
                         }
                     });
@@ -5094,25 +5306,13 @@ impl SettingsWindow {
                     );
                     ui.horizontal(|ui| {
                         ui.label("Glow Intensity:");
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut settings.glow_intensity, 0.0..=2.0)
-                                    .step_by(0.1),
-                            )
-                            .changed()
-                        {
+                        if Self::settings_slider(ui, &mut settings.glow_intensity, 0.0..=2.0, 0.1, 1.0) {
                             self.dirty = true;
                         }
                     });
                     ui.horizontal(|ui| {
                         ui.label("Shadow Strength:");
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut settings.shadow_strength, 0.0..=2.0)
-                                    .step_by(0.1),
-                            )
-                            .changed()
-                        {
+                        if Self::settings_slider(ui, &mut settings.shadow_strength, 0.0..=2.0, 0.1, 1.0) {
                             self.dirty = true;
                         }
                     });
@@ -5363,6 +5563,140 @@ impl SettingsWindow {
                 ui.weak("(preset default)");
             }
         });
+    }
+
+    /// Render a settings slider with ◀/▶ step buttons and a ↺ reset button.
+    /// Returns true if the value changed.
+    fn settings_slider(
+        ui: &mut egui::Ui,
+        value: &mut f32,
+        range: std::ops::RangeInclusive<f32>,
+        step: f64,
+        default: f32,
+    ) -> bool {
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            let min = *range.start();
+            let max = *range.end();
+            let step_f = step as f32;
+            if ui.small_button("\u{25C4}").on_hover_text("Decrease").clicked() {
+                *value = (*value - step_f).max(min);
+                changed = true;
+            }
+            if ui.add(egui::Slider::new(value, range).step_by(step)).changed() {
+                changed = true;
+            }
+            if ui.small_button("\u{25BA}").on_hover_text("Increase").clicked() {
+                *value = (*value + step_f).min(max);
+                changed = true;
+            }
+            let at_default = (*value - default).abs() < step_f * 0.01;
+            let reset_btn = ui.add_enabled(
+                !at_default,
+                egui::Button::new("\u{21BA}").small(),
+            );
+            if reset_btn.on_hover_text("Reset to default").clicked() {
+                *value = default;
+                changed = true;
+            }
+        });
+        changed
+    }
+
+    /// Render a settings DragValue (usize) with −/+ buttons and a ↺ reset button.
+    /// Returns true if the value changed.
+    fn settings_drag_usize(
+        ui: &mut egui::Ui,
+        value: &mut usize,
+        range: std::ops::RangeInclusive<usize>,
+        suffix: &str,
+        default: usize,
+    ) -> bool {
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            let min = *range.start();
+            let max = *range.end();
+            if ui.small_button("\u{2212}").on_hover_text("Decrease").clicked()
+                && *value > min
+            {
+                *value -= 1;
+                changed = true;
+            }
+            if ui
+                .add(
+                    egui::DragValue::new(value)
+                        .clamp_range(range)
+                        .speed(1.0)
+                        .suffix(suffix),
+                )
+                .changed()
+            {
+                changed = true;
+            }
+            if ui.small_button("\u{2B}").on_hover_text("Increase").clicked()
+                && *value < max
+            {
+                *value += 1;
+                changed = true;
+            }
+            let reset_btn = ui.add_enabled(
+                *value != default,
+                egui::Button::new("\u{21BA}").small(),
+            );
+            if reset_btn.on_hover_text("Reset to default").clicked() {
+                *value = default;
+                changed = true;
+            }
+        });
+        changed
+    }
+
+    /// Render a settings DragValue (u32) with −/+ buttons and a ↺ reset button.
+    /// Returns true if the value changed.
+    fn settings_drag_u32(
+        ui: &mut egui::Ui,
+        value: &mut u32,
+        range: std::ops::RangeInclusive<u32>,
+        suffix: &str,
+        default: u32,
+    ) -> bool {
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            let min = *range.start();
+            let max = *range.end();
+            if ui.small_button("\u{2212}").on_hover_text("Decrease").clicked()
+                && *value > min
+            {
+                *value -= 1;
+                changed = true;
+            }
+            if ui
+                .add(
+                    egui::DragValue::new(value)
+                        .clamp_range(range)
+                        .speed(1.0)
+                        .suffix(suffix),
+                )
+                .changed()
+            {
+                changed = true;
+            }
+            if ui.small_button("\u{2B}").on_hover_text("Increase").clicked()
+                && *value < max
+            {
+                *value += 1;
+                changed = true;
+            }
+            let reset_btn = ui.add_enabled(
+                *value != default,
+                egui::Button::new("\u{21BA}").small(),
+            );
+            if reset_btn.on_hover_text("Reset to default").clicked() {
+                *value = default;
+                changed = true;
+            }
+        });
+        changed
     }
 
     /// Commit staged theme changes to settings and rebuild the theme
