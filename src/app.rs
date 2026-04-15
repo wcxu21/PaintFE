@@ -1850,274 +1850,239 @@ impl eframe::App for PaintFEApp {
             // Color, Filter and Generate — dialog openers
             if has_project && no_dialog_open {
                 // Color dialogs
-                if kb.is_pressed(ctx, BindableAction::ColorBrightnessContrast) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::ColorBrightnessContrast)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::BrightnessContrast(
                             crate::ops::dialogs::BrightnessContrastDialog::new(
                                 &project.canvas_state,
                             ),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::ColorCurves) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::ColorCurves)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::Curves(
                             crate::ops::dialogs::CurvesDialog::new(&project.canvas_state),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::ColorExposure) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::ColorExposure)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::Exposure(
                             crate::ops::dialogs::ExposureDialog::new(&project.canvas_state),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::ColorHighlightsShadows) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::ColorHighlightsShadows)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::HighlightsShadows(
                             crate::ops::dialogs::HighlightsShadowsDialog::new(
                                 &project.canvas_state,
                             ),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::ColorHueSaturation) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::ColorHueSaturation)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::HueSaturation(
                             crate::ops::dialogs::HueSaturationDialog::new(&project.canvas_state),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::ColorLevels) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::ColorLevels)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::Levels(
                             crate::ops::dialogs::LevelsDialog::new(&project.canvas_state),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::ColorTemperatureTint) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::ColorTemperatureTint)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::TemperatureTint(
                             crate::ops::dialogs::TemperatureTintDialog::new(&project.canvas_state),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::ColorVibrance) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::ColorVibrance)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::Vibrance(
                             crate::ops::dialogs::VibranceDialog::new(&project.canvas_state),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::ColorThreshold) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::ColorThreshold)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::Threshold(
                             crate::ops::dialogs::ThresholdDialog::new(&project.canvas_state),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::ColorPosterize) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::ColorPosterize)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::Posterize(
                             crate::ops::dialogs::PosterizeDialog::new(&project.canvas_state),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::ColorBalance) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::ColorBalance)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::ColorBalance(
                             crate::ops::dialogs::ColorBalanceDialog::new(&project.canvas_state),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::ColorGradientMap) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::ColorGradientMap)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::GradientMap(
                             crate::ops::dialogs::GradientMapDialog::new(&project.canvas_state),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::ColorBlackAndWhite) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::ColorBlackAndWhite)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::BlackAndWhite(
                             crate::ops::dialogs::BlackAndWhiteDialog::new(&project.canvas_state),
                         );
                     }
-                }
                 // Filter — blur
-                if kb.is_pressed(ctx, BindableAction::FilterGaussianBlur) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::FilterGaussianBlur)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::GaussianBlur(
                             crate::ops::dialogs::GaussianBlurDialog::new(&project.canvas_state),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::FilterBokehBlur) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::FilterBokehBlur)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::BokehBlur(
                             crate::ops::effect_dialogs::BokehBlurDialog::new(
                                 &project.canvas_state,
                             ),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::FilterMotionBlur) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::FilterMotionBlur)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::MotionBlur(
                             crate::ops::effect_dialogs::MotionBlurDialog::new(
                                 &project.canvas_state,
                             ),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::FilterBoxBlur) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::FilterBoxBlur)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::BoxBlur(
                             crate::ops::effect_dialogs::BoxBlurDialog::new(&project.canvas_state),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::FilterZoomBlur) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::FilterZoomBlur)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::ZoomBlur(
                             crate::ops::effect_dialogs::ZoomBlurDialog::new(&project.canvas_state),
                         );
                     }
-                }
                 // Filter — sharpen / noise
-                if kb.is_pressed(ctx, BindableAction::FilterSharpen) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::FilterSharpen)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::Sharpen(
                             crate::ops::effect_dialogs::SharpenDialog::new(&project.canvas_state),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::FilterReduceNoise) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::FilterReduceNoise)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::ReduceNoise(
                             crate::ops::effect_dialogs::ReduceNoiseDialog::new(
                                 &project.canvas_state,
                             ),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::FilterAddNoise) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::FilterAddNoise)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::AddNoise(
                             crate::ops::effect_dialogs::AddNoiseDialog::new(&project.canvas_state),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::FilterMedian) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::FilterMedian)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::Median(
                             crate::ops::effect_dialogs::MedianDialog::new(&project.canvas_state),
                         );
                     }
-                }
                 // Filter — distort
-                if kb.is_pressed(ctx, BindableAction::FilterCrystallize) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::FilterCrystallize)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::Crystallize(
                             crate::ops::effect_dialogs::CrystallizeDialog::new(
                                 &project.canvas_state,
                             ),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::FilterDents) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::FilterDents)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::Dents(
                             crate::ops::effect_dialogs::DentsDialog::new(&project.canvas_state),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::FilterPixelate) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::FilterPixelate)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::Pixelate(
                             crate::ops::effect_dialogs::PixelateDialog::new(&project.canvas_state),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::FilterBulge) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::FilterBulge)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::Bulge(
                             crate::ops::effect_dialogs::BulgeDialog::new(&project.canvas_state),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::FilterTwist) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::FilterTwist)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::Twist(
                             crate::ops::effect_dialogs::TwistDialog::new(&project.canvas_state),
                         );
                     }
-                }
                 // Filter — stylize
-                if kb.is_pressed(ctx, BindableAction::FilterGlow) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::FilterGlow)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::Glow(
                             crate::ops::effect_dialogs::GlowDialog::new(&project.canvas_state),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::FilterVignette) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::FilterVignette)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::Vignette(
                             crate::ops::effect_dialogs::VignetteDialog::new(&project.canvas_state),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::FilterHalftone) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::FilterHalftone)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::Halftone(
                             crate::ops::effect_dialogs::HalftoneDialog::new(&project.canvas_state),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::FilterInk) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::FilterInk)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::Ink(
                             crate::ops::effect_dialogs::InkDialog::new(&project.canvas_state),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::FilterOilPainting) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::FilterOilPainting)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::OilPainting(
                             crate::ops::effect_dialogs::OilPaintingDialog::new(
                                 &project.canvas_state,
                             ),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::FilterColorFilter) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::FilterColorFilter)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::ColorFilter(
                             crate::ops::effect_dialogs::ColorFilterDialog::new(
                                 &project.canvas_state,
                             ),
                         );
                     }
-                }
                 // Filter — glitch
-                if kb.is_pressed(ctx, BindableAction::FilterPixelDrag) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::FilterPixelDrag)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::PixelDrag(
                             crate::ops::effect_dialogs::PixelDragDialog::new(&project.canvas_state),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::FilterRgbDisplace) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::FilterRgbDisplace)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::RgbDisplace(
                             crate::ops::effect_dialogs::RgbDisplaceDialog::new(
                                 &project.canvas_state,
                             ),
                         );
                     }
-                }
                 // Filter — AI (requires ONNX runtime)
                 if kb.is_pressed(ctx, BindableAction::FilterRemoveBackground) && self.onnx_available
                 {
@@ -2126,36 +2091,32 @@ impl eframe::App for PaintFEApp {
                     );
                 }
                 // Generate
-                if kb.is_pressed(ctx, BindableAction::GenerateGrid) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::GenerateGrid)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::Grid(
                             crate::ops::effect_dialogs::GridDialog::new(&project.canvas_state),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::GenerateDropShadow) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::GenerateDropShadow)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::DropShadow(
                             crate::ops::effect_dialogs::DropShadowDialog::new(
                                 &project.canvas_state,
                             ),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::GenerateOutline) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::GenerateOutline)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::Outline(
                             crate::ops::effect_dialogs::OutlineDialog::new(&project.canvas_state),
                         );
                     }
-                }
-                if kb.is_pressed(ctx, BindableAction::GenerateContours) {
-                    if let Some(project) = self.active_project() {
+                if kb.is_pressed(ctx, BindableAction::GenerateContours)
+                    && let Some(project) = self.active_project() {
                         self.active_dialog = ActiveDialog::Contours(
                             crate::ops::effect_dialogs::ContoursDialog::new(&project.canvas_state),
                         );
                     }
-                }
             }
         }
 
