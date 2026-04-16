@@ -3177,8 +3177,15 @@ impl Canvas {
         let (response, painter) = ui.allocate_painter(available_size, sense);
         self.canvas_widget_id = Some(response.id);
         state.canvas_widget_id = Some(response.id);
-        // Keep focus on the canvas when no text widget is active
-        if !ui.ctx().memory(|m| m.focus().is_some()) || response.clicked() {
+        // Keep focus on the canvas when no other UI widget is active.
+        // Also always reclaim focus when the text tool is editing — this
+        // prevents DragValues in floating panels (color, etc.) from holding
+        // focus and silently swallowing keystrokes meant for the text layer.
+        let text_tool_editing = tools
+            .as_ref()
+            .map(|t| t.text_state.is_editing)
+            .unwrap_or(false);
+        if !ui.ctx().memory(|m| m.focus().is_some()) || response.clicked() || text_tool_editing {
             response.request_focus();
         }
         let canvas_rect = response.rect;

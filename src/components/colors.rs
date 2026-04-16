@@ -783,7 +783,7 @@ impl ColorsPanel {
             }
             let mut ri = (r * 255.0).round() as u32;
             let ri_before = ri;
-            color_step_field(ui, &mut ri, 0, 255);
+            ui.vertical(|ui| { ui.add_space(10.0); ui.horizontal(|ui| { color_step_field(ui, &mut ri, 0, 255); }); });
             if ri != ri_before { r = ri as f32 / 255.0; changed = true; }
         });
 
@@ -810,7 +810,7 @@ impl ColorsPanel {
             }
             let mut gi = (g * 255.0).round() as u32;
             let gi_before = gi;
-            color_step_field(ui, &mut gi, 0, 255);
+            ui.vertical(|ui| { ui.add_space(10.0); ui.horizontal(|ui| { color_step_field(ui, &mut gi, 0, 255); }); });
             if gi != gi_before { g = gi as f32 / 255.0; changed = true; }
         });
 
@@ -837,7 +837,7 @@ impl ColorsPanel {
             }
             let mut bi = (b * 255.0).round() as u32;
             let bi_before = bi;
-            color_step_field(ui, &mut bi, 0, 255);
+            ui.vertical(|ui| { ui.add_space(10.0); ui.horizontal(|ui| { color_step_field(ui, &mut bi, 0, 255); }); });
             if bi != bi_before { b = bi as f32 / 255.0; changed = true; }
         });
 
@@ -902,7 +902,7 @@ impl ColorsPanel {
             }
             let mut hi = (h * 360.0).round() as u32;
             let hi_before = hi;
-            color_step_field(ui, &mut hi, 0, 360);
+            ui.vertical(|ui| { ui.add_space(10.0); ui.horizontal(|ui| { color_step_field(ui, &mut hi, 0, 360); }); });
             if hi != hi_before { h = hi as f32 / 360.0; changed = true; }
         });
 
@@ -919,7 +919,7 @@ impl ColorsPanel {
             }
             let mut si = (s * 100.0).round() as u32;
             let si_before = si;
-            color_step_field(ui, &mut si, 0, 100);
+            ui.vertical(|ui| { ui.add_space(10.0); ui.horizontal(|ui| { color_step_field(ui, &mut si, 0, 100); }); });
             if si != si_before { s = si as f32 / 100.0; changed = true; }
         });
 
@@ -936,7 +936,7 @@ impl ColorsPanel {
             }
             let mut vi = (v * 100.0).round() as u32;
             let vi_before = vi;
-            color_step_field(ui, &mut vi, 0, 100);
+            ui.vertical(|ui| { ui.add_space(10.0); ui.horizontal(|ui| { color_step_field(ui, &mut vi, 0, 100); }); });
             if vi != vi_before { v = vi as f32 / 100.0; changed = true; }
         });
 

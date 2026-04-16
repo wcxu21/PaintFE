@@ -6,6 +6,26 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## [1.1.13] - 2026-04-16
+
+### Added
+- **Arrow slider thumbs**: All sliders in the Color panel (RGB and HSV channels)
+  and every dialog slider now use Paint.NET-style arrowhead thumbs — a solid black
+  body with a white outline — instead of the default round handle, making the
+  current value position crisp and immediately visible.
+- **Step increment/decrement controls in Color panel**: Each RGB and HSV channel
+  slider now has flanking − and + buttons alongside a draggable value field,
+  allowing single-unit nudging of channel values without grabbing the slider.
+
+### Fixed
+- **Text tool typing regression**: Typed characters were silently swallowed when
+  any DragValue in the text tool options bar (letter spacing, scale, etc.) or a
+  floating color panel slider retained keyboard focus. The canvas now pre-claims
+  focus at the start of each frame whenever the text tool is actively editing,
+  preventing options-bar and panel widgets from intercepting keystrokes.
+
+---
+
 ## [1.1.12] - 2026-04-15
 
 ### Added

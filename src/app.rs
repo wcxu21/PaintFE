@@ -1136,6 +1136,17 @@ impl eframe::App for PaintFEApp {
             || self.new_file_dialog.open
             || !matches!(self.active_dialog, ActiveDialog::None);
 
+        // Pre-claim canvas focus when the text tool is actively editing text.
+        // This must happen BEFORE any context-bar or panel widgets render (they render
+        // before the CentralPanel canvas).  Without this, DragValues in the text tool
+        // options bar (letter spacing, scale, etc.) can enter text-edit mode and consume
+        // Event::Text keystokes before handle_input ever sees them.
+        if self.tools_panel.text_state.is_editing
+            && let Some(canvas_id) = self.canvas.canvas_widget_id
+        {
+            ctx.memory_mut(|m| m.request_focus(canvas_id));
+        }
+
         // Handle scroll wheel zoom — only when mouse is over the canvas and NOT over a widget
 
         let mut should_zoom = false;
