@@ -4401,8 +4401,20 @@ impl Canvas {
             let canvas_pos_unclamped =
                 mouse_pos.map(|pos| self.screen_to_canvas_unclamped(pos, canvas_rect, state));
 
-            // Check if we're in the middle of a stroke (mouse button is held)
-            let is_painting = ui.input(|i| i.pointer.primary_down() || i.pointer.secondary_down());
+            // Check if we're in the middle of a stroke (mouse/touch button is held)
+            let is_painting = ui.input(|i| {
+                i.pointer.primary_down()
+                    || i.pointer.secondary_down()
+                    || i.events.iter().any(|e| {
+                        matches!(
+                            e,
+                            egui::Event::Touch {
+                                phase: egui::TouchPhase::Start | egui::TouchPhase::Move,
+                                ..
+                            }
+                        )
+                    })
+            });
 
             // Collect ALL sub-frame PointerMoved events for smooth strokes.
             // At 21 FPS with a 1000Hz mouse, there can be ~48 intermediate
@@ -4412,31 +4424,36 @@ impl Canvas {
                     i.events
                         .iter()
                         .filter_map(|e| {
-                            if let egui::Event::PointerMoved(screen_pos) = e {
-                                // Convert screen coordinates to canvas coordinates
-                                // Inline the conversion to avoid borrow issues
-                                let image_width = state.width as f32 * self.zoom;
-                                let image_height = state.height as f32 * self.zoom;
-                                let center_x = canvas_rect.center().x + self.pan_offset.x;
-                                let center_y = canvas_rect.center().y + self.pan_offset.y;
-                                let ir = Rect::from_center_size(
-                                    Pos2::new(center_x, center_y),
-                                    Vec2::new(image_width, image_height),
-                                );
-                                if !ir.contains(*screen_pos) {
-                                    return None;
-                                }
-                                let rel_x = (screen_pos.x - ir.min.x) / self.zoom;
-                                let rel_y = (screen_pos.y - ir.min.y) / self.zoom;
-                                if rel_x >= 0.0
-                                    && rel_x < state.width as f32
-                                    && rel_y >= 0.0
-                                    && rel_y < state.height as f32
-                                {
-                                    Some((rel_x, rel_y))
-                                } else {
-                                    None
-                                }
+                            let screen_pos = match e {
+                                egui::Event::PointerMoved(pos) => *pos,
+                                egui::Event::Touch {
+                                    phase: egui::TouchPhase::Move,
+                                    pos,
+                                    ..
+                                } => *pos,
+                                _ => return None,
+                            };
+                            // Convert screen coordinates to canvas coordinates
+                            // Inline the conversion to avoid borrow issues
+                            let image_width = state.width as f32 * self.zoom;
+                            let image_height = state.height as f32 * self.zoom;
+                            let center_x = canvas_rect.center().x + self.pan_offset.x;
+                            let center_y = canvas_rect.center().y + self.pan_offset.y;
+                            let ir = Rect::from_center_size(
+                                Pos2::new(center_x, center_y),
+                                Vec2::new(image_width, image_height),
+                            );
+                            if !ir.contains(screen_pos) {
+                                return None;
+                            }
+                            let rel_x = (screen_pos.x - ir.min.x) / self.zoom;
+                            let rel_y = (screen_pos.y - ir.min.y) / self.zoom;
+                            if rel_x >= 0.0
+                                && rel_x < state.width as f32
+                                && rel_y >= 0.0
+                                && rel_y < state.height as f32
+                            {
+                                Some((rel_x, rel_y))
                             } else {
                                 None
                             }
@@ -4587,7 +4604,6 @@ impl Canvas {
             // TOOL-SPECIFIC CURSOR ICON
             // ====================================================================
             {
-                let mouse_pos = ui.input(|i| i.pointer.interact_pos());
                 let over_image = mouse_pos.is_some_and(|pos| image_rect.contains(pos));
                 // Only override cursor when mouse is truly over just the canvas —
                 // not when a dialog, menu, popup, or floating panel is on top.
@@ -4603,7 +4619,19 @@ impl Canvas {
                     && let Some(tool) = active_tool_for_cursor
                 {
                     use crate::components::tools::Tool;
-                    let is_dragging = ui.input(|i| i.pointer.primary_down());
+                    let is_dragging = ui.input(|i| {
+                        i.pointer.primary_down()
+                            || i.events.iter().any(|e| {
+                                matches!(
+                                    e,
+                                    egui::Event::Touch {
+                                        phase: egui::TouchPhase::Start
+                                            | egui::TouchPhase::Move,
+                                        ..
+                                    }
+                                )
+                            })
+                    });
                     let cursor = match tool {
                         // Tools with custom icon cursor — hide OS cursor
                         Tool::Pencil | Tool::Fill | Tool::ColorPicker | Tool::Zoom | Tool::Pan => {
@@ -4680,9 +4708,8 @@ impl Canvas {
             // ====================================================================
             // FILL CURSOR OVERLAY (shows exact pixel that will be flood-filled)
             // ====================================================================
-            if fill_active {
-                let mouse_pos = ui.input(|i| i.pointer.interact_pos());
-                if let Some(pos) = mouse_pos
+            if fill_active
+                && let Some(pos) = mouse_pos
                     && canvas_rect.contains(pos)
                     && let Some((canvas_x_f32, canvas_y_f32)) =
                         self.screen_to_canvas_f32(pos, canvas_rect, state)
@@ -4706,18 +4733,13 @@ impl Canvas {
                         egui::Stroke::new(0.5, Color32::from_white_alpha(200)),
                     );
                 }
-            }
 
             // ====================================================================
             // PENCIL CURSOR OVERLAY (shows exact pixel that will be painted)
             // ====================================================================
             // Only show when Pencil tool is active, mouse is over canvas, and not painting
-            if pencil_active {
-                let mouse_pos = ui.input(|i| i.pointer.interact_pos());
-                let is_painting =
-                    ui.input(|i| i.pointer.primary_down() || i.pointer.secondary_down());
-
-                if let Some(pos) = mouse_pos
+            if pencil_active
+                && let Some(pos) = mouse_pos
                     && canvas_rect.contains(pos)
                     && !is_painting
                 {
@@ -4749,15 +4771,12 @@ impl Canvas {
                         painter.rect_stroke(pixel_rect, 0.0, egui::Stroke::new(1.0, cursor_color));
                     }
                 }
-            }
 
             // ====================================================================
             // COLOR PICKER CURSOR OVERLAY (shows sampled pixel)
             // ====================================================================
-            if color_picker_active {
-                let mouse_pos = ui.input(|i| i.pointer.interact_pos());
-
-                if let Some(pos) = mouse_pos
+            if color_picker_active
+                && let Some(pos) = mouse_pos
                     && canvas_rect.contains(pos)
                 {
                     // Convert screen position to canvas position (floating point)
@@ -4788,7 +4807,6 @@ impl Canvas {
                         painter.rect_stroke(pixel_rect, 0.0, egui::Stroke::new(1.0, cursor_color));
                     }
                 }
-            }
 
             // ====================================================================
             // TOOL ICON CURSOR OVERLAY
@@ -4804,9 +4822,8 @@ impl Canvas {
                         Tool::Pencil | Tool::Fill | Tool::ColorPicker | Tool::Zoom | Tool::Pan
                     )
                 });
-                if needs_icon_cursor && let Some(ref icon_tex) = self.tool_cursor_icon {
-                    let mouse_pos = ui.input(|i| i.pointer.interact_pos());
-                    if let Some(pos) = mouse_pos
+                if needs_icon_cursor && let Some(ref icon_tex) = self.tool_cursor_icon
+                    && let Some(pos) = mouse_pos
                         && canvas_rect.contains(pos)
                     {
                         use crate::components::tools::Tool;
@@ -4830,8 +4847,7 @@ impl Canvas {
                         // Dark icon on top at normal size
                         let icon_rect = Rect::from_center_size(center, Vec2::splat(icon_sz));
                         painter.image(icon_tex.id(), icon_rect, uv, Color32::from_black_alpha(230));
-                    }
-                } // if let icon_tex
+                    } // if let icon_tex
                 // if needs_icon_cursor
             }
 
@@ -4846,12 +4862,7 @@ impl Canvas {
                 ref mask_info,
                 cursor_rotation_deg,
             )) = brush_cursor_info
-            {
-                let mouse_pos = ui.input(|i| i.pointer.interact_pos());
-                let is_painting =
-                    ui.input(|i| i.pointer.primary_down() || i.pointer.secondary_down());
-
-                if let Some(pos) = mouse_pos
+                && let Some(pos) = mouse_pos
                     && canvas_rect.contains(pos)
                     && let Some((canvas_x, canvas_y)) =
                         self.screen_to_canvas_f32(pos, canvas_rect, state)
@@ -5121,7 +5132,6 @@ impl Canvas {
                         }
                     }
                 }
-            }
         }
 
         // ====================================================================

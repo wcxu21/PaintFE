@@ -1814,7 +1814,7 @@ impl eframe::App for PaintFEApp {
             let no_dialog_open = matches!(self.active_dialog, ActiveDialog::None);
 
             // Color — instant adjustments (no dialog)
-            if has_project {
+            if has_project && !text_tool_active && !other_widget_focused {
                 if kb.is_pressed(ctx, BindableAction::ColorAutoLevels) {
                     self.do_layer_snapshot_op("Auto Levels", |s| {
                         let idx = s.active_layer_index;
@@ -1848,7 +1848,7 @@ impl eframe::App for PaintFEApp {
             }
 
             // Color, Filter and Generate — dialog openers
-            if has_project && no_dialog_open {
+            if has_project && no_dialog_open && !text_tool_active && !other_widget_focused {
                 // Color dialogs
                 if kb.is_pressed(ctx, BindableAction::ColorBrightnessContrast)
                     && let Some(project) = self.active_project() {
@@ -9832,6 +9832,7 @@ impl PaintFEApp {
                 &self.theme,
                 "Tools",
                 Some(("TOOLS", self.theme.accent3)),
+                0.0,
             ) {
                 close_clicked = true;
             }
@@ -9923,6 +9924,7 @@ impl PaintFEApp {
                 &self.theme,
                 "Layers",
                 Some(("LAYERS", self.theme.accent3)),
+                0.0,
             ) {
                 close_clicked = true;
             }
@@ -10084,6 +10086,7 @@ impl PaintFEApp {
                 &self.theme,
                 "History",
                 Some(("HISTORY", self.theme.accent4)),
+                0.0,
             ) {
                 close_clicked = true;
             }
@@ -10129,7 +10132,7 @@ impl PaintFEApp {
 
         // Dynamic size based on compact / expanded state
         let panel_size = if self.colors_panel.is_expanded() {
-            egui::vec2(395.0, 330.0)
+            egui::vec2(430.0, 330.0)
         } else {
             egui::vec2(168.0, 310.0)
         };
@@ -10150,11 +10153,13 @@ impl PaintFEApp {
 
         let resp = window.show(ctx, |ui| {
             // Signal Grid panel header
+            let hdr_extra = if self.colors_panel.is_expanded() { 10.0_f32 } else { 20.0_f32 };
             if signal_widgets::panel_header(
                 ui,
                 &self.theme,
                 "Colors",
                 Some(("COLOR", self.theme.accent)),
+                hdr_extra,
             ) {
                 close_clicked = true;
             }

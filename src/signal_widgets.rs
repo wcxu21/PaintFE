@@ -592,13 +592,16 @@ pub fn panel_header(
     theme: &Theme,
     title: &str,
     badge: Option<(&str, Color32)>,
+    extra_width: f32,
 ) -> bool {
     let mut close_clicked = false;
+    // Capture the full available width BEFORE entering the horizontal layout.
+    let header_width = ui.available_width();
     ui.horizontal(|ui| {
         // Fill the parent's width so the close button aligns to the right edge.
         // Only set min_width for wider panels; skip for narrow ones (e.g. Tools)
         // to avoid inflating the window beyond the grid content width.
-        let w = ui.available_width().min(400.0);
+        let w = (header_width + extra_width).min(500.0);
         if w > 130.0 {
             ui.set_min_width(w);
         }

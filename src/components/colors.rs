@@ -571,16 +571,18 @@ impl ColorsPanel {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0; // consistent spacing in compact & expanded
             ui.add_sized(
-                [14.0, bar_h + 4.0],
+                [14.0, bar_h + 10.0],
                 egui::Label::new(egui::RichText::new("A").small().strong()),
             );
 
             // Match the color wheel diameter (outer_r=78 → 156px) minus label+value space
             let bar_w = 101.0;
-            let desired = Vec2::new(bar_w, bar_h + 4.0);
+            let arrow_h = 14.0_f32;
+            let desired = Vec2::new(bar_w, bar_h + arrow_h + 1.0);
             let (rect, resp) = ui.allocate_exact_size(desired, egui::Sense::click_and_drag());
+            // Bar at bottom; arrow hangs above it
             let bar = egui::Rect::from_min_size(
-                Pos2::new(rect.min.x, rect.center().y - bar_h / 2.0),
+                Pos2::new(rect.min.x, rect.max.y - bar_h),
                 Vec2::new(rect.width(), bar_h),
             );
 
@@ -615,17 +617,25 @@ impl ColorsPanel {
                 // border
                 p.rect_stroke(bar, 2.0, Stroke::new(1.0, Color32::from_black_alpha(45)));
 
-                // thumb
+                // arrow thumb — small dark triangle, white outline (Paint.NET style)
                 let tx = bar.min.x + a * bar.width();
-                let ty = bar.center().y;
-                let tr = bar_h / 2.0 + 1.0;
-                p.circle_filled(Pos2::new(tx, ty + 0.5), tr, Color32::from_black_alpha(18));
-                p.circle_filled(Pos2::new(tx, ty), tr, Color32::WHITE);
-                p.circle_stroke(
-                    Pos2::new(tx, ty),
-                    tr,
-                    Stroke::new(1.0, Color32::from_black_alpha(70)),
-                );
+                let aw = 5.5_f32; // half-width; keep arrow_h allocation large for grab
+                let ah = 9.0_f32;
+                let tip_y = bar.center().y;
+                let base_y = tip_y - ah;
+                let tip = Pos2::new(tx, tip_y);
+                let bl = Pos2::new(tx - aw, base_y);
+                let br = Pos2::new(tx + aw, base_y);
+                p.add(egui::Shape::convex_polygon(
+                    vec![tip, bl, br],
+                    Color32::from_gray(20),
+                    Stroke::NONE,
+                ));
+                p.add(egui::Shape::convex_polygon(
+                    vec![tip, bl, br],
+                    Color32::TRANSPARENT,
+                    Stroke::new(1.5, Color32::WHITE),
+                ));
             }
 
             if (resp.dragged() || resp.clicked())
@@ -635,21 +645,12 @@ impl ColorsPanel {
                 changed = true;
             }
 
-            // alpha 0-255 drag-value
+            // alpha 0-255 step field
             ui.add_space(3.0);
             let mut alpha_val = (a * 255.0).round() as u32;
-            if ui
-                .add_sized(
-                    [32.0, 16.0],
-                    egui::DragValue::new(&mut alpha_val)
-                        .clamp_range(0..=255)
-                        .speed(1),
-                )
-                .changed()
-            {
-                a = alpha_val as f32 / 255.0;
-                changed = true;
-            }
+            let av_before = alpha_val;
+            color_step_field(ui, &mut alpha_val, 0, 255);
+            if alpha_val != av_before { a = alpha_val as f32 / 255.0; changed = true; }
         });
 
         if changed {
@@ -781,16 +782,9 @@ impl ColorsPanel {
                 changed = true;
             }
             let mut ri = (r * 255.0).round() as u32;
-            if ui
-                .add_sized(
-                    [32.0, 16.0],
-                    egui::DragValue::new(&mut ri).clamp_range(0..=255).speed(1),
-                )
-                .changed()
-            {
-                r = ri as f32 / 255.0;
-                changed = true;
-            }
+            let ri_before = ri;
+            color_step_field(ui, &mut ri, 0, 255);
+            if ri != ri_before { r = ri as f32 / 255.0; changed = true; }
         });
 
         // -- G --
@@ -815,16 +809,9 @@ impl ColorsPanel {
                 changed = true;
             }
             let mut gi = (g * 255.0).round() as u32;
-            if ui
-                .add_sized(
-                    [32.0, 16.0],
-                    egui::DragValue::new(&mut gi).clamp_range(0..=255).speed(1),
-                )
-                .changed()
-            {
-                g = gi as f32 / 255.0;
-                changed = true;
-            }
+            let gi_before = gi;
+            color_step_field(ui, &mut gi, 0, 255);
+            if gi != gi_before { g = gi as f32 / 255.0; changed = true; }
         });
 
         // -- B --
@@ -849,16 +836,9 @@ impl ColorsPanel {
                 changed = true;
             }
             let mut bi = (b * 255.0).round() as u32;
-            if ui
-                .add_sized(
-                    [32.0, 16.0],
-                    egui::DragValue::new(&mut bi).clamp_range(0..=255).speed(1),
-                )
-                .changed()
-            {
-                b = bi as f32 / 255.0;
-                changed = true;
-            }
+            let bi_before = bi;
+            color_step_field(ui, &mut bi, 0, 255);
+            if bi != bi_before { b = bi as f32 / 255.0; changed = true; }
         });
 
         if changed {
@@ -921,19 +901,9 @@ impl ColorsPanel {
                 changed = true;
             }
             let mut hi = (h * 360.0).round() as u32;
-            if ui
-                .add_sized(
-                    [32.0, 16.0],
-                    egui::DragValue::new(&mut hi)
-                        .clamp_range(0..=360)
-                        .speed(1)
-                        .suffix("°"),
-                )
-                .changed()
-            {
-                h = hi as f32 / 360.0;
-                changed = true;
-            }
+            let hi_before = hi;
+            color_step_field(ui, &mut hi, 0, 360);
+            if hi != hi_before { h = hi as f32 / 360.0; changed = true; }
         });
 
         // -- S --
@@ -948,19 +918,9 @@ impl ColorsPanel {
                 changed = true;
             }
             let mut si = (s * 100.0).round() as u32;
-            if ui
-                .add_sized(
-                    [32.0, 16.0],
-                    egui::DragValue::new(&mut si)
-                        .clamp_range(0..=100)
-                        .speed(1)
-                        .suffix("%"),
-                )
-                .changed()
-            {
-                s = si as f32 / 100.0;
-                changed = true;
-            }
+            let si_before = si;
+            color_step_field(ui, &mut si, 0, 100);
+            if si != si_before { s = si as f32 / 100.0; changed = true; }
         });
 
         // -- V --
@@ -975,19 +935,9 @@ impl ColorsPanel {
                 changed = true;
             }
             let mut vi = (v * 100.0).round() as u32;
-            if ui
-                .add_sized(
-                    [32.0, 16.0],
-                    egui::DragValue::new(&mut vi)
-                        .clamp_range(0..=100)
-                        .speed(1)
-                        .suffix("%"),
-                )
-                .changed()
-            {
-                v = vi as f32 / 100.0;
-                changed = true;
-            }
+            let vi_before = vi;
+            color_step_field(ui, &mut vi, 0, 100);
+            if vi != vi_before { v = vi as f32 / 100.0; changed = true; }
         });
 
         if changed {
@@ -1013,11 +963,12 @@ impl ColorsPanel {
         width: f32,
         height: f32,
     ) -> bool {
-        let pad = 4.0; // extra height for thumb overhang
-        let desired = Vec2::new(width, height + pad);
+        let arrow_h = 14.0_f32; // height of the arrow above the bar
+        let desired = Vec2::new(width, height + arrow_h + 1.0);
         let (rect, resp) = ui.allocate_exact_size(desired, egui::Sense::click_and_drag());
+        // Bar occupies the bottom portion; arrow hangs above it
         let bar = egui::Rect::from_min_size(
-            Pos2::new(rect.min.x, rect.center().y - height / 2.0),
+            Pos2::new(rect.min.x, rect.max.y - height),
             Vec2::new(rect.width(), height),
         );
         let mut did_change = false;
@@ -1041,20 +992,25 @@ impl ColorsPanel {
             // border
             p.rect_stroke(bar, 2.0, Stroke::new(1.0, Color32::from_black_alpha(50)));
 
-            // circular thumb
+            // arrow thumb — small dark triangle, white outline (Paint.NET style)
             let tx = bar.min.x + *value * bar.width();
-            let ty = bar.center().y;
-            let tr = height / 2.0 + 1.0;
-            // shadow
-            p.circle_filled(Pos2::new(tx, ty + 0.5), tr, Color32::from_black_alpha(18));
-            // body
-            p.circle_filled(Pos2::new(tx, ty), tr, Color32::WHITE);
-            // outline
-            p.circle_stroke(
-                Pos2::new(tx, ty),
-                tr,
-                Stroke::new(1.0, Color32::from_black_alpha(70)),
-            );
+            let aw = 5.5_f32; // half-width; arrow_h allocation keeps grab area large
+            let ah = 9.0_f32;
+            let tip_y = bar.center().y;
+            let base_y = tip_y - ah;
+            let tip = Pos2::new(tx, tip_y);
+            let bl = Pos2::new(tx - aw, base_y);
+            let br = Pos2::new(tx + aw, base_y);
+            p.add(egui::Shape::convex_polygon(
+                vec![tip, bl, br],
+                Color32::from_gray(20),
+                Stroke::NONE,
+            ));
+            p.add(egui::Shape::convex_polygon(
+                vec![tip, bl, br],
+                Color32::TRANSPARENT,
+                Stroke::new(1.5, Color32::WHITE),
+            ));
         }
 
         if (resp.dragged() || resp.clicked())
@@ -1090,6 +1046,23 @@ fn draw_checkerboard(painter: &egui::Painter, rect: egui::Rect, cell: f32) {
                 painter.rect_filled(cr, 0.0, Color32::from_gray(200));
             }
         }
+    }
+}
+
+/// Compact +/- step field used in the colour panel numeric inputs.
+/// Displays a small "−" button, a DragValue, and a "+" button.
+/// Mutates `val` in place; the caller is responsible for detecting change.
+fn color_step_field(ui: &mut egui::Ui, val: &mut u32, min: u32, max: u32) {
+    ui.spacing_mut().item_spacing.x = 1.0;
+    if ui.small_button("\u{2212}").clicked() && *val > min {
+        *val -= 1;
+    }
+    ui.add_sized(
+        [30.0, 16.0],
+        egui::DragValue::new(val).clamp_range(min..=max).speed(1),
+    );
+    if ui.small_button("+").clicked() && *val < max {
+        *val += 1;
     }
 }
 
