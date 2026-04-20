@@ -1616,11 +1616,10 @@ fn detect_gif_animation(path: &Path) -> AnimationInfo {
         }
     }
 
-    let avg_delay_ms = if frame_count > 0 {
-        (total_delay / frame_count).max(MIN_FRAME_DELAY_MS as u32) as u16
-    } else {
-        100
-    };
+    let avg_delay_ms = total_delay
+        .checked_div(frame_count)
+        .map(|d| d.max(MIN_FRAME_DELAY_MS as u32) as u16)
+        .unwrap_or(100);
 
     AnimationInfo {
         is_animated: frame_count > 1,

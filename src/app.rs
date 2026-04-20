@@ -11572,8 +11572,7 @@ impl PaintFEApp {
             // Avoid duplicates by name
             self.custom_scripts.retain(|e| e.name != effect.name);
             self.custom_scripts.push(effect);
-            self.custom_scripts
-                .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            self.custom_scripts.sort_by_key(|a| a.name.to_lowercase());
         }
 
         if let Some(inner_resp) = resp {

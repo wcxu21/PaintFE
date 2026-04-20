@@ -2648,10 +2648,14 @@ pub fn oil_painting_core(
                     }
                 }
 
-                if max_count > 0 {
-                    row_out[pi] = (sum_r[max_idx] / max_count) as u8;
-                    row_out[pi + 1] = (sum_g[max_idx] / max_count) as u8;
-                    row_out[pi + 2] = (sum_b[max_idx] / max_count) as u8;
+                if let (Some(avg_r), Some(avg_g), Some(avg_b)) = (
+                    sum_r[max_idx].checked_div(max_count),
+                    sum_g[max_idx].checked_div(max_count),
+                    sum_b[max_idx].checked_div(max_count),
+                ) {
+                    row_out[pi] = avg_r as u8;
+                    row_out[pi + 1] = avg_g as u8;
+                    row_out[pi + 2] = avg_b as u8;
                 }
                 let si = y * stride + pi;
                 row_out[pi + 3] = src_raw[si + 3];

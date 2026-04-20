@@ -2110,19 +2110,18 @@ impl ToolsPanel {
     /// Returns true if something was cancelled, false if there was nothing to cancel.
     pub fn cancel_active_tool(&mut self, canvas_state: &mut CanvasState) -> bool {
         match self.active_tool {
-            Tool::Brush | Tool::Pencil | Tool::Eraser => {
-                if self.stroke_tracker.is_active || self.tool_state.last_pos.is_some() {
-                    self.stroke_tracker.cancel();
-                    self.tool_state.last_pos = None;
-                    self.tool_state.last_precise_pos = None;
-                    self.tool_state.smooth_pos = None;
-                    canvas_state.clear_preview_state();
-                    canvas_state.mark_dirty(None);
-                    true
-                } else {
-                    false
-                }
+            Tool::Brush | Tool::Pencil | Tool::Eraser
+                if self.stroke_tracker.is_active || self.tool_state.last_pos.is_some() =>
+            {
+                self.stroke_tracker.cancel();
+                self.tool_state.last_pos = None;
+                self.tool_state.last_precise_pos = None;
+                self.tool_state.smooth_pos = None;
+                canvas_state.clear_preview_state();
+                canvas_state.mark_dirty(None);
+                true
             }
+            Tool::Brush | Tool::Pencil | Tool::Eraser => false,
             Tool::Line => match self.line_state.line_tool.stage {
                 LineStage::Dragging | LineStage::Editing => {
                     self.stroke_tracker.cancel();
@@ -2141,14 +2140,11 @@ impl ToolsPanel {
                 }
                 _ => false,
             },
-            Tool::Gradient => {
-                if self.gradient_state.drag_start.is_some() {
-                    self.cancel_gradient(canvas_state);
-                    true
-                } else {
-                    false
-                }
+            Tool::Gradient if self.gradient_state.drag_start.is_some() => {
+                self.cancel_gradient(canvas_state);
+                true
             }
+            Tool::Gradient => false,
             Tool::Shapes => {
                 if self.shapes_state.placed.is_some() {
                     self.shapes_state.placed = None;
@@ -2166,58 +2162,46 @@ impl ToolsPanel {
                     false
                 }
             }
-            Tool::Text => {
-                if self.text_state.is_editing {
-                    self.text_state.text.clear();
-                    self.text_state.cursor_pos = 0;
-                    self.text_state.is_editing = false;
-                    self.text_state.editing_text_layer = false;
-                    self.text_state.origin = None;
-                    self.text_state.dragging_handle = false;
-                    canvas_state.clear_preview_state();
-                    canvas_state.mark_dirty(None);
-                    true
-                } else {
-                    false
-                }
+            Tool::Text if self.text_state.is_editing => {
+                self.text_state.text.clear();
+                self.text_state.cursor_pos = 0;
+                self.text_state.is_editing = false;
+                self.text_state.editing_text_layer = false;
+                self.text_state.origin = None;
+                self.text_state.dragging_handle = false;
+                canvas_state.clear_preview_state();
+                canvas_state.mark_dirty(None);
+                true
             }
-            Tool::Fill => {
-                if self.fill_state.active_fill.is_some() {
-                    self.clear_fill_preview_state();
-                    canvas_state.clear_preview_state();
-                    self.stroke_tracker.cancel();
-                    true
-                } else {
-                    false
-                }
+            Tool::Text => false,
+            Tool::Fill if self.fill_state.active_fill.is_some() => {
+                self.clear_fill_preview_state();
+                canvas_state.clear_preview_state();
+                self.stroke_tracker.cancel();
+                true
             }
-            Tool::Liquify => {
-                if self.liquify_state.is_active {
-                    self.liquify_state.displacement = None;
-                    self.liquify_state.is_active = false;
-                    self.liquify_state.source_snapshot = None;
-                    self.liquify_state.warp_buffer.clear();
-                    self.liquify_state.dirty_rect = None;
-                    canvas_state.clear_preview_state();
-                    canvas_state.mark_dirty(None);
-                    true
-                } else {
-                    false
-                }
+            Tool::Fill => false,
+            Tool::Liquify if self.liquify_state.is_active => {
+                self.liquify_state.displacement = None;
+                self.liquify_state.is_active = false;
+                self.liquify_state.source_snapshot = None;
+                self.liquify_state.warp_buffer.clear();
+                self.liquify_state.dirty_rect = None;
+                canvas_state.clear_preview_state();
+                canvas_state.mark_dirty(None);
+                true
             }
-            Tool::MeshWarp => {
-                if self.mesh_warp_state.is_active {
-                    self.mesh_warp_state.is_active = false;
-                    self.mesh_warp_state.source_snapshot = None;
-                    self.mesh_warp_state.warp_buffer.clear();
-                    self.stroke_tracker.cancel();
-                    canvas_state.clear_preview_state();
-                    canvas_state.mark_dirty(None);
-                    true
-                } else {
-                    false
-                }
+            Tool::Liquify => false,
+            Tool::MeshWarp if self.mesh_warp_state.is_active => {
+                self.mesh_warp_state.is_active = false;
+                self.mesh_warp_state.source_snapshot = None;
+                self.mesh_warp_state.warp_buffer.clear();
+                self.stroke_tracker.cancel();
+                canvas_state.clear_preview_state();
+                canvas_state.mark_dirty(None);
+                true
             }
+            Tool::MeshWarp => false,
             _ => false,
         }
     }

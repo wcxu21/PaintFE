@@ -68,7 +68,7 @@ pub fn load_custom_effects() -> Vec<CustomScriptEffect> {
             }
         }
     }
-    effects.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    effects.sort_by_key(|a| a.name.to_lowercase());
     effects
 }
 
