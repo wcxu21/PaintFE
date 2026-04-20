@@ -1724,6 +1724,14 @@ impl eframe::App for PaintFEApp {
                     continue;
                 }
 
+                if !file.name.is_empty() {
+                    let named_path = PathBuf::from(file.name.clone());
+                    if named_path.is_file() {
+                        self.open_file_by_path(named_path, ctx.input(|i| i.time));
+                        continue;
+                    }
+                }
+
                 if let Some(bytes) = file.bytes.as_ref() {
                     let name_hint = if file.name.is_empty() {
                         None
@@ -1734,6 +1742,10 @@ impl eframe::App for PaintFEApp {
                 }
             }
         }
+
+        // Some Linux/Wayland desktop flows surface file drags as text/uri-list
+        // paste events instead of dropped file paths.
+        self.handle_file_uri_paste_events(ctx);
 
         // Determine if a modal dialog is open — block all shortcuts and canvas interaction.
         let modal_open = self.save_file_dialog.open
@@ -6335,6 +6347,95 @@ impl eframe::App for PaintFEApp {
 }
 
 impl PaintFEApp {
+    fn percent_decode_path_component(input: &str) -> String {
+        let bytes = input.as_bytes();
+        let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+        let mut i = 0usize;
+        while i < bytes.len() {
+            if bytes[i] == b'%' && i + 2 < bytes.len() {
+                let h1 = bytes[i + 1];
+                let h2 = bytes[i + 2];
+                let hex = |c: u8| -> Option<u8> {
+                    match c {
+                        b'0'..=b'9' => Some(c - b'0'),
+                        b'a'..=b'f' => Some(c - b'a' + 10),
+                        b'A'..=b'F' => Some(c - b'A' + 10),
+                        _ => None,
+                    }
+                };
+                if let (Some(a), Some(b)) = (hex(h1), hex(h2)) {
+                    out.push((a << 4) | b);
+                    i += 3;
+                    continue;
+                }
+            }
+            out.push(bytes[i]);
+            i += 1;
+        }
+        String::from_utf8_lossy(&out).to_string()
+    }
+
+    fn parse_file_uri_list(text: &str) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        for raw_line in text.lines() {
+            let line = raw_line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            if let Some(mut rest) = line.strip_prefix("file://") {
+                if let Some(after_localhost) = rest.strip_prefix("localhost/") {
+                    rest = after_localhost;
+                } else if let Some(idx) = rest.find('/') {
+                    // file://<host>/<path> -> keep absolute path part
+                    rest = &rest[idx + 1..];
+                }
+
+                let decoded = Self::percent_decode_path_component(rest);
+                #[cfg(target_os = "windows")]
+                let candidate = {
+                    let normalized = decoded.replace('/', "\\");
+                    PathBuf::from(normalized)
+                };
+                #[cfg(not(target_os = "windows"))]
+                let candidate = PathBuf::from(format!("/{}", decoded));
+
+                if candidate.is_file() {
+                    paths.push(candidate);
+                }
+                continue;
+            }
+
+            let direct = PathBuf::from(line);
+            if direct.is_file() {
+                paths.push(direct);
+            }
+        }
+        paths
+    }
+
+    fn handle_file_uri_paste_events(&mut self, ctx: &egui::Context) {
+        let current_time = ctx.input(|i| i.time);
+        let file_paths = ctx.input_mut(|i| {
+            let mut opened = Vec::new();
+            i.events.retain(|e| {
+                if let egui::Event::Paste(text) = e {
+                    let parsed = Self::parse_file_uri_list(text);
+                    if !parsed.is_empty() {
+                        opened.extend(parsed);
+                        return false;
+                    }
+                }
+                true
+            });
+            opened
+        });
+
+        for path in file_paths {
+            self.open_file_by_path(path, current_time);
+        }
+    }
+
     fn open_image_from_bytes(&mut self, bytes: &[u8], name_hint: Option<String>) {
         let Ok(decoded) = image::load_from_memory(bytes) else {
             return;

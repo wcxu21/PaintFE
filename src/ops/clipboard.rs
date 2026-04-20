@@ -9,6 +9,7 @@ use egui::{Color32, Pos2, Rect, Stroke, Vec2};
 use image::{Rgba, RgbaImage, imageops};
 use rayon::prelude::*;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
 use image::ImageFormat;
@@ -33,6 +34,7 @@ struct ClipboardPayload {
     image: RgbaImage,
     source: ClipboardImageSource,
     origin_center: Option<Pos2>,
+    copied_at: Instant,
 }
 
 pub struct ClipboardImageForPaste {
@@ -47,6 +49,7 @@ fn set_clipboard_image(img: RgbaImage, origin_center: Option<Pos2>) {
         image: img,
         source: ClipboardImageSource::Internal,
         origin_center,
+        copied_at: Instant::now(),
     });
 }
 
@@ -79,6 +82,20 @@ fn images_match(a: &RgbaImage, b: &RgbaImage) -> bool {
 /// 3) Otherwise fall back to internal clipboard payload.
 pub fn get_clipboard_image_for_paste() -> Option<ClipboardImageForPaste> {
     let internal = get_clipboard_payload();
+
+    // Internal copy/cut should be pasteable immediately even if the system
+    // clipboard backend returns stale content from another selection.
+    if let Some(internal_payload) = &internal
+        && internal_payload.source == ClipboardImageSource::Internal
+        && internal_payload.copied_at.elapsed() <= Duration::from_secs(5)
+    {
+        return Some(ClipboardImageForPaste {
+            image: internal_payload.image.clone(),
+            source: internal_payload.source,
+            origin_center: internal_payload.origin_center,
+        });
+    }
+
     let system = get_from_system_clipboard();
 
     if let Some(system_img) = system {
@@ -171,7 +188,7 @@ pub fn copy_to_system_clipboard(img: &RgbaImage) {
                 height: img.height() as usize,
                 bytes: std::borrow::Cow::Borrowed(img.as_raw()),
             };
-            copied = clip.set_image(data).is_ok();
+            let _ = clip.set_image(data).is_ok();
         }
     }
 
