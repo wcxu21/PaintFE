@@ -123,6 +123,38 @@ fn main() -> Result<(), eframe::Error> {
 
     // -- GUI mode -----------------------------------------------------
 
+    #[cfg(target_os = "linux")]
+    {
+        // Backend policy:
+        // - default on Wayland sessions: prefer wayland backend
+        // - default elsewhere: let winit auto-select backend
+        // - optional override: PAINTFE_FORCE_WAYLAND=1 forces Wayland
+        // - optional override: PAINTFE_FORCE_X11=1 forces X11
+        // This keeps native DnD behavior on Wayland while preserving explicit
+        // fallbacks for setups that work better with X11.
+        let wayland_session = std::env::var_os("WAYLAND_DISPLAY").is_some()
+            || std::env::var("XDG_SESSION_TYPE")
+                .map(|v| v.eq_ignore_ascii_case("wayland"))
+                .unwrap_or(false);
+        let has_x11 = std::env::var_os("DISPLAY").is_some();
+        let force_wayland = std::env::var("PAINTFE_FORCE_WAYLAND")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let force_x11 = std::env::var("PAINTFE_FORCE_X11")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        if std::env::var_os("WINIT_UNIX_BACKEND").is_none() {
+            if force_wayland {
+                unsafe { std::env::set_var("WINIT_UNIX_BACKEND", "wayland") };
+            } else if force_x11 && has_x11 {
+                unsafe { std::env::set_var("WINIT_UNIX_BACKEND", "x11") };
+            } else if wayland_session {
+                unsafe { std::env::set_var("WINIT_UNIX_BACKEND", "wayland") };
+            }
+        }
+    }
+
     // Initialize session log (overwrites previous session log)
     logger::init();
 
@@ -158,7 +190,7 @@ fn main() -> Result<(), eframe::Error> {
                     startup_settings.persist_window_height.max(480.0),
                 ])
                 .with_title("PaintFE")
-                .with_app_id("PaintFE");
+                .with_app_id("io.github.paintfe.PaintFE");
             if let Some((x, y)) = startup_settings.persist_window_pos
                 && let Some(safe_pos) = sanitize_window_position((x, y))
             {

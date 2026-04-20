@@ -26,7 +26,7 @@ gif = "0.13"             # Direct GIF encoder/decoder (multi-frame animation)
 png = "0.17"             # Direct PNG encoder/decoder (APNG animation support)
 color_quant = "1"        # Color quantization for GIF palette reduction
 
-arboard = "3"         # System clipboard (copy/paste images to/from OS)
+arboard = { version = "3", features = ["wayland-data-control"] } # System clipboard (copy/paste images to/from OS)
 wgpu = "29"                                      # GPU acceleration (WebGPU API)
 bytemuck = { version = "1", features = ["derive"] } # Safe casting for GPU buffers
 pollster = "0.4"                                 # Block on async GPU init
@@ -42,6 +42,9 @@ winit = "0.30"                                   # Event loop hook for suppressi
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winapi = { version = "0.3", features = ["winuser", "windef", "shellapi", "dwmapi"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+x11-dl = "2.21"
 
 [build-dependencies]
 # Embeds the ICO file into the Windows EXE (window icon, taskbar icon, explorer icon)

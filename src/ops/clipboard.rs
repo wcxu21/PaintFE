@@ -9,12 +9,14 @@ use egui::{Color32, Pos2, Rect, Stroke, Vec2};
 use image::{Rgba, RgbaImage, imageops};
 use rayon::prelude::*;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 #[cfg(target_os = "linux")]
 use image::ImageFormat;
 #[cfg(target_os = "linux")]
 use std::io::{Cursor, Write};
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
 
 // ---------------------------------------------------------------------------
 //  Internal clipboard (application-level, supports transparency)
@@ -82,19 +84,6 @@ fn images_match(a: &RgbaImage, b: &RgbaImage) -> bool {
 /// 3) Otherwise fall back to internal clipboard payload.
 pub fn get_clipboard_image_for_paste() -> Option<ClipboardImageForPaste> {
     let internal = get_clipboard_payload();
-
-    // Internal copy/cut should be pasteable immediately even if the system
-    // clipboard backend returns stale content from another selection.
-    if let Some(internal_payload) = &internal
-        && internal_payload.source == ClipboardImageSource::Internal
-        && internal_payload.copied_at.elapsed() <= Duration::from_secs(5)
-    {
-        return Some(ClipboardImageForPaste {
-            image: internal_payload.image.clone(),
-            source: internal_payload.source,
-            origin_center: internal_payload.origin_center,
-        });
-    }
 
     let system = get_from_system_clipboard();
 
@@ -174,9 +163,8 @@ pub fn copy_to_system_clipboard(img: &RgbaImage) {
     {
         let mut copied = false;
 
-        // Wayland sessions should prefer wl-copy first so other native Wayland
-        // apps can paste immediately from the same clipboard backend.
-        if is_wayland_session() {
+        // Prefer wl-copy only when the active window backend is Wayland.
+        if use_wayland_clipboard_backend() {
             copied = copy_to_wayland_clipboard(img);
         }
 
@@ -213,9 +201,9 @@ pub fn copy_to_system_clipboard(img: &RgbaImage) {
 pub fn get_from_system_clipboard() -> Option<RgbaImage> {
     #[cfg(target_os = "linux")]
     {
-        // On Wayland, prefer wl-paste to avoid reading stale X11 clipboard
+        // On Wayland backend, prefer wl-paste to avoid reading stale X11 clipboard
         // contents when running under XWayland.
-        if is_wayland_session()
+        if use_wayland_clipboard_backend()
             && let Some(img) = get_from_wayland_clipboard()
         {
             return Some(img);
@@ -236,8 +224,10 @@ pub fn get_from_system_clipboard() -> Option<RgbaImage> {
 
     #[cfg(target_os = "linux")]
     {
-        // Fallback for sessions where wl-paste is unavailable or empty.
-        if let Some(img) = get_from_wayland_clipboard() {
+        // Fallback for Wayland backend sessions where wl-paste is unavailable or empty.
+        if use_wayland_clipboard_backend()
+            && let Some(img) = get_from_wayland_clipboard()
+        {
             return Some(img);
         }
     }
@@ -255,11 +245,23 @@ pub fn get_from_system_clipboard() -> Option<RgbaImage> {
     if let Ok(mut clip) = arboard::Clipboard::new()
         && let Ok(text) = clip.get_text()
     {
-        let path = std::path::Path::new(text.trim());
-        if path.is_file()
-            && let Ok(dyn_img) = image::open(path)
+        #[cfg(target_os = "linux")]
         {
-            return Some(dyn_img.to_rgba8());
+            for path in parse_file_uri_or_path_list(&text) {
+                if let Ok(dyn_img) = image::open(&path) {
+                    return Some(dyn_img.to_rgba8());
+                }
+            }
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            let path = std::path::Path::new(text.trim());
+            if path.is_file()
+                && let Ok(dyn_img) = image::open(path)
+            {
+                return Some(dyn_img.to_rgba8());
+            }
         }
     }
 
@@ -272,6 +274,80 @@ fn is_wayland_session() -> bool {
         || std::env::var("XDG_SESSION_TYPE")
             .map(|v| v.eq_ignore_ascii_case("wayland"))
             .unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn use_wayland_clipboard_backend() -> bool {
+    if !is_wayland_session() {
+        return false;
+    }
+    !std::env::var("WINIT_UNIX_BACKEND")
+        .map(|v| v.eq_ignore_ascii_case("x11"))
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn percent_decode_path_component(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let h1 = bytes[i + 1];
+            let h2 = bytes[i + 2];
+            let hex = |c: u8| -> Option<u8> {
+                match c {
+                    b'0'..=b'9' => Some(c - b'0'),
+                    b'a'..=b'f' => Some(c - b'a' + 10),
+                    b'A'..=b'F' => Some(c - b'A' + 10),
+                    _ => None,
+                }
+            };
+            if let (Some(a), Some(b)) = (hex(h1), hex(h2)) {
+                out.push((a << 4) | b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+#[cfg(target_os = "linux")]
+fn parse_file_uri_or_path_list(text: &str) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for raw_line in text.split(['\n', '\0']) {
+        let line = raw_line.trim().trim_end_matches('\r');
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.eq_ignore_ascii_case("copy") || line.eq_ignore_ascii_case("cut") {
+            continue;
+        }
+
+        if let Some(mut rest) = line.strip_prefix("file://") {
+            if let Some(after_localhost) = rest.strip_prefix("localhost/") {
+                rest = after_localhost;
+            } else if let Some(idx) = rest.find('/') {
+                rest = &rest[idx + 1..];
+            }
+
+            let decoded = percent_decode_path_component(rest);
+            let candidate = PathBuf::from(format!("/{}", decoded));
+            if candidate.is_file() {
+                paths.push(candidate);
+            }
+            continue;
+        }
+
+        let direct = PathBuf::from(line);
+        if direct.is_file() {
+            paths.push(direct);
+        }
+    }
+    paths
 }
 
 #[cfg(target_os = "linux")]

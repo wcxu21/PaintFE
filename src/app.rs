@@ -264,6 +264,7 @@ pub struct PaintFEApp {
     palette_startup_target_pos: Option<(f32, f32)>,
     last_tool_settings_fingerprint: u64,
     last_window_state_fingerprint: u64,
+    last_paste_trigger_time: f64,
 }
 
 /// Discover a system CJK font at runtime (for Japanese, Korean, Chinese support).
@@ -547,6 +548,7 @@ impl PaintFEApp {
             palette_startup_target_pos: None,
             last_tool_settings_fingerprint: 0,
             last_window_state_fingerprint: 0,
+            last_paste_trigger_time: -1.0,
         };
 
         app.window_visibility.tools = app.settings.persist_tools_visible;
@@ -739,7 +741,13 @@ impl PaintFEApp {
         }
     }
 
-    fn queue_paste_from_clipboard(&mut self, cursor_canvas: Option<(f32, f32)>) {
+    fn queue_paste_image(
+        &mut self,
+        image: RgbaImage,
+        cursor_canvas: Option<(f32, f32)>,
+        source_center: Option<egui::Pos2>,
+        use_source_center: bool,
+    ) {
         if self.paste_overlay.is_some() {
             self.commit_paste_overlay();
         }
@@ -748,17 +756,12 @@ impl PaintFEApp {
             return;
         };
 
-        let Some(payload) = crate::ops::clipboard::get_clipboard_image_for_paste() else {
-            return;
-        };
-
         let request = PendingPasteRequest {
-            image: payload.image,
+            image,
             target_project_id: project.id,
             cursor_canvas,
-            source_center: payload.origin_center,
-            use_source_center: payload.source == ClipboardImageSource::Internal
-                && payload.origin_center.is_some(),
+            source_center,
+            use_source_center,
         };
 
         if request.image.width() > project.canvas_state.width
@@ -768,6 +771,30 @@ impl PaintFEApp {
         } else {
             self.apply_pending_paste_request(request, false);
         }
+    }
+
+    fn queue_paste_from_clipboard(&mut self, cursor_canvas: Option<(f32, f32)>) {
+        let payload = if let Some(payload) = crate::ops::clipboard::get_clipboard_image_for_paste()
+        {
+            payload
+        } else if let Some(img) = crate::ops::clipboard::get_clipboard_image_pub() {
+            crate::ops::clipboard::ClipboardImageForPaste {
+                image: img,
+                source: ClipboardImageSource::Internal,
+                origin_center: None,
+            }
+        } else {
+            return;
+        };
+
+        let use_source_center =
+            payload.source == ClipboardImageSource::Internal && payload.origin_center.is_some();
+        self.queue_paste_image(
+            payload.image,
+            cursor_canvas,
+            payload.origin_center,
+            use_source_center,
+        );
     }
 
     fn apply_pending_paste_request(&mut self, request: PendingPasteRequest, resize_canvas: bool) {
@@ -1715,30 +1742,63 @@ impl eframe::App for PaintFEApp {
 
         // --- Drag-and-Drop: open dropped image files as new projects ---
         {
-            let dropped: Vec<egui::DroppedFile> = ctx.input(|i| i.raw.dropped_files.clone());
-            for file in dropped {
-                if let Some(path) = file.path.clone()
-                    && path.is_file()
-                {
-                    self.open_file_by_path(path, ctx.input(|i| i.time));
-                    continue;
-                }
+            let shortcut_paste_present = ctx.input(|i| {
+                i.events.iter().any(|e| {
+                    matches!(
+                        e,
+                        egui::Event::Key {
+                            key: egui::Key::V,
+                            pressed: true,
+                            modifiers,
+                            ..
+                        } if modifiers.command || modifiers.ctrl
+                    )
+                })
+            });
+            if !shortcut_paste_present {
+                let dropped: Vec<egui::DroppedFile> = ctx.input(|i| i.raw.dropped_files.clone());
+                for file in dropped {
+                    if let Some(path) = file.path.clone() {
+                        if path.is_file() {
+                            self.open_file_by_path(path, ctx.input(|i| i.time));
+                            continue;
+                        }
 
-                if !file.name.is_empty() {
-                    let named_path = PathBuf::from(file.name.clone());
-                    if named_path.is_file() {
-                        self.open_file_by_path(named_path, ctx.input(|i| i.time));
-                        continue;
+                        // Some Linux/Wayland stacks can surface a dropped URI-like
+                        // string in the path field (e.g. file:///...).
+                        let parsed = Self::parse_file_uri_list(&path.to_string_lossy());
+                        if !parsed.is_empty() {
+                            for path in parsed {
+                                self.open_file_by_path(path, ctx.input(|i| i.time));
+                            }
+                            continue;
+                        }
                     }
-                }
 
-                if let Some(bytes) = file.bytes.as_ref() {
-                    let name_hint = if file.name.is_empty() {
-                        None
-                    } else {
-                        Some(file.name.clone())
-                    };
-                    self.open_image_from_bytes(bytes.as_ref(), name_hint);
+                    if !file.name.is_empty() {
+                        let parsed = Self::parse_file_uri_list(&file.name);
+                        if !parsed.is_empty() {
+                            for path in parsed {
+                                self.open_file_by_path(path, ctx.input(|i| i.time));
+                            }
+                            continue;
+                        }
+
+                        let named_path = PathBuf::from(file.name.clone());
+                        if named_path.is_file() {
+                            self.open_file_by_path(named_path, ctx.input(|i| i.time));
+                            continue;
+                        }
+                    }
+
+                    if let Some(bytes) = file.bytes.as_ref() {
+                        let name_hint = if file.name.is_empty() {
+                            None
+                        } else {
+                            Some(file.name.clone())
+                        };
+                        self.open_image_from_bytes(bytes.as_ref(), name_hint);
+                    }
                 }
             }
         }
@@ -1779,6 +1839,7 @@ impl eframe::App for PaintFEApp {
             )
         });
         let vk_probe = crate::windows_key_probe::snapshot();
+        let linux_probe = crate::linux_key_probe::snapshot();
 
         // Pre-claim canvas focus when the text tool is actively editing text.
         // This must happen BEFORE any context-bar or panel widgets render (they render
@@ -2063,11 +2124,13 @@ impl eframe::App for PaintFEApp {
                     matches!(
                         e,
                         egui::Event::Key {
-                            key: egui::Key::C,
+                            key,
+                            physical_key,
                             pressed: true,
                             modifiers,
                             ..
-                        } if modifiers.command || modifiers.ctrl
+                        } if (*key == egui::Key::C || *physical_key == Some(egui::Key::C))
+                            && (modifiers.command || modifiers.ctrl)
                     )
                 });
                 if let Some(idx) = pos {
@@ -2077,8 +2140,24 @@ impl eframe::App for PaintFEApp {
                     false
                 }
             });
-            let copy_pressed = copy_from_binding || copy_from_event || copy_from_raw;
-            let poll_ctrl_c_down = global_probe.0 && global_probe.1;
+            let copy_from_ctrl_char = ctx.input_mut(|i| {
+                let mut found = false;
+                i.events.retain(|ev| {
+                    if !found
+                        && let egui::Event::Text(t) = ev
+                        && t.chars().any(|c| c == '\u{3}')
+                    {
+                        found = true;
+                        return false;
+                    }
+                    true
+                });
+                found
+            });
+            let copy_pressed =
+                copy_from_binding || copy_from_event || copy_from_raw || copy_from_ctrl_char;
+            let poll_ctrl_c_down =
+                (global_probe.0 && global_probe.1) || (linux_probe.ctrl_down && linux_probe.c_down);
             let copy_poll_edge = poll_ctrl_c_down && !self.prev_ctrl_c_down;
             let copy_vk_edge =
                 vk_probe.ctrl_down && vk_probe.c_press_count != self.prev_vk_c_press_count;
@@ -2104,11 +2183,13 @@ impl eframe::App for PaintFEApp {
                     matches!(
                         e,
                         egui::Event::Key {
-                            key: egui::Key::X,
+                            key,
+                            physical_key,
                             pressed: true,
                             modifiers,
                             ..
-                        } if modifiers.command || modifiers.ctrl
+                        } if (*key == egui::Key::X || *physical_key == Some(egui::Key::X))
+                            && (modifiers.command || modifiers.ctrl)
                     )
                 });
                 if let Some(idx) = pos {
@@ -2118,8 +2199,23 @@ impl eframe::App for PaintFEApp {
                     false
                 }
             });
-            let cut_pressed = cut_from_binding || cut_from_event || cut_from_raw;
-            let poll_ctrl_x_down = global_probe.0 && global_probe.2;
+            let cut_from_ctrl_char = ctx.input_mut(|i| {
+                let mut found = false;
+                i.events.retain(|ev| {
+                    if !found
+                        && let egui::Event::Text(t) = ev
+                        && t.chars().any(|c| c == '\u{18}')
+                    {
+                        found = true;
+                        return false;
+                    }
+                    true
+                });
+                found
+            });
+            let cut_pressed = cut_from_binding || cut_from_event || cut_from_raw || cut_from_ctrl_char;
+            let poll_ctrl_x_down =
+                (global_probe.0 && global_probe.2) || (linux_probe.ctrl_down && linux_probe.x_down);
             let cut_poll_edge = poll_ctrl_x_down && !self.prev_ctrl_x_down;
             let cut_vk_edge =
                 vk_probe.ctrl_down && vk_probe.x_press_count != self.prev_vk_x_press_count;
@@ -2154,11 +2250,13 @@ impl eframe::App for PaintFEApp {
                     matches!(
                         e,
                         egui::Event::Key {
-                            key: egui::Key::V,
+                            key,
+                            physical_key,
                             pressed: true,
                             modifiers,
                             ..
-                        } if modifiers.command || modifiers.ctrl
+                        } if (*key == egui::Key::V || *physical_key == Some(egui::Key::V))
+                            && (modifiers.command || modifiers.ctrl)
                     )
                 });
                 if let Some(idx) = pos {
@@ -2168,12 +2266,82 @@ impl eframe::App for PaintFEApp {
                     false
                 }
             });
-            let paste_pressed = paste_from_binding || paste_from_event || paste_from_raw;
-            let poll_ctrl_v_down = global_probe.0 && global_probe.3;
+            let paste_from_release = ctx.input_mut(|i| {
+                let pos = i.events.iter().position(|e| {
+                    matches!(
+                        e,
+                        egui::Event::Key {
+                            key,
+                            physical_key,
+                            pressed: false,
+                            modifiers,
+                            ..
+                        } if (*key == egui::Key::V || *physical_key == Some(egui::Key::V))
+                            && (modifiers.command || modifiers.ctrl)
+                    )
+                });
+                if let Some(idx) = pos {
+                    i.events.remove(idx);
+                    true
+                } else {
+                    false
+                }
+            });
+            let paste_from_ctrl_char = ctx.input_mut(|i| {
+                let mut found = false;
+                i.events.retain(|ev| {
+                    if !found
+                        && let egui::Event::Text(t) = ev
+                        && t.chars().any(|c| c == '\u{16}')
+                    {
+                        found = true;
+                        return false;
+                    }
+                    true
+                });
+                found
+            });
+            let paste_from_state =
+                ctx.input(|i| i.key_pressed(egui::Key::V) && (i.modifiers.ctrl || i.modifiers.command));
+            let paste_from_raw_input = ctx.input(|i| {
+                i.raw.events.iter().any(|e| {
+                    matches!(
+                        e,
+                        egui::Event::Key {
+                            key,
+                            physical_key,
+                            pressed: true,
+                            modifiers,
+                            ..
+                        } if (*key == egui::Key::V || *physical_key == Some(egui::Key::V))
+                            && (modifiers.command || modifiers.ctrl)
+                    ) || matches!(e, egui::Event::Paste(_))
+                        || matches!(e, egui::Event::Text(t) if t.chars().any(|c| c == '\u{16}'))
+                })
+            });
+            let paste_primary_trigger = paste_from_binding
+                || paste_from_event
+                || paste_from_raw
+                || paste_from_ctrl_char
+                || paste_from_state
+                || paste_from_raw_input;
+            // Release fallback is only for sessions where press-path signals are missing.
+            let poll_ctrl_v_down =
+                (global_probe.0 && global_probe.3) || (linux_probe.ctrl_down && linux_probe.v_down);
             let paste_poll_edge = poll_ctrl_v_down && !self.prev_ctrl_v_down;
             let paste_vk_edge =
                 vk_probe.ctrl_down && vk_probe.v_press_count != self.prev_vk_v_press_count;
-            if paste_pressed || paste_poll_edge || paste_vk_edge {
+            let now = ctx.input(|i| i.time);
+            let recent_paste = self.last_paste_trigger_time >= 0.0
+                && (now - self.last_paste_trigger_time) < 0.25;
+            let release_only_trigger =
+                paste_from_release
+                    && !paste_primary_trigger
+                    && !paste_poll_edge
+                    && !paste_vk_edge
+                    && !recent_paste;
+            if paste_primary_trigger || paste_poll_edge || paste_vk_edge || release_only_trigger {
+                self.last_paste_trigger_time = now;
                 // Compute cursor canvas position before mutable borrow
                 let cursor_canvas = if self.active_project_index < self.projects.len() {
                     ctx.input(|i| i.pointer.latest_pos())
@@ -6377,9 +6545,13 @@ impl PaintFEApp {
 
     fn parse_file_uri_list(text: &str) -> Vec<PathBuf> {
         let mut paths = Vec::new();
-        for raw_line in text.lines() {
-            let line = raw_line.trim();
+        for raw_line in text.split(['\n', '\0']) {
+            let line = raw_line.trim().trim_end_matches('\r');
             if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            // Some desktop environments prepend an action line before URIs.
+            if line.eq_ignore_ascii_case("copy") || line.eq_ignore_ascii_case("cut") {
                 continue;
             }
 
@@ -6415,24 +6587,70 @@ impl PaintFEApp {
     }
 
     fn handle_file_uri_paste_events(&mut self, ctx: &egui::Context) {
-        let current_time = ctx.input(|i| i.time);
-        let file_paths = ctx.input_mut(|i| {
-            let mut opened = Vec::new();
+        // If dropped files are available this frame, prefer the dedicated
+        // drag-and-drop path and avoid double-processing URI payloads.
+        if ctx.input(|i| !i.raw.dropped_files.is_empty()) {
+            return;
+        }
+
+        // If this frame looks like an explicit paste shortcut (Ctrl/Cmd+V),
+        // let the normal clipboard paste path handle it so behavior matches
+        // Windows (paste into current project with transform overlay).
+        let shortcut_paste = ctx.input(|i| {
+            i.events.iter().any(|e| {
+                matches!(
+                    e,
+                    egui::Event::Key {
+                        key: egui::Key::V,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } if modifiers.command || modifiers.ctrl
+                )
+            })
+        });
+        if shortcut_paste {
+            return;
+        }
+
+        let cursor_canvas = if self.active_project_index < self.projects.len() {
+            ctx.input(|i| i.pointer.latest_pos()).and_then(|screen_pos| {
+                self.canvas.last_canvas_rect.and_then(|rect| {
+                    let state = &self.projects[self.active_project_index].canvas_state;
+                    self.canvas
+                        .screen_to_canvas_f32_pub(screen_pos, rect, state)
+                })
+            })
+        } else {
+            None
+        };
+
+        let decoded_images = ctx.input_mut(|i| {
+            let mut images = Vec::new();
             i.events.retain(|e| {
                 if let egui::Event::Paste(text) = e {
                     let parsed = Self::parse_file_uri_list(text);
                     if !parsed.is_empty() {
-                        opened.extend(parsed);
-                        return false;
+                        let mut decoded_any = false;
+                        for path in parsed {
+                            if let Ok(decoded) = image::open(path) {
+                                images.push(decoded.to_rgba8());
+                                decoded_any = true;
+                                break;
+                            }
+                        }
+                        if decoded_any {
+                            return false;
+                        }
                     }
                 }
                 true
             });
-            opened
+            images
         });
 
-        for path in file_paths {
-            self.open_file_by_path(path, current_time);
+        for img in decoded_images {
+            self.queue_paste_image(img, cursor_canvas, None, false);
         }
     }
 

@@ -18,6 +18,7 @@ pub mod components;
 pub mod gpu;
 pub mod io;
 pub mod ipc;
+pub mod linux_key_probe;
 pub mod logger;
 pub mod ops;
 pub mod project;
