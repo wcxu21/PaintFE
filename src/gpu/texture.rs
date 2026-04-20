@@ -56,14 +56,14 @@ impl LayerTexture {
 
         // Upload mip-level 0
         queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             data,
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(4 * width),
                 rows_per_image: Some(height),
@@ -123,14 +123,14 @@ impl LayerTexture {
         debug_assert_eq!(data.len(), (rect_width * rect_height * 4) as usize);
 
         queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &self.texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d { x, y, z: 0 },
                 aspect: wgpu::TextureAspect::All,
             },
             data,
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(4 * rect_width),
                 rows_per_image: Some(rect_height),
@@ -200,16 +200,17 @@ impl MipmapPipeline {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("mipmap_pipeline_layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
         });
 
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("mipmap_pipeline"),
             layout: Some(&pipeline_layout),
             module: &shader,
-            entry_point: "cs_mipmap",
+            entry_point: Some("cs_mipmap"),
             compilation_options: Default::default(),
+            cache: None,
         });
 
         Self {

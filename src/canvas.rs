@@ -2217,6 +2217,7 @@ impl CanvasState {
         (
             ColorImage {
                 size: [target_w as usize, target_h as usize],
+                source_size: egui::Vec2::new(target_w as f32, target_h as f32),
                 pixels,
             },
             [min_x as usize, min_y as usize],
@@ -2382,6 +2383,7 @@ impl CanvasState {
         (
             ColorImage {
                 size: [width as usize, height as usize],
+                source_size: egui::Vec2::new(width as f32, height as f32),
                 pixels,
             },
             [min_x as usize, min_y as usize],
@@ -2437,6 +2439,7 @@ impl CanvasState {
         let pixels = self.composite_above_buffer.clone();
         Some(ColorImage {
             size: [w, h],
+            source_size: egui::Vec2::new(w as f32, h as f32),
             pixels,
         })
     }
@@ -3185,7 +3188,7 @@ impl Canvas {
             .as_ref()
             .map(|t| t.text_state.is_editing)
             .unwrap_or(false);
-        if !ui.ctx().memory(|m| m.focus().is_some()) || response.clicked() || text_tool_editing {
+        if !ui.ctx().memory(|m| m.focused().is_some()) || response.clicked() || text_tool_editing {
             response.request_focus();
         }
         let canvas_rect = response.rect;
@@ -3206,11 +3209,13 @@ impl Canvas {
             TextureOptions {
                 magnification: TextureFilter::Linear,
                 minification: TextureFilter::Linear,
+                ..Default::default()
             }
         } else {
             TextureOptions {
                 magnification: TextureFilter::Nearest,
                 minification: TextureFilter::Nearest,
+                ..Default::default()
             }
         };
 
@@ -3368,6 +3373,7 @@ impl Canvas {
                         };
                         let color_image = ColorImage {
                             size: [state.width as usize, state.height as usize],
+                            source_size: egui::Vec2::new(state.width as f32, state.height as f32),
                             pixels: display_pixels,
                         };
                         // Update persistent CPU buffer from the same source
@@ -3407,6 +3413,7 @@ impl Canvas {
                         };
                         let region_image = ColorImage {
                             size: [rw as usize, rh as usize],
+                            source_size: egui::Vec2::new(rw as f32, rh as f32),
                             pixels: region_pixels,
                         };
                         let region_data = ImageData::Color(Arc::new(region_image));
@@ -3427,6 +3434,10 @@ impl Canvas {
                             };
                             let color_image = ColorImage {
                                 size: [state.width as usize, state.height as usize],
+                                source_size: egui::Vec2::new(
+                                    state.width as f32,
+                                    state.height as f32,
+                                ),
                                 pixels: display_pixels,
                             };
                             let image_data = ImageData::Color(Arc::new(color_image));
@@ -3457,6 +3468,7 @@ impl Canvas {
                         };
                         let color_image = ColorImage {
                             size: [state.width as usize, state.height as usize],
+                            source_size: egui::Vec2::new(state.width as f32, state.height as f32),
                             pixels: display_pixels,
                         };
                         state.composite_cpu_buffer.clear();
@@ -3488,6 +3500,7 @@ impl Canvas {
                         };
                         let region_image = ColorImage {
                             size: [rw as usize, rh as usize],
+                            source_size: egui::Vec2::new(rw as f32, rh as f32),
                             pixels: region_pixels,
                         };
                         let region_data = ImageData::Color(Arc::new(region_image));
@@ -3513,6 +3526,7 @@ impl Canvas {
                 };
                 let color_image = ColorImage {
                     size: [state.width as usize, state.height as usize],
+                    source_size: egui::Vec2::new(state.width as f32, state.height as f32),
                     pixels: display_pixels,
                 };
                 let image_data = ImageData::Color(Arc::new(color_image));
@@ -3665,6 +3679,7 @@ impl Canvas {
                 let tex_options = TextureOptions {
                     magnification: preview_filter,
                     minification: preview_filter,
+                    ..Default::default()
                 };
 
                 // Decide whether the fast raw-extraction path is valid.
@@ -3714,6 +3729,7 @@ impl Canvas {
                         };
                         let color_image = ColorImage {
                             size: [pw, ph],
+                            source_size: egui::Vec2::new(pw as f32, ph as f32),
                             pixels: pixels.to_vec(),
                         };
                         let image_data = ImageData::Color(Arc::new(color_image));
@@ -3795,6 +3811,7 @@ impl Canvas {
                                 let region_pixels: Vec<Color32> = dirty_pixels.to_vec();
                                 let region_image = ColorImage {
                                     size: [dw as usize, dh as usize],
+                                    source_size: egui::Vec2::new(dw as f32, dh as f32),
                                     pixels: region_pixels,
                                 };
                                 let region_data = ImageData::Color(Arc::new(region_image));
@@ -3804,6 +3821,7 @@ impl Canvas {
                                     // No texture yet — fall back to full upload
                                     let color_image = ColorImage {
                                         size: [rw as usize, rh as usize],
+                                        source_size: egui::Vec2::new(rw as f32, rh as f32),
                                         pixels: state.preview_premul_cache.clone(),
                                     };
                                     let image_data = ImageData::Color(Arc::new(color_image));
@@ -3890,6 +3908,7 @@ impl Canvas {
                             // Bounds changed — must do full texture upload
                             let color_image = ColorImage {
                                 size: [rw as usize, rh as usize],
+                                source_size: egui::Vec2::new(rw as f32, rh as f32),
                                 pixels: state.preview_premul_cache.clone(),
                             };
                             let image_data = ImageData::Color(Arc::new(color_image));
@@ -3927,6 +3946,7 @@ impl Canvas {
                             // First frame — must do full texture upload
                             let color_image = ColorImage {
                                 size: [rw as usize, rh as usize],
+                                source_size: egui::Vec2::new(rw as f32, rh as f32),
                                 pixels: state.preview_premul_cache.clone(),
                             };
                             let image_data = ImageData::Color(Arc::new(color_image));
@@ -3994,11 +4014,6 @@ impl Canvas {
         // Draw pixel grid overlay when zoomed in
         if state.show_pixel_grid && self.zoom >= 8.0 {
             self.draw_pixel_grid(&painter, image_rect, state, canvas_rect);
-        }
-
-        // Draw center/thirds guidelines overlay
-        if state.show_guidelines {
-            self.draw_guidelines(&painter, image_rect, state, canvas_rect);
         }
 
         // Draw mirror axis overlay
@@ -4136,6 +4151,7 @@ impl Canvas {
                             TextureOptions {
                                 magnification: TextureFilter::Nearest,
                                 minification: TextureFilter::Nearest,
+                                ..Default::default()
                             },
                         );
                         existing.id()
@@ -4146,6 +4162,7 @@ impl Canvas {
                             TextureOptions {
                                 magnification: TextureFilter::Nearest,
                                 minification: TextureFilter::Nearest,
+                                ..Default::default()
                             },
                         );
                         let id = handle.id();
@@ -4181,7 +4198,7 @@ impl Canvas {
             // Auto-open context menu when requested (e.g. right after paste).
             if self.open_paste_menu {
                 let ctx_id = response.id.with("__egui_context_menu");
-                ui.memory_mut(|mem| mem.open_popup(ctx_id));
+                egui::Popup::open_id(ui.ctx(), ctx_id);
                 self.open_paste_menu = false;
             }
 
@@ -4195,7 +4212,7 @@ impl Canvas {
                         .clicked()
                     {
                         overlay.interpolation = *interp;
-                        ui.close_menu();
+                        ui.close();
                     }
                 }
                 ui.separator();
@@ -4204,20 +4221,20 @@ impl Canvas {
                     overlay.scale_x = 1.0;
                     overlay.scale_y = 1.0;
                     overlay.anchor_offset = Vec2::ZERO;
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui.button("Center Anchor").clicked() {
                     overlay.anchor_offset = Vec2::ZERO;
-                    ui.close_menu();
+                    ui.close();
                 }
                 ui.separator();
                 if ui.button("✓ Commit   (Enter)").clicked() {
                     paste_context_result = Some(true);
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui.button("✗ Cancel   (Esc)").clicked() {
                     paste_context_result = Some(false);
-                    ui.close_menu();
+                    ui.close();
                 }
             });
         } else {
@@ -4228,8 +4245,8 @@ impl Canvas {
             // the popup ID remains registered in egui memory and permanently
             // makes `any_popup_open()` return true, blocking all tool input.
             let ctx_id = response.id.with("__egui_context_menu");
-            if ui.memory(|mem| mem.is_popup_open(ctx_id)) {
-                ui.memory_mut(|mem| mem.toggle_popup(ctx_id));
+            if egui::Popup::is_id_open(ui.ctx(), ctx_id) {
+                egui::Popup::toggle_id(ui.ctx(), ctx_id);
             }
             // Clear preview layer if no paste overlay is active.
             if state.preview_layer.is_some() {
@@ -4244,6 +4261,12 @@ impl Canvas {
             }
         }
         self.paste_context_action = paste_context_result;
+
+        // Draw center/thirds guidelines above pasted overlays for easier
+        // placement while transforming clipboard content.
+        if state.show_guidelines {
+            self.draw_guidelines(&painter, image_rect, state, canvas_rect);
+        }
 
         // ====================================================================
         // EXTRACT DEBUG INFO before tools is consumed
@@ -4375,8 +4398,7 @@ impl Canvas {
         // Handle tool input - Call every frame while mouse button is held
         if let Some(tools) = tools {
             // Only block input if there's a modal window/popup or pointer is over any UI element
-            let ui_blocking =
-                ui.ctx().memory(|mem| mem.any_popup_open()) || ui.ctx().is_pointer_over_area();
+            let ui_blocking = egui::Popup::is_any_open(ui.ctx()) || ui.ctx().is_pointer_over_egui();
 
             // Get mouse position and check if over canvas.
             // On Wayland with a graphics tablet the stylus may route events as
@@ -4489,10 +4511,29 @@ impl Canvas {
                 tools.text_state.is_editing && tools.text_state.editing_text_layer;
             let text_drag_override =
                 text_handles_active || tools.text_state.text_box_drag.is_some();
+            let keyboard_finalize_pressed =
+                ui.input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Escape));
+            let pending_tool_commit = tools.mesh_warp_state.commit_pending
+                || tools.liquify_state.commit_pending
+                || tools.gradient_state.commit_pending
+                || tools.text_state.commit_pending;
+            let keyboard_tool_override = keyboard_finalize_pressed
+                && (tools.mesh_warp_state.is_active
+                    || tools.liquify_state.is_active
+                    || tools.shapes_state.placed.is_some()
+                    || tools.perspective_crop_state.active);
             let allow_input = !modal_open
                 && !paste_consumed_input
-                && (!ui_blocking || text_drag_override)
-                && (pointer_over_canvas || is_painting || tool_drag_active || text_handles_active);
+                && (!ui_blocking
+                    || text_drag_override
+                    || keyboard_tool_override
+                    || pending_tool_commit)
+                && (pointer_over_canvas
+                    || is_painting
+                    || tool_drag_active
+                    || text_handles_active
+                    || keyboard_tool_override
+                    || pending_tool_commit);
 
             if allow_input {
                 tools.handle_input(
@@ -4621,8 +4662,8 @@ impl Canvas {
                     || text_resizing.is_some();
                 if (over_image || text_handle_cursor)
                     && !modal_open
-                    && !ui.ctx().memory(|mem| mem.any_popup_open())
-                    && (!ui.ctx().is_pointer_over_area() || text_handle_cursor)
+                    && !egui::Popup::is_any_open(ui.ctx())
+                    && (!ui.ctx().is_pointer_over_egui() || text_handle_cursor)
                     && let Some(tool) = active_tool_for_cursor
                 {
                     use crate::components::tools::Tool;
@@ -4632,8 +4673,7 @@ impl Canvas {
                                 matches!(
                                     e,
                                     egui::Event::Touch {
-                                        phase: egui::TouchPhase::Start
-                                            | egui::TouchPhase::Move,
+                                        phase: egui::TouchPhase::Start | egui::TouchPhase::Move,
                                         ..
                                     }
                                 )
@@ -4717,29 +4757,31 @@ impl Canvas {
             // ====================================================================
             if fill_active
                 && let Some(pos) = mouse_pos
-                    && canvas_rect.contains(pos)
-                    && let Some((canvas_x_f32, canvas_y_f32)) =
-                        self.screen_to_canvas_f32(pos, canvas_rect, state)
-                {
-                    let canvas_x = canvas_x_f32.floor() as u32;
-                    let canvas_y = canvas_y_f32.floor() as u32;
-                    let pixel_screen_x = image_rect.min.x + canvas_x as f32 * self.zoom;
-                    let pixel_screen_y = image_rect.min.y + canvas_y as f32 * self.zoom;
-                    let pixel_rect = Rect::from_min_size(
-                        Pos2::new(pixel_screen_x, pixel_screen_y),
-                        Vec2::new(self.zoom.max(1.0), self.zoom.max(1.0)),
-                    );
-                    painter.rect_stroke(
-                        pixel_rect,
-                        0.0,
-                        egui::Stroke::new(1.0, Color32::from_black_alpha(180)),
-                    );
-                    painter.rect_stroke(
-                        pixel_rect,
-                        0.0,
-                        egui::Stroke::new(0.5, Color32::from_white_alpha(200)),
-                    );
-                }
+                && canvas_rect.contains(pos)
+                && let Some((canvas_x_f32, canvas_y_f32)) =
+                    self.screen_to_canvas_f32(pos, canvas_rect, state)
+            {
+                let canvas_x = canvas_x_f32.floor() as u32;
+                let canvas_y = canvas_y_f32.floor() as u32;
+                let pixel_screen_x = image_rect.min.x + canvas_x as f32 * self.zoom;
+                let pixel_screen_y = image_rect.min.y + canvas_y as f32 * self.zoom;
+                let pixel_rect = Rect::from_min_size(
+                    Pos2::new(pixel_screen_x, pixel_screen_y),
+                    Vec2::new(self.zoom.max(1.0), self.zoom.max(1.0)),
+                );
+                painter.rect_stroke(
+                    pixel_rect,
+                    0.0,
+                    egui::Stroke::new(1.0, Color32::from_black_alpha(180)),
+                    egui::StrokeKind::Middle,
+                );
+                painter.rect_stroke(
+                    pixel_rect,
+                    0.0,
+                    egui::Stroke::new(0.5, Color32::from_white_alpha(200)),
+                    egui::StrokeKind::Middle,
+                );
+            }
 
             // ====================================================================
             // PENCIL CURSOR OVERLAY (shows exact pixel that will be painted)
@@ -4747,73 +4789,83 @@ impl Canvas {
             // Only show when Pencil tool is active, mouse is over canvas, and not painting
             if pencil_active
                 && let Some(pos) = mouse_pos
-                    && canvas_rect.contains(pos)
-                    && !is_painting
+                && canvas_rect.contains(pos)
+                && !is_painting
+            {
+                // Convert screen position to canvas position (floating point)
+                if let Some((canvas_x_f32, canvas_y_f32)) =
+                    self.screen_to_canvas_f32(pos, canvas_rect, state)
                 {
-                    // Convert screen position to canvas position (floating point)
-                    if let Some((canvas_x_f32, canvas_y_f32)) =
-                        self.screen_to_canvas_f32(pos, canvas_rect, state)
-                    {
-                        // Floor to get the pixel that contains the cursor (not nearest pixel)
-                        let canvas_x = canvas_x_f32.floor() as u32;
-                        let canvas_y = canvas_y_f32.floor() as u32;
+                    // Floor to get the pixel that contains the cursor (not nearest pixel)
+                    let canvas_x = canvas_x_f32.floor() as u32;
+                    let canvas_y = canvas_y_f32.floor() as u32;
 
-                        // Convert back to screen coordinates for the exact pixel
-                        let pixel_screen_x = image_rect.min.x + canvas_x as f32 * self.zoom;
-                        let pixel_screen_y = image_rect.min.y + canvas_y as f32 * self.zoom;
+                    // Convert back to screen coordinates for the exact pixel
+                    let pixel_screen_x = image_rect.min.x + canvas_x as f32 * self.zoom;
+                    let pixel_screen_y = image_rect.min.y + canvas_y as f32 * self.zoom;
 
-                        // Draw a subtle 1x1 pixel outline to show which pixel will be painted
-                        let pixel_rect = Rect::from_min_size(
-                            Pos2::new(pixel_screen_x, pixel_screen_y),
-                            Vec2::new(self.zoom.max(1.0), self.zoom.max(1.0)),
-                        );
+                    // Draw a subtle 1x1 pixel outline to show which pixel will be painted
+                    let pixel_rect = Rect::from_min_size(
+                        Pos2::new(pixel_screen_x, pixel_screen_y),
+                        Vec2::new(self.zoom.max(1.0), self.zoom.max(1.0)),
+                    );
 
-                        // Use a contrasting color for visibility
-                        let cursor_color = if ui.visuals().dark_mode {
-                            Color32::from_rgb(255, 255, 255) // White in dark mode
-                        } else {
-                            Color32::from_rgb(0, 0, 0) // Black in light mode
-                        };
+                    // Use a contrasting color for visibility
+                    let cursor_color = if ui.visuals().dark_mode {
+                        Color32::from_rgb(255, 255, 255) // White in dark mode
+                    } else {
+                        Color32::from_rgb(0, 0, 0) // Black in light mode
+                    };
 
-                        painter.rect_stroke(pixel_rect, 0.0, egui::Stroke::new(1.0, cursor_color));
-                    }
+                    painter.rect_stroke(
+                        pixel_rect,
+                        0.0,
+                        egui::Stroke::new(1.0, cursor_color),
+                        egui::StrokeKind::Middle,
+                    );
                 }
+            }
 
             // ====================================================================
             // COLOR PICKER CURSOR OVERLAY (shows sampled pixel)
             // ====================================================================
             if color_picker_active
                 && let Some(pos) = mouse_pos
-                    && canvas_rect.contains(pos)
+                && canvas_rect.contains(pos)
+            {
+                // Convert screen position to canvas position (floating point)
+                if let Some((canvas_x_f32, canvas_y_f32)) =
+                    self.screen_to_canvas_f32(pos, canvas_rect, state)
                 {
-                    // Convert screen position to canvas position (floating point)
-                    if let Some((canvas_x_f32, canvas_y_f32)) =
-                        self.screen_to_canvas_f32(pos, canvas_rect, state)
-                    {
-                        // Floor to get the pixel that contains the cursor
-                        let canvas_x = canvas_x_f32.floor() as u32;
-                        let canvas_y = canvas_y_f32.floor() as u32;
+                    // Floor to get the pixel that contains the cursor
+                    let canvas_x = canvas_x_f32.floor() as u32;
+                    let canvas_y = canvas_y_f32.floor() as u32;
 
-                        // Convert back to screen coordinates for the exact pixel
-                        let pixel_screen_x = image_rect.min.x + canvas_x as f32 * self.zoom;
-                        let pixel_screen_y = image_rect.min.y + canvas_y as f32 * self.zoom;
+                    // Convert back to screen coordinates for the exact pixel
+                    let pixel_screen_x = image_rect.min.x + canvas_x as f32 * self.zoom;
+                    let pixel_screen_y = image_rect.min.y + canvas_y as f32 * self.zoom;
 
-                        // Draw the pixel outline for color picker
-                        let pixel_rect = Rect::from_min_size(
-                            Pos2::new(pixel_screen_x, pixel_screen_y),
-                            Vec2::new(self.zoom.max(1.0), self.zoom.max(1.0)),
-                        );
+                    // Draw the pixel outline for color picker
+                    let pixel_rect = Rect::from_min_size(
+                        Pos2::new(pixel_screen_x, pixel_screen_y),
+                        Vec2::new(self.zoom.max(1.0), self.zoom.max(1.0)),
+                    );
 
-                        // Use a contrasting color for visibility (brighter cyan/yellow)
-                        let cursor_color = if ui.visuals().dark_mode {
-                            Color32::from_rgb(0, 255, 255) // Cyan in dark mode
-                        } else {
-                            Color32::from_rgb(255, 200, 0) // Yellow in light mode
-                        };
+                    // Use a contrasting color for visibility (brighter cyan/yellow)
+                    let cursor_color = if ui.visuals().dark_mode {
+                        Color32::from_rgb(0, 255, 255) // Cyan in dark mode
+                    } else {
+                        Color32::from_rgb(255, 200, 0) // Yellow in light mode
+                    };
 
-                        painter.rect_stroke(pixel_rect, 0.0, egui::Stroke::new(1.0, cursor_color));
-                    }
+                    painter.rect_stroke(
+                        pixel_rect,
+                        0.0,
+                        egui::Stroke::new(1.0, cursor_color),
+                        egui::StrokeKind::Middle,
+                    );
                 }
+            }
 
             // ====================================================================
             // TOOL ICON CURSOR OVERLAY
@@ -4829,32 +4881,33 @@ impl Canvas {
                         Tool::Pencil | Tool::Fill | Tool::ColorPicker | Tool::Zoom | Tool::Pan
                     )
                 });
-                if needs_icon_cursor && let Some(ref icon_tex) = self.tool_cursor_icon
+                if needs_icon_cursor
+                    && let Some(ref icon_tex) = self.tool_cursor_icon
                     && let Some(pos) = mouse_pos
-                        && canvas_rect.contains(pos)
-                    {
-                        use crate::components::tools::Tool;
-                        let icon_sz = 18.0_f32;
-                        // Hot-spot: tip tools anchor bottom-left (tip at cursor),
-                        // spatial tools anchor center.
-                        let center = match active_tool_for_cursor {
-                            Some(Tool::Zoom) | Some(Tool::Pan) => Pos2::new(pos.x, pos.y),
-                            _ => Pos2::new(pos.x + icon_sz * 0.5 + 1.0, pos.y - icon_sz * 0.5),
-                        };
-                        let uv = egui::Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0));
-                        // White border: draw icon 3px larger (centered same point)
-                        let border_sz = icon_sz + 4.0;
-                        let border_rect = Rect::from_center_size(center, Vec2::splat(border_sz));
-                        painter.image(
-                            icon_tex.id(),
-                            border_rect,
-                            uv,
-                            Color32::from_white_alpha(230),
-                        );
-                        // Dark icon on top at normal size
-                        let icon_rect = Rect::from_center_size(center, Vec2::splat(icon_sz));
-                        painter.image(icon_tex.id(), icon_rect, uv, Color32::from_black_alpha(230));
-                    } // if let icon_tex
+                    && canvas_rect.contains(pos)
+                {
+                    use crate::components::tools::Tool;
+                    let icon_sz = 18.0_f32;
+                    // Hot-spot: tip tools anchor bottom-left (tip at cursor),
+                    // spatial tools anchor center.
+                    let center = match active_tool_for_cursor {
+                        Some(Tool::Zoom) | Some(Tool::Pan) => Pos2::new(pos.x, pos.y),
+                        _ => Pos2::new(pos.x + icon_sz * 0.5 + 1.0, pos.y - icon_sz * 0.5),
+                    };
+                    let uv = egui::Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0));
+                    // White border: draw icon 3px larger (centered same point)
+                    let border_sz = icon_sz + 4.0;
+                    let border_rect = Rect::from_center_size(center, Vec2::splat(border_sz));
+                    painter.image(
+                        icon_tex.id(),
+                        border_rect,
+                        uv,
+                        Color32::from_white_alpha(230),
+                    );
+                    // Dark icon on top at normal size
+                    let icon_rect = Rect::from_center_size(center, Vec2::splat(icon_sz));
+                    painter.image(icon_tex.id(), icon_rect, uv, Color32::from_black_alpha(230));
+                } // if let icon_tex
                 // if needs_icon_cursor
             }
 
@@ -4870,275 +4923,264 @@ impl Canvas {
                 cursor_rotation_deg,
             )) = brush_cursor_info
                 && let Some(pos) = mouse_pos
-                    && canvas_rect.contains(pos)
-                    && let Some((canvas_x, canvas_y)) =
-                        self.screen_to_canvas_f32(pos, canvas_rect, state)
-                {
-                    // Brush center in screen coords
-                    let screen_cx = image_rect.min.x + canvas_x * self.zoom;
-                    let screen_cy = image_rect.min.y + canvas_y * self.zoom;
-                    let screen_radius = (brush_size / 2.0) * self.zoom;
+                && canvas_rect.contains(pos)
+                && let Some((canvas_x, canvas_y)) =
+                    self.screen_to_canvas_f32(pos, canvas_rect, state)
+            {
+                // Brush center in screen coords
+                let screen_cx = image_rect.min.x + canvas_x * self.zoom;
+                let screen_cy = image_rect.min.y + canvas_y * self.zoom;
+                let screen_radius = (brush_size / 2.0) * self.zoom;
 
-                    // Draw brush outline — circle for circle tip, texture overlay for image tips
-                    if screen_radius > 1.5 {
-                        if is_circle_tip {
-                            // Draw two circles (black + white) for visibility on any background
-                            let stroke_outer =
-                                egui::Stroke::new(1.5, Color32::from_black_alpha(160));
-                            let stroke_inner =
-                                egui::Stroke::new(0.75, Color32::from_white_alpha(200));
-                            painter.circle_stroke(
-                                Pos2::new(screen_cx, screen_cy),
-                                screen_radius,
-                                stroke_outer,
-                            );
-                            painter.circle_stroke(
-                                Pos2::new(screen_cx, screen_cy),
-                                screen_radius,
-                                stroke_inner,
-                            );
-                        } else if let Some((mask_data, mask_sz)) = mask_info {
-                            // Image tip — overlay the mask shape twice (white + black)
-                            // for visibility on any background colour.
-                            let ms = *mask_sz;
-                            let tip_name = match &tip_name_for_cursor {
-                                Some(n) => n.as_str(),
-                                None => "",
-                            };
-                            // Include mask content hash via simple checksum for staleness
-                            let content_hash = mask_data
-                                .iter()
-                                .step_by(7)
-                                .fold(0u32, |acc, &b| acc.wrapping_add(b as u32));
-                            let key = (tip_name.to_string(), ms, content_hash);
-                            if key != self.brush_tip_cursor_key
-                                || self.brush_tip_cursor_tex.is_none()
-                            {
-                                // Rebuild cursor textures from mask
-                                let n = (ms * ms) as usize;
-                                let mut rgba_white = vec![0u8; n * 4];
-                                let mut rgba_black = vec![0u8; n * 4];
-                                for i in 0..n {
-                                    let a = mask_data[i];
-                                    // White version
-                                    rgba_white[i * 4] = 255;
-                                    rgba_white[i * 4 + 1] = 255;
-                                    rgba_white[i * 4 + 2] = 255;
-                                    rgba_white[i * 4 + 3] = a;
-                                    // Black version
-                                    rgba_black[i * 4] = 0;
-                                    rgba_black[i * 4 + 1] = 0;
-                                    rgba_black[i * 4 + 2] = 0;
-                                    rgba_black[i * 4 + 3] = a;
-                                }
-                                let opts = egui::TextureOptions {
-                                    magnification: egui::TextureFilter::Linear,
-                                    minification: egui::TextureFilter::Linear,
-                                };
-                                let ci_w = egui::ColorImage::from_rgba_unmultiplied(
-                                    [ms as usize, ms as usize],
-                                    &rgba_white,
-                                );
-                                let ci_b = egui::ColorImage::from_rgba_unmultiplied(
-                                    [ms as usize, ms as usize],
-                                    &rgba_black,
-                                );
-                                if let Some(ref mut tex) = self.brush_tip_cursor_tex {
-                                    tex.set(ci_w, opts);
-                                } else {
-                                    self.brush_tip_cursor_tex = Some(ui.ctx().load_texture(
-                                        "brush_tip_cursor_w",
-                                        ci_w,
-                                        opts,
-                                    ));
-                                }
-                                if let Some(ref mut tex) = self.brush_tip_cursor_tex_inv {
-                                    tex.set(ci_b, opts);
-                                } else {
-                                    self.brush_tip_cursor_tex_inv = Some(ui.ctx().load_texture(
-                                        "brush_tip_cursor_b",
-                                        ci_b,
-                                        opts,
-                                    ));
-                                }
-                                self.brush_tip_cursor_key = key;
+                // Draw brush outline — circle for circle tip, texture overlay for image tips
+                if screen_radius > 1.5 {
+                    if is_circle_tip {
+                        // Draw two circles (black + white) for visibility on any background
+                        let stroke_outer = egui::Stroke::new(1.5, Color32::from_black_alpha(160));
+                        let stroke_inner = egui::Stroke::new(0.75, Color32::from_white_alpha(200));
+                        painter.circle_stroke(
+                            Pos2::new(screen_cx, screen_cy),
+                            screen_radius,
+                            stroke_outer,
+                        );
+                        painter.circle_stroke(
+                            Pos2::new(screen_cx, screen_cy),
+                            screen_radius,
+                            stroke_inner,
+                        );
+                    } else if let Some((mask_data, mask_sz)) = mask_info {
+                        // Image tip — overlay the mask shape twice (white + black)
+                        // for visibility on any background colour.
+                        let ms = *mask_sz;
+                        let tip_name = match &tip_name_for_cursor {
+                            Some(n) => n.as_str(),
+                            None => "",
+                        };
+                        // Include mask content hash via simple checksum for staleness
+                        let content_hash = mask_data
+                            .iter()
+                            .step_by(7)
+                            .fold(0u32, |acc, &b| acc.wrapping_add(b as u32));
+                        let key = (tip_name.to_string(), ms, content_hash);
+                        if key != self.brush_tip_cursor_key || self.brush_tip_cursor_tex.is_none() {
+                            // Rebuild cursor textures from mask
+                            let n = (ms * ms) as usize;
+                            let mut rgba_white = vec![0u8; n * 4];
+                            let mut rgba_black = vec![0u8; n * 4];
+                            for i in 0..n {
+                                let a = mask_data[i];
+                                // White version
+                                rgba_white[i * 4] = 255;
+                                rgba_white[i * 4 + 1] = 255;
+                                rgba_white[i * 4 + 2] = 255;
+                                rgba_white[i * 4 + 3] = a;
+                                // Black version
+                                rgba_black[i * 4] = 0;
+                                rgba_black[i * 4 + 1] = 0;
+                                rgba_black[i * 4 + 2] = 0;
+                                rgba_black[i * 4 + 3] = a;
                             }
-                            let screen_sz = brush_size * self.zoom;
-                            let center = Pos2::new(screen_cx, screen_cy);
-
-                            // Check if we need rotated drawing
-                            let has_rotation = cursor_rotation_deg.abs() > 0.01;
-
-                            if has_rotation {
-                                // Rotated cursor: draw a rotated quad using a mesh
-                                let half_sz = screen_sz / 2.0;
-                                let rad = cursor_rotation_deg.to_radians();
-                                let cos_r = rad.cos();
-                                let sin_r = rad.sin();
-
-                                // Rotated corners: TL, TR, BR, BL
-                                let corners = [
-                                    (-half_sz, -half_sz),
-                                    (half_sz, -half_sz),
-                                    (half_sz, half_sz),
-                                    (-half_sz, half_sz),
-                                ];
-                                let rotated: Vec<Pos2> = corners
-                                    .iter()
-                                    .map(|&(dx, dy)| {
-                                        Pos2::new(
-                                            center.x + dx * cos_r - dy * sin_r,
-                                            center.y + dx * sin_r + dy * cos_r,
-                                        )
-                                    })
-                                    .collect();
-
-                                let uv_corners = [
-                                    Pos2::new(0.0, 0.0),
-                                    Pos2::new(1.0, 0.0),
-                                    Pos2::new(1.0, 1.0),
-                                    Pos2::new(0.0, 1.0),
-                                ];
-
-                                // Draw white pass
-                                if let Some(ref tex_w) = self.brush_tip_cursor_tex {
-                                    let tint_w =
-                                        Color32::from_rgba_unmultiplied(255, 255, 255, 100);
-                                    let mut mesh_w = egui::Mesh::with_texture(tex_w.id());
-                                    for i in 0..4 {
-                                        mesh_w.vertices.push(egui::epaint::Vertex {
-                                            pos: rotated[i],
-                                            uv: uv_corners[i],
-                                            color: tint_w,
-                                        });
-                                    }
-                                    mesh_w.indices = vec![0, 1, 2, 0, 2, 3];
-                                    painter.add(egui::Shape::mesh(mesh_w));
-                                }
-                                // Draw black pass
-                                if let Some(ref tex_b) = self.brush_tip_cursor_tex_inv {
-                                    let tint_b =
-                                        Color32::from_rgba_unmultiplied(255, 255, 255, 100);
-                                    let mut mesh_b = egui::Mesh::with_texture(tex_b.id());
-                                    for i in 0..4 {
-                                        mesh_b.vertices.push(egui::epaint::Vertex {
-                                            pos: rotated[i],
-                                            uv: uv_corners[i],
-                                            color: tint_b,
-                                        });
-                                    }
-                                    mesh_b.indices = vec![0, 1, 2, 0, 2, 3];
-                                    painter.add(egui::Shape::mesh(mesh_b));
-                                }
+                            let opts = egui::TextureOptions {
+                                magnification: egui::TextureFilter::Linear,
+                                minification: egui::TextureFilter::Linear,
+                                ..Default::default()
+                            };
+                            let ci_w = egui::ColorImage::from_rgba_unmultiplied(
+                                [ms as usize, ms as usize],
+                                &rgba_white,
+                            );
+                            let ci_b = egui::ColorImage::from_rgba_unmultiplied(
+                                [ms as usize, ms as usize],
+                                &rgba_black,
+                            );
+                            if let Some(ref mut tex) = self.brush_tip_cursor_tex {
+                                tex.set(ci_w, opts);
                             } else {
-                                // No rotation — use simple axis-aligned image draw
-                                let cursor_rect =
-                                    Rect::from_center_size(center, egui::Vec2::splat(screen_sz));
-                                let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
-                                // Draw white pass then black pass at low opacity.
-                                // On dark backgrounds the white shows; on light the black shows.
-                                if let Some(ref tex_w) = self.brush_tip_cursor_tex {
-                                    let tint_w =
-                                        Color32::from_rgba_unmultiplied(255, 255, 255, 100);
-                                    painter.image(tex_w.id(), cursor_rect, uv, tint_w);
+                                self.brush_tip_cursor_tex =
+                                    Some(ui.ctx().load_texture("brush_tip_cursor_w", ci_w, opts));
+                            }
+                            if let Some(ref mut tex) = self.brush_tip_cursor_tex_inv {
+                                tex.set(ci_b, opts);
+                            } else {
+                                self.brush_tip_cursor_tex_inv =
+                                    Some(ui.ctx().load_texture("brush_tip_cursor_b", ci_b, opts));
+                            }
+                            self.brush_tip_cursor_key = key;
+                        }
+                        let screen_sz = brush_size * self.zoom;
+                        let center = Pos2::new(screen_cx, screen_cy);
+
+                        // Check if we need rotated drawing
+                        let has_rotation = cursor_rotation_deg.abs() > 0.01;
+
+                        if has_rotation {
+                            // Rotated cursor: draw a rotated quad using a mesh
+                            let half_sz = screen_sz / 2.0;
+                            let rad = cursor_rotation_deg.to_radians();
+                            let cos_r = rad.cos();
+                            let sin_r = rad.sin();
+
+                            // Rotated corners: TL, TR, BR, BL
+                            let corners = [
+                                (-half_sz, -half_sz),
+                                (half_sz, -half_sz),
+                                (half_sz, half_sz),
+                                (-half_sz, half_sz),
+                            ];
+                            let rotated: Vec<Pos2> = corners
+                                .iter()
+                                .map(|&(dx, dy)| {
+                                    Pos2::new(
+                                        center.x + dx * cos_r - dy * sin_r,
+                                        center.y + dx * sin_r + dy * cos_r,
+                                    )
+                                })
+                                .collect();
+
+                            let uv_corners = [
+                                Pos2::new(0.0, 0.0),
+                                Pos2::new(1.0, 0.0),
+                                Pos2::new(1.0, 1.0),
+                                Pos2::new(0.0, 1.0),
+                            ];
+
+                            // Draw white pass
+                            if let Some(ref tex_w) = self.brush_tip_cursor_tex {
+                                let tint_w = Color32::from_rgba_unmultiplied(255, 255, 255, 100);
+                                let mut mesh_w = egui::Mesh::with_texture(tex_w.id());
+                                for i in 0..4 {
+                                    mesh_w.vertices.push(egui::epaint::Vertex {
+                                        pos: rotated[i],
+                                        uv: uv_corners[i],
+                                        color: tint_w,
+                                    });
                                 }
-                                if let Some(ref tex_b) = self.brush_tip_cursor_tex_inv {
-                                    let tint_b =
-                                        Color32::from_rgba_unmultiplied(255, 255, 255, 100);
-                                    painter.image(tex_b.id(), cursor_rect, uv, tint_b);
+                                mesh_w.indices = vec![0, 1, 2, 0, 2, 3];
+                                painter.add(egui::Shape::mesh(mesh_w));
+                            }
+                            // Draw black pass
+                            if let Some(ref tex_b) = self.brush_tip_cursor_tex_inv {
+                                let tint_b = Color32::from_rgba_unmultiplied(255, 255, 255, 100);
+                                let mut mesh_b = egui::Mesh::with_texture(tex_b.id());
+                                for i in 0..4 {
+                                    mesh_b.vertices.push(egui::epaint::Vertex {
+                                        pos: rotated[i],
+                                        uv: uv_corners[i],
+                                        color: tint_b,
+                                    });
                                 }
+                                mesh_b.indices = vec![0, 1, 2, 0, 2, 3];
+                                painter.add(egui::Shape::mesh(mesh_b));
                             }
                         } else {
-                            // Fallback: square outline (dual stroke for visibility)
-                            let stamp_rect = Rect::from_center_size(
-                                Pos2::new(screen_cx, screen_cy),
-                                egui::Vec2::splat(screen_radius * 2.0),
-                            );
-                            painter.rect_stroke(
-                                stamp_rect,
-                                0.0,
-                                egui::Stroke::new(1.5, Color32::from_black_alpha(160)),
-                            );
-                            painter.rect_stroke(
-                                stamp_rect,
-                                0.0,
-                                egui::Stroke::new(0.75, Color32::from_white_alpha(200)),
-                            );
+                            // No rotation — use simple axis-aligned image draw
+                            let cursor_rect =
+                                Rect::from_center_size(center, egui::Vec2::splat(screen_sz));
+                            let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+                            // Draw white pass then black pass at low opacity.
+                            // On dark backgrounds the white shows; on light the black shows.
+                            if let Some(ref tex_w) = self.brush_tip_cursor_tex {
+                                let tint_w = Color32::from_rgba_unmultiplied(255, 255, 255, 100);
+                                painter.image(tex_w.id(), cursor_rect, uv, tint_w);
+                            }
+                            if let Some(ref tex_b) = self.brush_tip_cursor_tex_inv {
+                                let tint_b = Color32::from_rgba_unmultiplied(255, 255, 255, 100);
+                                painter.image(tex_b.id(), cursor_rect, uv, tint_b);
+                            }
                         }
                     } else {
-                        // Very small brush — draw crosshair (dual stroke for visibility)
-                        let s = 4.0;
-                        let stroke_o = egui::Stroke::new(1.5, Color32::from_black_alpha(160));
-                        let stroke_i = egui::Stroke::new(0.75, Color32::from_white_alpha(200));
-                        painter.line_segment(
-                            [
-                                Pos2::new(screen_cx - s, screen_cy),
-                                Pos2::new(screen_cx + s, screen_cy),
-                            ],
-                            stroke_o,
+                        // Fallback: square outline (dual stroke for visibility)
+                        let stamp_rect = Rect::from_center_size(
+                            Pos2::new(screen_cx, screen_cy),
+                            egui::Vec2::splat(screen_radius * 2.0),
                         );
-                        painter.line_segment(
-                            [
-                                Pos2::new(screen_cx - s, screen_cy),
-                                Pos2::new(screen_cx + s, screen_cy),
-                            ],
-                            stroke_i,
+                        painter.rect_stroke(
+                            stamp_rect,
+                            0.0,
+                            egui::Stroke::new(1.5, Color32::from_black_alpha(160)),
+                            egui::StrokeKind::Middle,
                         );
-                        painter.line_segment(
-                            [
-                                Pos2::new(screen_cx, screen_cy - s),
-                                Pos2::new(screen_cx, screen_cy + s),
-                            ],
-                            stroke_o,
-                        );
-                        painter.line_segment(
-                            [
-                                Pos2::new(screen_cx, screen_cy - s),
-                                Pos2::new(screen_cx, screen_cy + s),
-                            ],
-                            stroke_i,
+                        painter.rect_stroke(
+                            stamp_rect,
+                            0.0,
+                            egui::Stroke::new(0.75, Color32::from_white_alpha(200)),
+                            egui::StrokeKind::Middle,
                         );
                     }
+                } else {
+                    // Very small brush — draw crosshair (dual stroke for visibility)
+                    let s = 4.0;
+                    let stroke_o = egui::Stroke::new(1.5, Color32::from_black_alpha(160));
+                    let stroke_i = egui::Stroke::new(0.75, Color32::from_white_alpha(200));
+                    painter.line_segment(
+                        [
+                            Pos2::new(screen_cx - s, screen_cy),
+                            Pos2::new(screen_cx + s, screen_cy),
+                        ],
+                        stroke_o,
+                    );
+                    painter.line_segment(
+                        [
+                            Pos2::new(screen_cx - s, screen_cy),
+                            Pos2::new(screen_cx + s, screen_cy),
+                        ],
+                        stroke_i,
+                    );
+                    painter.line_segment(
+                        [
+                            Pos2::new(screen_cx, screen_cy - s),
+                            Pos2::new(screen_cx, screen_cy + s),
+                        ],
+                        stroke_o,
+                    );
+                    painter.line_segment(
+                        [
+                            Pos2::new(screen_cx, screen_cy - s),
+                            Pos2::new(screen_cx, screen_cy + s),
+                        ],
+                        stroke_i,
+                    );
+                }
 
-                    // Draw clone stamp source crosshair
-                    if let Some(src) = clone_source {
-                        let src_sx = image_rect.min.x + src.x * self.zoom;
-                        let src_sy = image_rect.min.y + src.y * self.zoom;
-                        let cross_size = 8.0;
-                        let src_color = Color32::from_rgb(255, 100, 100);
-                        let src_stroke = egui::Stroke::new(1.5, src_color);
-                        painter.line_segment(
-                            [
-                                Pos2::new(src_sx - cross_size, src_sy),
-                                Pos2::new(src_sx + cross_size, src_sy),
-                            ],
-                            src_stroke,
+                // Draw clone stamp source crosshair
+                if let Some(src) = clone_source {
+                    let src_sx = image_rect.min.x + src.x * self.zoom;
+                    let src_sy = image_rect.min.y + src.y * self.zoom;
+                    let cross_size = 8.0;
+                    let src_color = Color32::from_rgb(255, 100, 100);
+                    let src_stroke = egui::Stroke::new(1.5, src_color);
+                    painter.line_segment(
+                        [
+                            Pos2::new(src_sx - cross_size, src_sy),
+                            Pos2::new(src_sx + cross_size, src_sy),
+                        ],
+                        src_stroke,
+                    );
+                    painter.line_segment(
+                        [
+                            Pos2::new(src_sx, src_sy - cross_size),
+                            Pos2::new(src_sx, src_sy + cross_size),
+                        ],
+                        src_stroke,
+                    );
+                    // Also draw source brush circle if painting
+                    if is_painting && screen_radius > 1.5 {
+                        // Compute current offset
+                        let offset_x = src.x - canvas_x;
+                        let offset_y = src.y - canvas_y;
+                        let src_brush_cx = image_rect.min.x + (canvas_x + offset_x) * self.zoom;
+                        let src_brush_cy = image_rect.min.y + (canvas_y + offset_y) * self.zoom;
+                        painter.circle_stroke(
+                            Pos2::new(src_brush_cx, src_brush_cy),
+                            screen_radius,
+                            egui::Stroke::new(
+                                1.0,
+                                Color32::from_rgba_unmultiplied(255, 100, 100, 120),
+                            ),
                         );
-                        painter.line_segment(
-                            [
-                                Pos2::new(src_sx, src_sy - cross_size),
-                                Pos2::new(src_sx, src_sy + cross_size),
-                            ],
-                            src_stroke,
-                        );
-                        // Also draw source brush circle if painting
-                        if is_painting && screen_radius > 1.5 {
-                            // Compute current offset
-                            let offset_x = src.x - canvas_x;
-                            let offset_y = src.y - canvas_y;
-                            let src_brush_cx = image_rect.min.x + (canvas_x + offset_x) * self.zoom;
-                            let src_brush_cy = image_rect.min.y + (canvas_y + offset_y) * self.zoom;
-                            painter.circle_stroke(
-                                Pos2::new(src_brush_cx, src_brush_cy),
-                                screen_radius,
-                                egui::Stroke::new(
-                                    1.0,
-                                    Color32::from_rgba_unmultiplied(255, 100, 100, 120),
-                                ),
-                            );
-                        }
                     }
                 }
+            }
         }
 
         // ====================================================================
@@ -5213,7 +5255,7 @@ impl Canvas {
             painter.rect_filled(text_rect.expand(4.0), 2.0, Color32::from_black_alpha(120));
 
             // Draw text
-            painter.galley(debug_pos, text_galley);
+            painter.galley(debug_pos, text_galley, egui::Color32::TRANSPARENT);
 
             // ====================================================================
             // LOADING OPERATIONS BAR (floating above debug panel)
@@ -5290,7 +5332,7 @@ impl Canvas {
                 painter.rect_filled(bar_rect, 0.0, accent_color);
 
                 // Draw text
-                painter.galley(ops_pos, ops_galley);
+                painter.galley(ops_pos, ops_galley, egui::Color32::TRANSPARENT);
             }
         }
     }
@@ -5306,6 +5348,15 @@ impl Canvas {
     pub fn reset_zoom(&mut self) {
         self.zoom = 1.0;
         self.pan_offset = Vec2::ZERO;
+    }
+
+    pub fn view_state(&self) -> (f32, Vec2) {
+        (self.zoom, self.pan_offset)
+    }
+
+    pub fn set_view_state(&mut self, zoom: f32, pan_offset: Vec2) {
+        self.zoom = zoom.clamp(0.1, 100.0);
+        self.pan_offset = pan_offset;
     }
 
     pub fn apply_zoom(&mut self, zoom_factor: f32) {
@@ -5638,8 +5689,13 @@ impl Canvas {
 
             self.paint_composite_texture(painter, ghost_rect, viewport, state, tint);
             self.paint_preview_texture(painter, ghost_rect, viewport, state, tint, false);
-            clipped_painter.rect_stroke(ghost_rect, 0.0, border_outer);
-            clipped_painter.rect_stroke(ghost_rect.shrink(0.5), 0.0, border_inner);
+            clipped_painter.rect_stroke(ghost_rect, 0.0, border_outer, egui::StrokeKind::Middle);
+            clipped_painter.rect_stroke(
+                ghost_rect.shrink(0.5),
+                0.0,
+                border_inner,
+                egui::StrokeKind::Middle,
+            );
         }
     }
 
@@ -5845,6 +5901,7 @@ impl Canvas {
                 let tex_options = TextureOptions {
                     magnification: TextureFilter::Nearest,
                     minification: TextureFilter::Linear,
+                    ..Default::default()
                 };
                 if let Some(ref mut tex) = state.selection_overlay_texture {
                     tex.set(ImageData::Color(Arc::new(color_image)), tex_options);
@@ -6192,11 +6249,13 @@ impl Canvas {
             }
             let image = ColorImage {
                 size: [cols, rows],
+                source_size: egui::Vec2::new(cols as f32, rows as f32),
                 pixels,
             };
             let tex_options = TextureOptions {
                 magnification: TextureFilter::Nearest,
                 minification: TextureFilter::Nearest,
+                ..Default::default()
             };
             if let Some(ref mut tex) = self.checkerboard_texture {
                 tex.set(ImageData::Color(Arc::new(image)), tex_options);
@@ -6400,6 +6459,7 @@ fn rgba_image_to_color_image(img: &RgbaImage) -> ColorImage {
 
     ColorImage {
         size,
+        source_size: egui::Vec2::new(img.width() as f32, img.height() as f32),
         pixels: color_pixels,
     }
 }

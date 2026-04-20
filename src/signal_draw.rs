@@ -3,7 +3,7 @@
 //! These functions draw directly onto an egui `Painter` and are used by
 //! both `signal_widgets` and ad-hoc UI code throughout the app.
 
-use eframe::egui::{self, Color32, Mesh, Pos2, Rect, Rounding, Stroke};
+use eframe::egui::{self, Color32, CornerRadius, Mesh, Pos2, Rect, Stroke};
 
 use crate::theme::Theme;
 
@@ -124,7 +124,11 @@ pub fn draw_glow_rect(
         return;
     }
     let glow_rect = rect.expand(expansion);
-    painter.rect_filled(glow_rect, Rounding::same(rounding + expansion), color);
+    painter.rect_filled(
+        glow_rect,
+        CornerRadius::same((rounding + expansion) as u8),
+        color,
+    );
 }
 
 // ============================================================================
@@ -156,7 +160,7 @@ pub fn draw_frosted_panel_bg(
     alpha: u8,
 ) {
     let fill = Color32::from_rgba_unmultiplied(bg_color.r(), bg_color.g(), bg_color.b(), alpha);
-    painter.rect_filled(rect, Rounding::same(rounding), fill);
+    painter.rect_filled(rect, CornerRadius::same(rounding as u8), fill);
 }
 
 // ============================================================================
@@ -165,12 +169,13 @@ pub fn draw_frosted_panel_bg(
 
 /// Draw the pill-shaped container background for tab bars.
 ///
-/// `bg2` fill, 1px border, `Rounding::same(10.0)`, 4px padding inside.
+/// `bg2` fill, 1px border, `CornerRadius::same(10)`, 4px padding inside.
 pub fn draw_pill_container(painter: &egui::Painter, rect: Rect, theme: &Theme) {
     painter.rect(
         rect,
-        Rounding::same(10.0),
+        CornerRadius::same(10),
         theme.bg2,
         Stroke::new(1.0, theme.border_color),
+        egui::StrokeKind::Middle,
     );
 }

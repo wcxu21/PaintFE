@@ -264,6 +264,101 @@ pub fn flip_layer_vertical(state: &mut CanvasState, layer_idx: usize) {
     state.mark_dirty(None);
 }
 
+/// Align a layer's non-transparent bounds to a 3x3 canvas anchor.
+///
+/// `anchor` uses `(x, y)` in `{0,1,2}`:
+/// - `x`: left, center, right
+/// - `y`: top, middle, bottom
+pub fn align_layer_to_anchor_from_flat(
+    state: &mut CanvasState,
+    layer_idx: usize,
+    anchor: (u32, u32),
+    original_flat: &RgbaImage,
+) {
+    if layer_idx >= state.layers.len() {
+        return;
+    }
+
+    let Some((min_x, min_y, max_x, max_y)) = nontransparent_bounds(original_flat) else {
+        return;
+    };
+
+    let bounds_w = max_x as i32 - min_x as i32 + 1;
+    let bounds_h = max_y as i32 - min_y as i32 + 1;
+    let canvas_w = state.width as i32;
+    let canvas_h = state.height as i32;
+
+    let target_min_x = match anchor.0 {
+        0 => 0,
+        1 => (canvas_w - bounds_w) / 2,
+        _ => canvas_w - bounds_w,
+    };
+    let target_min_y = match anchor.1 {
+        0 => 0,
+        1 => (canvas_h - bounds_h) / 2,
+        _ => canvas_h - bounds_h,
+    };
+
+    let dx = target_min_x - min_x as i32;
+    let dy = target_min_y - min_y as i32;
+    let aligned = translate_image_clipped(original_flat, dx, dy);
+
+    state.layers[layer_idx].pixels = TiledImage::from_rgba_image(&aligned);
+    state.mark_dirty(None);
+}
+
+/// Find the tight bounds of all non-transparent pixels in `flat`.
+fn nontransparent_bounds(flat: &RgbaImage) -> Option<(u32, u32, u32, u32)> {
+    let (w, h) = flat.dimensions();
+    if w == 0 || h == 0 {
+        return None;
+    }
+
+    let mut min_x = w;
+    let mut min_y = h;
+    let mut max_x = 0u32;
+    let mut max_y = 0u32;
+    let mut found = false;
+
+    for y in 0..h {
+        for x in 0..w {
+            if flat.get_pixel(x, y)[3] == 0 {
+                continue;
+            }
+            found = true;
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+    }
+
+    if found {
+        Some((min_x, min_y, max_x, max_y))
+    } else {
+        None
+    }
+}
+
+/// Translate an RGBA image by `(dx, dy)` with transparent fill and clipping.
+fn translate_image_clipped(src: &RgbaImage, dx: i32, dy: i32) -> RgbaImage {
+    let (w, h) = src.dimensions();
+    let mut dst = RgbaImage::from_pixel(w, h, Rgba([0, 0, 0, 0]));
+
+    for y in 0..h {
+        for x in 0..w {
+            let nx = x as i32 + dx;
+            let ny = y as i32 + dy;
+            if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+                continue;
+            }
+            dst.put_pixel(nx as u32, ny as u32, *src.get_pixel(x, y));
+        }
+    }
+
+    dst
+}
+
 /// Apply an affine transform to a single layer.
 /// `rotation_z`: 2D rotation in degrees, `rotation_x`/`rotation_y`: perspective tilt,
 /// `scale`: scale factor (1.0 = 100%), `offset`: (dx, dy) pixel offset.

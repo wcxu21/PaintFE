@@ -8,7 +8,7 @@ use crate::components::history::{
 };
 use crate::components::*;
 use crate::io::FileHandler;
-use crate::ops::clipboard::PasteOverlay;
+use crate::ops::clipboard::{ClipboardImageSource, PasteOverlay};
 use crate::ops::dialogs::{ActiveDialog, DialogResult};
 use crate::ops::scripting::{ScriptMessage, apply_canvas_ops};
 use crate::project::Project;
@@ -16,6 +16,8 @@ use crate::signal_widgets;
 use crate::theme::{Theme, WindowVisibility};
 use eframe::egui;
 use image::RgbaImage;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::mpsc;
 
@@ -63,6 +65,14 @@ enum CustomScriptAction {
     Run(usize),
     Edit(usize),
     Delete(usize),
+}
+
+struct PendingPasteRequest {
+    image: RgbaImage,
+    target_project_id: uuid::Uuid,
+    cursor_canvas: Option<(f32, f32)>,
+    source_center: Option<egui::Pos2>,
+    use_source_center: bool,
 }
 
 /// Result delivered from a background IO thread.
@@ -129,6 +139,7 @@ pub struct PaintFEApp {
     tools_panel: tools::ToolsPanel,
     layers_panel: layers::LayersPanel,
     colors_panel: colors::ColorsPanel,
+    palette_panel: palette::PalettePanel,
     history_panel: history::HistoryPanel,
 
     // Dialogs
@@ -149,6 +160,7 @@ pub struct PaintFEApp {
 
     // Paste overlay (floating pasted image being manipulated)
     paste_overlay: Option<PasteOverlay>,
+    pending_paste_request: Option<PendingPasteRequest>,
 
     // Move-selection drag state (tracks screen-space mouse for translating the mask)
     move_sel_dragging: bool,
@@ -159,6 +171,7 @@ pub struct PaintFEApp {
     layers_panel_right_offset: Option<(f32, f32)>, // (offset_from_right, y)
     history_panel_right_offset: Option<(f32, f32)>, // (offset_from_right, offset_from_bottom)
     colors_panel_left_offset: Option<(f32, f32)>,  // (x, offset_from_bottom)
+    palette_panel_pos: Option<(f32, f32)>,         // (x, y)
     tools_panel_pos: Option<(f32, f32)>,           // (x, y) absolute
     last_screen_size: (f32, f32),
 
@@ -234,6 +247,23 @@ pub struct PaintFEApp {
     /// True when startup files have been queued and the initial blank project
     /// should be auto-closed once the first real file finishes loading.
     close_initial_blank: bool,
+
+    prev_ctrl_c_down: bool,
+    prev_ctrl_x_down: bool,
+    prev_ctrl_v_down: bool,
+    prev_enter_down: bool,
+    prev_escape_down: bool,
+    prev_vk_c_press_count: u64,
+    prev_vk_x_press_count: u64,
+    prev_vk_v_press_count: u64,
+    prev_vk_enter_press_count: u64,
+    prev_vk_escape_press_count: u64,
+    recent_color_project_id: Option<uuid::Uuid>,
+    recent_color_undo_count: usize,
+    palette_reposition_settle_frames: u8,
+    palette_startup_target_pos: Option<(f32, f32)>,
+    last_tool_settings_fingerprint: u64,
+    last_window_state_fingerprint: u64,
 }
 
 /// Discover a system CJK font at runtime (for Japanese, Korean, Chinese support).
@@ -333,13 +363,15 @@ impl PaintFEApp {
             // DM Sans — primary proportional UI font (~47 KB, Latin + Latin Ext)
             fonts.font_data.insert(
                 "dm_sans".to_owned(),
-                egui::FontData::from_static(include_bytes!("../assets/fonts/DMSans-Regular.ttf")),
+                egui::FontData::from_static(include_bytes!("../assets/fonts/DMSans-Regular.ttf"))
+                    .into(),
             );
 
             // Noto Sans — fallback for Cyrillic, Greek, Thai (~556 KB)
             fonts.font_data.insert(
                 "noto_sans".to_owned(),
-                egui::FontData::from_static(include_bytes!("../assets/fonts/NotoSans-Regular.ttf")),
+                egui::FontData::from_static(include_bytes!("../assets/fonts/NotoSans-Regular.ttf"))
+                    .into(),
             );
 
             // JetBrains Mono — monospace for badges, tags, script editor (~110 KB)
@@ -347,7 +379,8 @@ impl PaintFEApp {
                 "jetbrains_mono".to_owned(),
                 egui::FontData::from_static(include_bytes!(
                     "../assets/fonts/JetBrainsMono-Regular.ttf"
-                )),
+                ))
+                .into(),
             );
 
             // Proportional family: DM Sans → Noto Sans → egui defaults
@@ -369,7 +402,7 @@ impl PaintFEApp {
             if let Some((name, data)) = discover_system_cjk_font() {
                 fonts
                     .font_data
-                    .insert(name.clone(), egui::FontData::from_owned(data));
+                    .insert(name.clone(), egui::FontData::from_owned(data).into());
                 // Insert CJK after DM Sans + Noto Sans but before egui defaults
                 let proportional = fonts
                     .families
@@ -434,7 +467,7 @@ impl PaintFEApp {
         let canvas = Canvas::new(&settings.preferred_gpu);
         let create_canvas_on_startup = settings.create_canvas_on_startup;
 
-        Self {
+        let mut app = Self {
             projects: initial_projects,
             active_project_index: 0,
             untitled_counter: initial_counter,
@@ -443,6 +476,7 @@ impl PaintFEApp {
             tools_panel: tools::ToolsPanel::default(),
             layers_panel: layers::LayersPanel::default(),
             colors_panel: colors::ColorsPanel::default(),
+            palette_panel: palette::PalettePanel::default(),
             history_panel: history::HistoryPanel::default(),
             new_file_dialog: NewFileDialog::default(),
             save_file_dialog: SaveFileDialog::default(),
@@ -453,11 +487,13 @@ impl PaintFEApp {
             window_visibility: WindowVisibility::new(),
             active_dialog: ActiveDialog::default(),
             paste_overlay: None,
+            pending_paste_request: None,
             move_sel_dragging: false,
             move_sel_last_canvas: None,
             layers_panel_right_offset: None,
             history_panel_right_offset: None,
             colors_panel_left_offset: None,
+            palette_panel_pos: None,
             tools_panel_pos: None,
             last_screen_size: (0.0, 0.0),
             is_move_pixels_active: false,
@@ -495,7 +531,69 @@ impl PaintFEApp {
             ipc_receiver,
             close_initial_blank: !startup_files.is_empty() && create_canvas_on_startup,
             pending_startup_files: startup_files,
+            prev_ctrl_c_down: false,
+            prev_ctrl_x_down: false,
+            prev_ctrl_v_down: false,
+            prev_enter_down: false,
+            prev_escape_down: false,
+            prev_vk_c_press_count: 0,
+            prev_vk_x_press_count: 0,
+            prev_vk_v_press_count: 0,
+            prev_vk_enter_press_count: 0,
+            prev_vk_escape_press_count: 0,
+            recent_color_project_id: None,
+            recent_color_undo_count: 0,
+            palette_reposition_settle_frames: 8,
+            palette_startup_target_pos: None,
+            last_tool_settings_fingerprint: 0,
+            last_window_state_fingerprint: 0,
+        };
+
+        app.window_visibility.tools = app.settings.persist_tools_visible;
+        app.window_visibility.layers = app.settings.persist_layers_visible;
+        app.window_visibility.history = app.settings.persist_history_visible;
+        app.window_visibility.colors = app.settings.persist_colors_visible;
+        app.window_visibility.palette = app.settings.persist_palette_visible;
+        app.window_visibility.script_editor = app.settings.persist_script_editor_visible;
+        app.tools_panel_pos = app.settings.persist_tools_panel_pos;
+        app.layers_panel_right_offset = app.settings.persist_layers_panel_right_offset;
+        app.history_panel_right_offset = app.settings.persist_history_panel_right_offset;
+        app.colors_panel_left_offset = app.settings.persist_colors_panel_left_offset;
+        app.palette_panel_pos = app.settings.persist_palette_panel_pos.or_else(|| {
+            app.settings
+                .persist_palette_panel_right_offset
+                .map(|(right, bottom)| {
+                    (
+                        app.settings.persist_window_width - right,
+                        app.settings.persist_window_height - bottom,
+                    )
+                })
+                .or_else(|| {
+                    app.settings
+                        .persist_palette_panel_left_offset
+                        .map(|(x, bottom)| (x, app.settings.persist_window_height - bottom))
+                })
+        });
+        app.palette_startup_target_pos = app.palette_panel_pos;
+        app.script_right_offset = app.settings.persist_script_right_offset;
+        app.colors_panel
+            .set_expanded(app.settings.persist_colors_panel_expanded);
+        app.new_file_dialog
+            .set_lock_aspect_ratio(app.settings.persist_new_file_lock_aspect);
+        app.palette_panel
+            .load_recent_colors_from_serialized(&app.settings.persist_palette_recent_colors);
+
+        app.apply_persisted_tool_settings();
+        app.last_tool_settings_fingerprint = app.compute_tool_settings_fingerprint();
+        if let Some((project_id, undo_count)) = app
+            .active_project()
+            .map(|project| (project.id, project.history.undo_count()))
+        {
+            app.recent_color_project_id = Some(project_id);
+            app.recent_color_undo_count = undo_count;
         }
+        app.last_window_state_fingerprint = app.compute_window_state_fingerprint();
+        app
     }
 
     /// Get a reference to the active project
@@ -508,13 +606,31 @@ impl PaintFEApp {
         self.projects.get_mut(self.active_project_index)
     }
 
+    fn persist_active_project_view(&mut self) {
+        let (zoom, pan_offset) = self.canvas.view_state();
+        if let Some(project) = self.projects.get_mut(self.active_project_index) {
+            project.view_zoom = zoom;
+            project.view_pan_offset = pan_offset;
+        }
+    }
+
+    fn restore_active_project_view(&mut self) {
+        if let Some(project) = self.projects.get(self.active_project_index) {
+            self.canvas
+                .set_view_state(project.view_zoom, project.view_pan_offset);
+        } else {
+            self.canvas.reset_zoom();
+        }
+    }
+
     /// Create a new untitled project and switch to it
     fn new_project(&mut self, width: u32, height: u32) {
+        self.persist_active_project_view();
         self.untitled_counter += 1;
         let project = Project::new_untitled(self.untitled_counter, width, height);
         self.projects.push(project);
         self.active_project_index = self.projects.len() - 1;
-        self.canvas.reset_zoom();
+        self.restore_active_project_view();
     }
 
     /// If the initial blank project should be auto-closed (because we opened a
@@ -535,6 +651,7 @@ impl PaintFEApp {
                 self.projects.remove(0);
                 // The newly loaded project was pushed to the end; adjust index.
                 self.active_project_index = self.projects.len() - 1;
+                self.restore_active_project_view();
             }
         }
     }
@@ -557,6 +674,7 @@ impl PaintFEApp {
             return;
         }
 
+        self.persist_active_project_view();
         self.projects.remove(index);
 
         // Adjust active index — allow empty state
@@ -568,7 +686,7 @@ impl PaintFEApp {
             self.active_project_index -= 1;
         }
 
-        self.canvas.reset_zoom();
+        self.restore_active_project_view();
     }
 
     /// Close a project by index unconditionally (no dirty check).
@@ -580,6 +698,7 @@ impl PaintFEApp {
         if index == self.active_project_index && self.paste_overlay.is_some() {
             self.commit_paste_overlay();
         }
+        self.persist_active_project_view();
         self.projects.remove(index);
         if self.projects.is_empty() {
             self.active_project_index = 0;
@@ -588,12 +707,13 @@ impl PaintFEApp {
         } else if index < self.active_project_index {
             self.active_project_index -= 1;
         }
-        self.canvas.reset_zoom();
+        self.restore_active_project_view();
     }
 
     /// Switch to a different project tab
     fn switch_to_project(&mut self, index: usize) {
         if index < self.projects.len() && index != self.active_project_index {
+            self.persist_active_project_view();
             // Commit any active paste overlay before switching tabs.
             // The overlay belongs to the current project's canvas — switching
             // without committing would leave it orphaned.
@@ -615,12 +735,484 @@ impl PaintFEApp {
             self.canvas.gpu_clear_layers();
 
             self.active_project_index = index;
-            // Don't reset zoom - preserve per-project view state if desired
+            self.restore_active_project_view();
         }
+    }
+
+    fn queue_paste_from_clipboard(&mut self, cursor_canvas: Option<(f32, f32)>) {
+        if self.paste_overlay.is_some() {
+            self.commit_paste_overlay();
+        }
+
+        let Some(project) = self.active_project() else {
+            return;
+        };
+
+        let Some(payload) = crate::ops::clipboard::get_clipboard_image_for_paste() else {
+            return;
+        };
+
+        let request = PendingPasteRequest {
+            image: payload.image,
+            target_project_id: project.id,
+            cursor_canvas,
+            source_center: payload.origin_center,
+            use_source_center: payload.source == ClipboardImageSource::Internal
+                && payload.origin_center.is_some(),
+        };
+
+        if request.image.width() > project.canvas_state.width
+            || request.image.height() > project.canvas_state.height
+        {
+            self.pending_paste_request = Some(request);
+        } else {
+            self.apply_pending_paste_request(request, false);
+        }
+    }
+
+    fn apply_pending_paste_request(&mut self, request: PendingPasteRequest, resize_canvas: bool) {
+        let Some(target_idx) = self
+            .projects
+            .iter()
+            .position(|p| p.id == request.target_project_id)
+        else {
+            return;
+        };
+
+        self.switch_to_project(target_idx);
+
+        if resize_canvas {
+            let target_w = request.image.width();
+            let target_h = request.image.height();
+            self.do_snapshot_op("Resize Canvas to Fit Paste", |s| {
+                let new_w = s.width.max(target_w);
+                let new_h = s.height.max(target_h);
+                crate::ops::transform::resize_canvas(
+                    s,
+                    new_w,
+                    new_h,
+                    (0, 0),
+                    image::Rgba([0, 0, 0, 0]),
+                );
+            });
+        }
+
+        if let Some(project) = self.active_project_mut() {
+            let (cw, ch) = (project.canvas_state.width, project.canvas_state.height);
+            let overlay = if request.use_source_center {
+                let center = request
+                    .source_center
+                    .unwrap_or(egui::Pos2::new(cw as f32 / 2.0, ch as f32 / 2.0));
+                PasteOverlay::from_image_at(request.image, cw, ch, center)
+            } else if let Some((cx, cy)) = request.cursor_canvas {
+                PasteOverlay::from_image_at(request.image, cw, ch, egui::Pos2::new(cx, cy))
+            } else {
+                PasteOverlay::from_image(request.image, cw, ch)
+            };
+
+            project.canvas_state.clear_selection();
+            self.paste_overlay = Some(overlay);
+            self.canvas.open_paste_menu = true;
+        }
+    }
+
+    fn tool_to_key(tool: tools::Tool) -> &'static str {
+        match tool {
+            tools::Tool::Brush => "brush",
+            tools::Tool::Eraser => "eraser",
+            tools::Tool::Pencil => "pencil",
+            tools::Tool::Line => "line",
+            tools::Tool::RectangleSelect => "rect_select",
+            tools::Tool::EllipseSelect => "ellipse_select",
+            tools::Tool::MovePixels => "move_pixels",
+            tools::Tool::MoveSelection => "move_selection",
+            tools::Tool::MagicWand => "magic_wand",
+            tools::Tool::Fill => "fill",
+            tools::Tool::ColorPicker => "color_picker",
+            tools::Tool::Gradient => "gradient",
+            tools::Tool::ContentAwareBrush => "content_aware_brush",
+            tools::Tool::Liquify => "liquify",
+            tools::Tool::MeshWarp => "mesh_warp",
+            tools::Tool::ColorRemover => "color_remover",
+            tools::Tool::Smudge => "smudge",
+            tools::Tool::CloneStamp => "clone_stamp",
+            tools::Tool::Text => "text",
+            tools::Tool::PerspectiveCrop => "perspective_crop",
+            tools::Tool::Lasso => "lasso",
+            tools::Tool::Zoom => "zoom",
+            tools::Tool::Pan => "pan",
+            tools::Tool::Shapes => "shapes",
+        }
+    }
+
+    fn key_to_tool(key: &str) -> tools::Tool {
+        match key {
+            "eraser" => tools::Tool::Eraser,
+            "pencil" => tools::Tool::Pencil,
+            "line" => tools::Tool::Line,
+            "rect_select" => tools::Tool::RectangleSelect,
+            "ellipse_select" => tools::Tool::EllipseSelect,
+            "move_pixels" => tools::Tool::MovePixels,
+            "move_selection" => tools::Tool::MoveSelection,
+            "magic_wand" => tools::Tool::MagicWand,
+            "fill" => tools::Tool::Fill,
+            "color_picker" => tools::Tool::ColorPicker,
+            "gradient" => tools::Tool::Gradient,
+            "content_aware_brush" => tools::Tool::ContentAwareBrush,
+            "liquify" => tools::Tool::Liquify,
+            "mesh_warp" => tools::Tool::MeshWarp,
+            "color_remover" => tools::Tool::ColorRemover,
+            "smudge" => tools::Tool::Smudge,
+            "clone_stamp" => tools::Tool::CloneStamp,
+            "text" => tools::Tool::Text,
+            "perspective_crop" => tools::Tool::PerspectiveCrop,
+            "lasso" => tools::Tool::Lasso,
+            "zoom" => tools::Tool::Zoom,
+            "pan" => tools::Tool::Pan,
+            "shapes" => tools::Tool::Shapes,
+            _ => tools::Tool::Brush,
+        }
+    }
+
+    fn apply_persisted_tool_settings(&mut self) {
+        self.tools_panel.active_tool = Self::key_to_tool(&self.settings.persisted_active_tool);
+
+        self.tools_panel.properties.size = self.settings.persisted_brush_size.clamp(1.0, 1024.0);
+        self.tools_panel.properties.hardness =
+            self.settings.persisted_brush_hardness.clamp(0.0, 1.0);
+        self.tools_panel.properties.flow = self.settings.persisted_brush_flow.clamp(0.0, 1.0);
+        self.tools_panel.properties.spacing =
+            self.settings.persisted_brush_spacing.clamp(0.01, 2.0);
+        self.tools_panel.properties.scatter = self.settings.persisted_brush_scatter.clamp(0.0, 1.0);
+        self.tools_panel.properties.hue_jitter =
+            self.settings.persisted_brush_hue_jitter.clamp(0.0, 1.0);
+        self.tools_panel.properties.brightness_jitter = self
+            .settings
+            .persisted_brush_brightness_jitter
+            .clamp(0.0, 1.0);
+        self.tools_panel.properties.anti_aliased = self.settings.persisted_brush_anti_aliased;
+        self.tools_panel.properties.pressure_size = self.settings.persisted_pressure_size;
+        self.tools_panel.properties.pressure_opacity = self.settings.persisted_pressure_opacity;
+        self.tools_panel.properties.pressure_min_size =
+            self.settings.persisted_pressure_min_size.clamp(0.0, 1.0);
+        self.tools_panel.properties.pressure_min_opacity =
+            self.settings.persisted_pressure_min_opacity.clamp(0.0, 1.0);
+
+        self.tools_panel.properties.brush_mode = match self.settings.persisted_brush_mode.as_str() {
+            "dodge" => tools::BrushMode::Dodge,
+            "burn" => tools::BrushMode::Burn,
+            "sponge" => tools::BrushMode::Sponge,
+            _ => tools::BrushMode::Normal,
+        };
+
+        self.tools_panel.properties.brush_tip = if self.settings.persisted_brush_tip.is_empty() {
+            tools::BrushTip::Circle
+        } else {
+            tools::BrushTip::Image(self.settings.persisted_brush_tip.clone())
+        };
+
+        self.tools_panel.fill_state.tolerance =
+            self.settings.persisted_fill_tolerance.clamp(0.0, 100.0);
+        self.tools_panel.fill_state.anti_aliased = self.settings.persisted_fill_anti_aliased;
+        self.tools_panel.fill_state.global_fill = self.settings.persisted_fill_global;
+
+        self.tools_panel.magic_wand_state.tolerance =
+            self.settings.persisted_wand_tolerance.clamp(0.0, 100.0);
+        self.tools_panel.magic_wand_state.anti_aliased = self.settings.persisted_wand_anti_aliased;
+        self.tools_panel.magic_wand_state.global_select = self.settings.persisted_wand_global;
+
+        self.tools_panel.color_remover_state.tolerance = self
+            .settings
+            .persisted_color_remover_tolerance
+            .clamp(0.0, 100.0);
+        self.tools_panel.color_remover_state.smoothness = self
+            .settings
+            .persisted_color_remover_smoothness
+            .clamp(1, 64);
+        self.tools_panel.color_remover_state.contiguous =
+            self.settings.persisted_color_remover_contiguous;
+
+        self.tools_panel.smudge_state.strength =
+            self.settings.persisted_smudge_strength.clamp(0.0, 1.0);
+
+        self.tools_panel.shapes_state.fill_mode =
+            match self.settings.persisted_shapes_fill_mode.as_str() {
+                "outline" => crate::ops::shapes::ShapeFillMode::Outline,
+                "both" => crate::ops::shapes::ShapeFillMode::Both,
+                _ => crate::ops::shapes::ShapeFillMode::Filled,
+            };
+        self.tools_panel.shapes_state.anti_alias = self.settings.persisted_shapes_anti_alias;
+        self.tools_panel.shapes_state.corner_radius = self
+            .settings
+            .persisted_shapes_corner_radius
+            .clamp(0.0, 1000.0);
+    }
+
+    fn compute_tool_settings_fingerprint(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+
+        Self::tool_to_key(self.tools_panel.active_tool).hash(&mut hasher);
+        self.tools_panel.properties.size.to_bits().hash(&mut hasher);
+        self.tools_panel
+            .properties
+            .hardness
+            .to_bits()
+            .hash(&mut hasher);
+        self.tools_panel.properties.flow.to_bits().hash(&mut hasher);
+        self.tools_panel
+            .properties
+            .spacing
+            .to_bits()
+            .hash(&mut hasher);
+        self.tools_panel
+            .properties
+            .scatter
+            .to_bits()
+            .hash(&mut hasher);
+        self.tools_panel
+            .properties
+            .hue_jitter
+            .to_bits()
+            .hash(&mut hasher);
+        self.tools_panel
+            .properties
+            .brightness_jitter
+            .to_bits()
+            .hash(&mut hasher);
+        self.tools_panel.properties.anti_aliased.hash(&mut hasher);
+        self.tools_panel.properties.pressure_size.hash(&mut hasher);
+        self.tools_panel
+            .properties
+            .pressure_opacity
+            .hash(&mut hasher);
+        self.tools_panel
+            .properties
+            .pressure_min_size
+            .to_bits()
+            .hash(&mut hasher);
+        self.tools_panel
+            .properties
+            .pressure_min_opacity
+            .to_bits()
+            .hash(&mut hasher);
+        match self.tools_panel.properties.brush_mode {
+            tools::BrushMode::Normal => 0u8,
+            tools::BrushMode::Dodge => 1u8,
+            tools::BrushMode::Burn => 2u8,
+            tools::BrushMode::Sponge => 3u8,
+        }
+        .hash(&mut hasher);
+        match &self.tools_panel.properties.brush_tip {
+            tools::BrushTip::Circle => "".hash(&mut hasher),
+            tools::BrushTip::Image(name) => name.hash(&mut hasher),
+        }
+
+        self.tools_panel
+            .fill_state
+            .tolerance
+            .to_bits()
+            .hash(&mut hasher);
+        self.tools_panel.fill_state.anti_aliased.hash(&mut hasher);
+        self.tools_panel.fill_state.global_fill.hash(&mut hasher);
+
+        self.tools_panel
+            .magic_wand_state
+            .tolerance
+            .to_bits()
+            .hash(&mut hasher);
+        self.tools_panel
+            .magic_wand_state
+            .anti_aliased
+            .hash(&mut hasher);
+        self.tools_panel
+            .magic_wand_state
+            .global_select
+            .hash(&mut hasher);
+
+        self.tools_panel
+            .color_remover_state
+            .tolerance
+            .to_bits()
+            .hash(&mut hasher);
+        self.tools_panel
+            .color_remover_state
+            .smoothness
+            .hash(&mut hasher);
+        self.tools_panel
+            .color_remover_state
+            .contiguous
+            .hash(&mut hasher);
+
+        self.tools_panel
+            .smudge_state
+            .strength
+            .to_bits()
+            .hash(&mut hasher);
+        match self.tools_panel.shapes_state.fill_mode {
+            crate::ops::shapes::ShapeFillMode::Outline => 0u8,
+            crate::ops::shapes::ShapeFillMode::Filled => 1u8,
+            crate::ops::shapes::ShapeFillMode::Both => 2u8,
+        }
+        .hash(&mut hasher);
+        self.tools_panel.shapes_state.anti_alias.hash(&mut hasher);
+        self.tools_panel
+            .shapes_state
+            .corner_radius
+            .to_bits()
+            .hash(&mut hasher);
+
+        hasher.finish()
+    }
+
+    fn compute_window_state_fingerprint(&self) -> u64 {
+        fn hash_opt_pair(v: Option<(f32, f32)>, hasher: &mut DefaultHasher) {
+            match v {
+                Some((x, y)) => {
+                    true.hash(hasher);
+                    x.to_bits().hash(hasher);
+                    y.to_bits().hash(hasher);
+                }
+                None => false.hash(hasher),
+            }
+        }
+
+        let mut hasher = DefaultHasher::new();
+        self.window_visibility.tools.hash(&mut hasher);
+        self.window_visibility.layers.hash(&mut hasher);
+        self.window_visibility.history.hash(&mut hasher);
+        self.window_visibility.colors.hash(&mut hasher);
+        self.window_visibility.palette.hash(&mut hasher);
+        self.window_visibility.script_editor.hash(&mut hasher);
+        self.settings
+            .persist_window_width
+            .to_bits()
+            .hash(&mut hasher);
+        self.settings
+            .persist_window_height
+            .to_bits()
+            .hash(&mut hasher);
+        hash_opt_pair(self.settings.persist_window_pos, &mut hasher);
+        self.palette_panel
+            .serialize_recent_colors()
+            .hash(&mut hasher);
+        hash_opt_pair(self.tools_panel_pos, &mut hasher);
+        hash_opt_pair(self.layers_panel_right_offset, &mut hasher);
+        hash_opt_pair(self.history_panel_right_offset, &mut hasher);
+        hash_opt_pair(self.colors_panel_left_offset, &mut hasher);
+        hash_opt_pair(self.palette_panel_pos, &mut hasher);
+        hash_opt_pair(self.script_right_offset, &mut hasher);
+        self.colors_panel.is_expanded().hash(&mut hasher);
+        self.new_file_dialog.lock_aspect_ratio().hash(&mut hasher);
+
+        let resize_lock = match &self.active_dialog {
+            ActiveDialog::ResizeImage(d) => d.lock_aspect,
+            ActiveDialog::ResizeCanvas(d) => d.lock_aspect,
+            _ => self.settings.persist_resize_lock_aspect,
+        };
+        resize_lock.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn persist_window_state_if_changed(&mut self) {
+        let resize_lock = match &self.active_dialog {
+            ActiveDialog::ResizeImage(d) => d.lock_aspect,
+            ActiveDialog::ResizeCanvas(d) => d.lock_aspect,
+            _ => self.settings.persist_resize_lock_aspect,
+        };
+
+        self.settings.persist_tools_visible = self.window_visibility.tools;
+        self.settings.persist_layers_visible = self.window_visibility.layers;
+        self.settings.persist_history_visible = self.window_visibility.history;
+        self.settings.persist_colors_visible = self.window_visibility.colors;
+        self.settings.persist_palette_visible = self.window_visibility.palette;
+        self.settings.persist_script_editor_visible = self.window_visibility.script_editor;
+        self.settings.persist_tools_panel_pos = self.tools_panel_pos;
+        self.settings.persist_layers_panel_right_offset = self.layers_panel_right_offset;
+        self.settings.persist_history_panel_right_offset = self.history_panel_right_offset;
+        self.settings.persist_colors_panel_left_offset = self.colors_panel_left_offset;
+        self.settings.persist_palette_panel_pos = self.palette_panel_pos;
+        self.settings.persist_palette_recent_colors = self.palette_panel.serialize_recent_colors();
+        self.settings.persist_script_right_offset = self.script_right_offset;
+        self.settings.persist_colors_panel_expanded = self.colors_panel.is_expanded();
+        self.settings.persist_new_file_lock_aspect = self.new_file_dialog.lock_aspect_ratio();
+        self.settings.persist_resize_lock_aspect = resize_lock;
+
+        let fp = self.compute_window_state_fingerprint();
+        if fp == self.last_window_state_fingerprint {
+            return;
+        }
+        self.last_window_state_fingerprint = fp;
+        self.settings.save();
+    }
+
+    fn persist_tool_settings_if_changed(&mut self) {
+        let fp = self.compute_tool_settings_fingerprint();
+        if fp == self.last_tool_settings_fingerprint {
+            return;
+        }
+        self.last_tool_settings_fingerprint = fp;
+
+        self.settings.persisted_active_tool =
+            Self::tool_to_key(self.tools_panel.active_tool).to_string();
+        self.settings.persisted_brush_size = self.tools_panel.properties.size;
+        self.settings.persisted_brush_hardness = self.tools_panel.properties.hardness;
+        self.settings.persisted_brush_flow = self.tools_panel.properties.flow;
+        self.settings.persisted_brush_spacing = self.tools_panel.properties.spacing;
+        self.settings.persisted_brush_scatter = self.tools_panel.properties.scatter;
+        self.settings.persisted_brush_hue_jitter = self.tools_panel.properties.hue_jitter;
+        self.settings.persisted_brush_brightness_jitter =
+            self.tools_panel.properties.brightness_jitter;
+        self.settings.persisted_brush_anti_aliased = self.tools_panel.properties.anti_aliased;
+        self.settings.persisted_pressure_size = self.tools_panel.properties.pressure_size;
+        self.settings.persisted_pressure_opacity = self.tools_panel.properties.pressure_opacity;
+        self.settings.persisted_pressure_min_size = self.tools_panel.properties.pressure_min_size;
+        self.settings.persisted_pressure_min_opacity =
+            self.tools_panel.properties.pressure_min_opacity;
+        self.settings.persisted_brush_mode = match self.tools_panel.properties.brush_mode {
+            tools::BrushMode::Normal => "normal",
+            tools::BrushMode::Dodge => "dodge",
+            tools::BrushMode::Burn => "burn",
+            tools::BrushMode::Sponge => "sponge",
+        }
+        .to_string();
+        self.settings.persisted_brush_tip = match &self.tools_panel.properties.brush_tip {
+            tools::BrushTip::Circle => String::new(),
+            tools::BrushTip::Image(name) => name.clone(),
+        };
+
+        self.settings.persisted_fill_tolerance = self.tools_panel.fill_state.tolerance;
+        self.settings.persisted_fill_anti_aliased = self.tools_panel.fill_state.anti_aliased;
+        self.settings.persisted_fill_global = self.tools_panel.fill_state.global_fill;
+
+        self.settings.persisted_wand_tolerance = self.tools_panel.magic_wand_state.tolerance;
+        self.settings.persisted_wand_anti_aliased = self.tools_panel.magic_wand_state.anti_aliased;
+        self.settings.persisted_wand_global = self.tools_panel.magic_wand_state.global_select;
+
+        self.settings.persisted_color_remover_tolerance =
+            self.tools_panel.color_remover_state.tolerance;
+        self.settings.persisted_color_remover_smoothness =
+            self.tools_panel.color_remover_state.smoothness;
+        self.settings.persisted_color_remover_contiguous =
+            self.tools_panel.color_remover_state.contiguous;
+        self.settings.persisted_smudge_strength = self.tools_panel.smudge_state.strength;
+        self.settings.persisted_shapes_fill_mode = match self.tools_panel.shapes_state.fill_mode {
+            crate::ops::shapes::ShapeFillMode::Outline => "outline",
+            crate::ops::shapes::ShapeFillMode::Filled => "filled",
+            crate::ops::shapes::ShapeFillMode::Both => "both",
+        }
+        .to_string();
+        self.settings.persisted_shapes_anti_alias = self.tools_panel.shapes_state.anti_alias;
+        self.settings.persisted_shapes_corner_radius = self.tools_panel.shapes_state.corner_radius;
+
+        self.settings.save();
     }
 }
 
 impl eframe::App for PaintFEApp {
+    fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // App uses fn update() directly
+    }
+
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         let c = self.theme.canvas_bg_bottom;
         [
@@ -669,10 +1261,9 @@ impl eframe::App for PaintFEApp {
         };
         ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(system_theme));
 
-        // --- Maximize window on first frame (more reliable than viewport builder hint) ---
+        // --- First frame startup file processing ---
         if self.first_frame {
             self.first_frame = false;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
 
             // Open files passed as positional arguments (e.g. right-click → "Open with PaintFE")
             let files = std::mem::take(&mut self.pending_startup_files);
@@ -993,8 +1584,9 @@ impl eframe::App for PaintFEApp {
                     };
                     let project = Project::from_file(path, canvas_state, file_handler);
                     self.projects.push(project);
+                    self.persist_active_project_view();
                     self.active_project_index = self.projects.len() - 1;
-                    self.canvas.reset_zoom();
+                    self.restore_active_project_view();
                     // Clear GPU layer cache for the new project
                     self.canvas.gpu_clear_layers();
                     self.maybe_close_initial_blank();
@@ -1059,8 +1651,9 @@ impl eframe::App for PaintFEApp {
                     project.was_animated = true;
                     project.animation_fps = fps;
                     self.projects.push(project);
+                    self.persist_active_project_view();
                     self.active_project_index = self.projects.len() - 1;
-                    self.canvas.reset_zoom();
+                    self.restore_active_project_view();
                     self.canvas.gpu_clear_layers();
                     self.maybe_close_initial_blank();
                 }
@@ -1108,8 +1701,9 @@ impl eframe::App for PaintFEApp {
                     };
                     let project = Project::from_file(path, canvas_state, file_handler);
                     self.projects.push(project);
+                    self.persist_active_project_view();
                     self.active_project_index = self.projects.len() - 1;
-                    self.canvas.reset_zoom();
+                    self.restore_active_project_view();
                     self.canvas.gpu_clear_layers();
                     self.maybe_close_initial_blank();
                 }
@@ -1134,14 +1728,43 @@ impl eframe::App for PaintFEApp {
         // Determine if a modal dialog is open — block all shortcuts and canvas interaction.
         let modal_open = self.save_file_dialog.open
             || self.new_file_dialog.open
-            || !matches!(self.active_dialog, ActiveDialog::None);
+            || !matches!(self.active_dialog, ActiveDialog::None)
+            || self.pending_paste_request.is_some();
+
+        let global_probe = ctx.input(|i| {
+            let cmd = i.modifiers.ctrl || i.modifiers.command;
+            let c_down = i.key_down(egui::Key::C);
+            let x_down = i.key_down(egui::Key::X);
+            let v_down = i.key_down(egui::Key::V);
+            let enter_down = i.key_down(egui::Key::Enter);
+            let escape_down = i.key_down(egui::Key::Escape);
+            let events_len = i.events.len();
+            let copy_evt = i.events.iter().any(|e| matches!(e, egui::Event::Copy));
+            let cut_evt = i.events.iter().any(|e| matches!(e, egui::Event::Cut));
+            let paste_evt = i.events.iter().any(|e| matches!(e, egui::Event::Paste(_)));
+            (
+                cmd,
+                c_down,
+                x_down,
+                v_down,
+                enter_down,
+                escape_down,
+                events_len,
+                copy_evt,
+                cut_evt,
+                paste_evt,
+                i.pointer.hover_pos().is_some(),
+            )
+        });
+        let vk_probe = crate::windows_key_probe::snapshot();
 
         // Pre-claim canvas focus when the text tool is actively editing text.
         // This must happen BEFORE any context-bar or panel widgets render (they render
         // before the CentralPanel canvas).  Without this, DragValues in the text tool
         // options bar (letter spacing, scale, etc.) can enter text-edit mode and consume
         // Event::Text keystokes before handle_input ever sees them.
-        if self.tools_panel.text_state.is_editing
+        if !modal_open
+            && self.tools_panel.text_state.is_editing
             && let Some(canvas_id) = self.canvas.canvas_widget_id
         {
             ctx.memory_mut(|m| m.request_focus(canvas_id));
@@ -1153,11 +1776,11 @@ impl eframe::App for PaintFEApp {
         let mut zoom_amount = 0.0;
 
         // Check if any floating window/widget is under the pointer
-        let pointer_over_widget = ctx.is_pointer_over_area();
+        let pointer_over_widget = ctx.is_pointer_over_egui();
 
         if !modal_open {
             ctx.input_mut(|i| {
-                if i.scroll_delta.y.abs() > 0.1 {
+                if i.smooth_scroll_delta.y.abs() > 0.1 {
                     let mouse_over_canvas = i.pointer.hover_pos().is_some_and(|pos| {
                         self.canvas
                             .last_canvas_rect
@@ -1165,8 +1788,8 @@ impl eframe::App for PaintFEApp {
                     });
                     if mouse_over_canvas && !pointer_over_widget {
                         should_zoom = true;
-                        zoom_amount = i.scroll_delta.y;
-                        i.scroll_delta.y = 0.0;
+                        zoom_amount = i.smooth_scroll_delta.y;
+                        i.smooth_scroll_delta.y = 0.0;
                     }
                 }
             });
@@ -1291,18 +1914,18 @@ impl eframe::App for PaintFEApp {
             if kb.is_pressed(ctx, BindableAction::ResizeImage)
                 && let Some(project) = self.active_project()
             {
-                self.active_dialog = ActiveDialog::ResizeImage(
-                    crate::ops::dialogs::ResizeImageDialog::new(&project.canvas_state),
-                );
+                let mut dlg = crate::ops::dialogs::ResizeImageDialog::new(&project.canvas_state);
+                dlg.lock_aspect = self.settings.persist_resize_lock_aspect;
+                self.active_dialog = ActiveDialog::ResizeImage(dlg);
             }
 
             // Ctrl+Shift+R — Resize Canvas
             if kb.is_pressed(ctx, BindableAction::ResizeCanvas)
                 && let Some(project) = self.active_project()
             {
-                self.active_dialog = ActiveDialog::ResizeCanvas(
-                    crate::ops::dialogs::ResizeCanvasDialog::new(&project.canvas_state),
-                );
+                let mut dlg = crate::ops::dialogs::ResizeCanvasDialog::new(&project.canvas_state);
+                dlg.lock_aspect = self.settings.persist_resize_lock_aspect;
+                self.active_dialog = ActiveDialog::ResizeCanvas(dlg);
             }
 
             // Ctrl++ / Ctrl+= — Zoom In
@@ -1319,7 +1942,7 @@ impl eframe::App for PaintFEApp {
                         matches!(
                             e,
                             egui::Event::Key {
-                                key: egui::Key::PlusEquals,
+                                key: egui::Key::Equals,
                                 pressed: true,
                                 ..
                             }
@@ -1349,12 +1972,21 @@ impl eframe::App for PaintFEApp {
             // Ctrl+N — New File
             if kb.is_pressed(ctx, BindableAction::NewFile) {
                 self.new_file_dialog.load_clipboard_dimensions();
+                self.new_file_dialog
+                    .set_lock_aspect_ratio(self.settings.persist_new_file_lock_aspect);
                 self.new_file_dialog.open_dialog();
             }
 
             // Ctrl+O — Open File
             if kb.is_pressed(ctx, BindableAction::OpenFile) {
                 self.handle_open_file(ctx.input(|i| i.time));
+            }
+
+            // Ctrl+W — Close current project
+            if kb.is_pressed(ctx, BindableAction::CloseProject)
+                && self.active_project_index < self.projects.len()
+            {
+                self.close_project(self.active_project_index);
             }
 
             // Ctrl+S — Save
@@ -1394,29 +2026,132 @@ impl eframe::App for PaintFEApp {
             }
 
             // Ctrl+C — Copy
-            if kb.is_pressed(ctx, BindableAction::Copy)
+            let copy_from_binding = kb.is_pressed(ctx, BindableAction::Copy);
+            let copy_from_event = ctx.input_mut(|i| {
+                let pos = i.events.iter().position(|e| matches!(e, egui::Event::Copy));
+                if let Some(idx) = pos {
+                    i.events.remove(idx);
+                    true
+                } else {
+                    false
+                }
+            });
+            let copy_from_raw = ctx.input_mut(|i| {
+                let pos = i.events.iter().position(|e| {
+                    matches!(
+                        e,
+                        egui::Event::Key {
+                            key: egui::Key::C,
+                            pressed: true,
+                            modifiers,
+                            ..
+                        } if modifiers.command || modifiers.ctrl
+                    )
+                });
+                if let Some(idx) = pos {
+                    i.events.remove(idx);
+                    true
+                } else {
+                    false
+                }
+            });
+            let copy_pressed = copy_from_binding || copy_from_event || copy_from_raw;
+            let poll_ctrl_c_down = global_probe.0 && global_probe.1;
+            let copy_poll_edge = poll_ctrl_c_down && !self.prev_ctrl_c_down;
+            let copy_vk_edge =
+                vk_probe.ctrl_down && vk_probe.c_press_count != self.prev_vk_c_press_count;
+            if (copy_pressed || copy_poll_edge || copy_vk_edge)
                 && let Some(project) = self.active_project()
             {
                 crate::ops::clipboard::copy_selection(&project.canvas_state);
             }
 
             // Ctrl+X — Cut
-            if kb.is_pressed(ctx, BindableAction::Cut) {
+            let cut_from_binding = kb.is_pressed(ctx, BindableAction::Cut);
+            let cut_from_event = ctx.input_mut(|i| {
+                let pos = i.events.iter().position(|e| matches!(e, egui::Event::Cut));
+                if let Some(idx) = pos {
+                    i.events.remove(idx);
+                    true
+                } else {
+                    false
+                }
+            });
+            let cut_from_raw = ctx.input_mut(|i| {
+                let pos = i.events.iter().position(|e| {
+                    matches!(
+                        e,
+                        egui::Event::Key {
+                            key: egui::Key::X,
+                            pressed: true,
+                            modifiers,
+                            ..
+                        } if modifiers.command || modifiers.ctrl
+                    )
+                });
+                if let Some(idx) = pos {
+                    i.events.remove(idx);
+                    true
+                } else {
+                    false
+                }
+            });
+            let cut_pressed = cut_from_binding || cut_from_event || cut_from_raw;
+            let poll_ctrl_x_down = global_probe.0 && global_probe.2;
+            let cut_poll_edge = poll_ctrl_x_down && !self.prev_ctrl_x_down;
+            let cut_vk_edge =
+                vk_probe.ctrl_down && vk_probe.x_press_count != self.prev_vk_x_press_count;
+            if cut_pressed || cut_poll_edge || cut_vk_edge {
                 let has_sel = self
                     .active_project()
                     .is_some_and(|p| p.canvas_state.has_selection());
+                let mut cut_applied = false;
                 if has_sel {
                     self.do_snapshot_op("Cut Selection", |s| {
-                        crate::ops::clipboard::cut_selection(s);
+                        cut_applied = crate::ops::clipboard::cut_selection(s);
                     });
                 }
             }
 
             // Ctrl+V — Paste
-            if kb.is_pressed(ctx, BindableAction::Paste) {
-                if self.paste_overlay.is_some() {
-                    self.commit_paste_overlay();
+            let paste_from_binding = kb.is_pressed(ctx, BindableAction::Paste);
+            let paste_from_event = ctx.input_mut(|i| {
+                let pos = i
+                    .events
+                    .iter()
+                    .position(|e| matches!(e, egui::Event::Paste(_)));
+                if let Some(idx) = pos {
+                    i.events.remove(idx);
+                    true
+                } else {
+                    false
                 }
+            });
+            let paste_from_raw = ctx.input_mut(|i| {
+                let pos = i.events.iter().position(|e| {
+                    matches!(
+                        e,
+                        egui::Event::Key {
+                            key: egui::Key::V,
+                            pressed: true,
+                            modifiers,
+                            ..
+                        } if modifiers.command || modifiers.ctrl
+                    )
+                });
+                if let Some(idx) = pos {
+                    i.events.remove(idx);
+                    true
+                } else {
+                    false
+                }
+            });
+            let paste_pressed = paste_from_binding || paste_from_event || paste_from_raw;
+            let poll_ctrl_v_down = global_probe.0 && global_probe.3;
+            let paste_poll_edge = poll_ctrl_v_down && !self.prev_ctrl_v_down;
+            let paste_vk_edge =
+                vk_probe.ctrl_down && vk_probe.v_press_count != self.prev_vk_v_press_count;
+            if paste_pressed || paste_poll_edge || paste_vk_edge {
                 // Compute cursor canvas position before mutable borrow
                 let cursor_canvas = if self.active_project_index < self.projects.len() {
                     ctx.input(|i| i.pointer.latest_pos())
@@ -1430,31 +2165,110 @@ impl eframe::App for PaintFEApp {
                 } else {
                     None
                 };
-                if let Some(project) = self.active_project_mut() {
-                    let (cw, ch) = (project.canvas_state.width, project.canvas_state.height);
-                    let img = crate::ops::clipboard::get_from_system_clipboard()
-                        .or_else(crate::ops::clipboard::get_clipboard_image_pub);
-                    if let Some(src) = img {
-                        let overlay = if let Some((cx, cy)) = cursor_canvas {
-                            PasteOverlay::from_image_at(src, cw, ch, egui::Pos2::new(cx, cy))
-                        } else {
-                            PasteOverlay::from_image(src, cw, ch)
-                        };
-                        project.canvas_state.clear_selection();
-                        self.paste_overlay = Some(overlay);
-                        self.canvas.open_paste_menu = true;
+                self.queue_paste_from_clipboard(cursor_canvas);
+            }
+
+            let enter_vk_edge = vk_probe.enter_press_count != self.prev_vk_enter_press_count;
+            let escape_vk_edge = vk_probe.escape_press_count != self.prev_vk_escape_press_count;
+
+            // Enter — Commit paste (not rebindable)
+            if (ctx.input(|i| i.key_pressed(egui::Key::Enter)) || enter_vk_edge)
+                && self.paste_overlay.is_some()
+            {
+                self.commit_paste_overlay();
+            }
+            // Escape — Cancel paste (not rebindable)
+            if (ctx.input(|i| i.key_pressed(egui::Key::Escape)) || escape_vk_edge)
+                && self.paste_overlay.is_some()
+            {
+                self.cancel_paste_overlay();
+            }
+
+            // Raw Enter/Escape fallback for overlay tools (e.g. Mesh Warp) so
+            // commit/cancel still works even if a focused widget consumes key state.
+            let enter_or_escape = ctx.input_mut(|i| {
+                let mut enter = false;
+                let mut escape = false;
+                let mut consumed_enter = false;
+                let mut consumed_escape = false;
+                i.events.retain(|e| match e {
+                    egui::Event::Key {
+                        key: egui::Key::Enter,
+                        pressed: true,
+                        ..
+                    } if !consumed_enter => {
+                        enter = true;
+                        consumed_enter = true;
+                        false
+                    }
+                    egui::Event::Key {
+                        key: egui::Key::Escape,
+                        pressed: true,
+                        ..
+                    } if !consumed_escape => {
+                        escape = true;
+                        consumed_escape = true;
+                        false
+                    }
+                    _ => true,
+                });
+                (enter, escape)
+            });
+            let enter_poll_edge = global_probe.4 && !self.prev_enter_down;
+            let escape_poll_edge = global_probe.5 && !self.prev_escape_down;
+            if enter_or_escape.0 || enter_poll_edge || enter_vk_edge {
+                self.tools_panel.injected_enter_pressed = true;
+                if self.tools_panel.active_tool == crate::components::tools::Tool::MeshWarp
+                    && self.tools_panel.mesh_warp_state.is_active
+                {
+                    self.tools_panel.mesh_warp_state.commit_pending = true;
+                    self.tools_panel.mesh_warp_state.commit_pending_frame = 0;
+                    if let Some(project) = self.active_project_mut() {
+                        project.canvas_state.mark_dirty(None);
+                    }
+                }
+                if self.tools_panel.active_tool == crate::components::tools::Tool::Liquify
+                    && self.tools_panel.liquify_state.is_active
+                {
+                    self.tools_panel.liquify_state.commit_pending = true;
+                    self.tools_panel.liquify_state.commit_pending_frame = 0;
+                    if let Some(project) = self.active_project_mut() {
+                        project.canvas_state.mark_dirty(None);
+                    }
+                }
+            }
+            if enter_or_escape.1 || escape_poll_edge || escape_vk_edge {
+                self.tools_panel.injected_escape_pressed = true;
+                if self.tools_panel.active_tool == crate::components::tools::Tool::MeshWarp
+                    && self.tools_panel.mesh_warp_state.is_active
+                {
+                    self.tools_panel.mesh_warp_state.points =
+                        self.tools_panel.mesh_warp_state.original_points.clone();
+                    if let Some(project) = self.active_project_mut() {
+                        project.canvas_state.mark_dirty(None);
+                    }
+                }
+                if self.tools_panel.active_tool == crate::components::tools::Tool::Liquify
+                    && self.tools_panel.liquify_state.is_active
+                {
+                    self.tools_panel.liquify_state.is_active = false;
+                    if let Some(project) = self.active_project_mut() {
+                        project.canvas_state.clear_preview_state();
+                        project.canvas_state.mark_dirty(None);
                     }
                 }
             }
 
-            // Enter — Commit paste (not rebindable)
-            if ctx.input(|i| i.key_pressed(egui::Key::Enter)) && self.paste_overlay.is_some() {
-                self.commit_paste_overlay();
-            }
-            // Escape — Cancel paste (not rebindable)
-            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && self.paste_overlay.is_some() {
-                self.cancel_paste_overlay();
-            }
+            self.prev_ctrl_c_down = poll_ctrl_c_down;
+            self.prev_ctrl_x_down = poll_ctrl_x_down;
+            self.prev_ctrl_v_down = poll_ctrl_v_down;
+            self.prev_enter_down = global_probe.4;
+            self.prev_escape_down = global_probe.5;
+            self.prev_vk_c_press_count = vk_probe.c_press_count;
+            self.prev_vk_x_press_count = vk_probe.x_press_count;
+            self.prev_vk_v_press_count = vk_probe.v_press_count;
+            self.prev_vk_enter_press_count = vk_probe.enter_press_count;
+            self.prev_vk_escape_press_count = vk_probe.escape_press_count;
 
             // Tab — Center active transform on canvas (paste/move-pixels, placed shape, line edit)
             let tab_applies = self.paste_overlay.is_some()
@@ -1558,13 +2372,11 @@ impl eframe::App for PaintFEApp {
                 project.canvas_state.selection_mask = Some(mask.clone());
                 project.canvas_state.invalidate_selection_overlay();
                 project.canvas_state.mark_dirty(None);
-                project
-                    .history
-                    .push(Box::new(SelectionCommand::new(
-                        "Select All",
-                        sel_before,
-                        Some(mask),
-                    )));
+                project.history.push(Box::new(SelectionCommand::new(
+                    "Select All",
+                    sel_before,
+                    Some(mask),
+                )));
             }
 
             // Ctrl+D — Deselect
@@ -1575,9 +2387,9 @@ impl eframe::App for PaintFEApp {
                 project.canvas_state.clear_selection();
                 project.canvas_state.mark_dirty(None);
                 if sel_before.is_some() {
-                    project
-                        .history
-                        .push(Box::new(SelectionCommand::new("Deselect", sel_before, None)));
+                    project.history.push(Box::new(SelectionCommand::new(
+                        "Deselect", sel_before, None,
+                    )));
                 }
             }
 
@@ -1764,7 +2576,7 @@ impl eframe::App for PaintFEApp {
                 == crate::components::tools::Tool::Text
                 && self.tools_panel.text_state.is_editing;
             let other_widget_focused = ctx.memory(|m| {
-                m.focus()
+                m.focused()
                     .is_some_and(|id| self.canvas.canvas_widget_id != Some(id))
             });
             if !text_tool_active && !other_widget_focused && self.paste_overlay.is_none() {
@@ -1862,238 +2674,255 @@ impl eframe::App for PaintFEApp {
             if has_project && no_dialog_open && !text_tool_active && !other_widget_focused {
                 // Color dialogs
                 if kb.is_pressed(ctx, BindableAction::ColorBrightnessContrast)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::BrightnessContrast(
-                            crate::ops::dialogs::BrightnessContrastDialog::new(
-                                &project.canvas_state,
-                            ),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::BrightnessContrast(
+                        crate::ops::dialogs::BrightnessContrastDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::ColorCurves)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::Curves(
-                            crate::ops::dialogs::CurvesDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::Curves(
+                        crate::ops::dialogs::CurvesDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::ColorExposure)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::Exposure(
-                            crate::ops::dialogs::ExposureDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::Exposure(
+                        crate::ops::dialogs::ExposureDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::ColorHighlightsShadows)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::HighlightsShadows(
-                            crate::ops::dialogs::HighlightsShadowsDialog::new(
-                                &project.canvas_state,
-                            ),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::HighlightsShadows(
+                        crate::ops::dialogs::HighlightsShadowsDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::ColorHueSaturation)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::HueSaturation(
-                            crate::ops::dialogs::HueSaturationDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::HueSaturation(
+                        crate::ops::dialogs::HueSaturationDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::ColorLevels)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::Levels(
-                            crate::ops::dialogs::LevelsDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::Levels(
+                        crate::ops::dialogs::LevelsDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::ColorTemperatureTint)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::TemperatureTint(
-                            crate::ops::dialogs::TemperatureTintDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::TemperatureTint(
+                        crate::ops::dialogs::TemperatureTintDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::ColorVibrance)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::Vibrance(
-                            crate::ops::dialogs::VibranceDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::Vibrance(
+                        crate::ops::dialogs::VibranceDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::ColorThreshold)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::Threshold(
-                            crate::ops::dialogs::ThresholdDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::Threshold(
+                        crate::ops::dialogs::ThresholdDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::ColorPosterize)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::Posterize(
-                            crate::ops::dialogs::PosterizeDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::Posterize(
+                        crate::ops::dialogs::PosterizeDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::ColorBalance)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::ColorBalance(
-                            crate::ops::dialogs::ColorBalanceDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::ColorBalance(
+                        crate::ops::dialogs::ColorBalanceDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::ColorGradientMap)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::GradientMap(
-                            crate::ops::dialogs::GradientMapDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::GradientMap(
+                        crate::ops::dialogs::GradientMapDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::ColorBlackAndWhite)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::BlackAndWhite(
-                            crate::ops::dialogs::BlackAndWhiteDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::BlackAndWhite(
+                        crate::ops::dialogs::BlackAndWhiteDialog::new(&project.canvas_state),
+                    );
+                }
                 // Filter — blur
                 if kb.is_pressed(ctx, BindableAction::FilterGaussianBlur)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::GaussianBlur(
-                            crate::ops::dialogs::GaussianBlurDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::GaussianBlur(
+                        crate::ops::dialogs::GaussianBlurDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::FilterBokehBlur)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::BokehBlur(
-                            crate::ops::effect_dialogs::BokehBlurDialog::new(
-                                &project.canvas_state,
-                            ),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::BokehBlur(
+                        crate::ops::effect_dialogs::BokehBlurDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::FilterMotionBlur)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::MotionBlur(
-                            crate::ops::effect_dialogs::MotionBlurDialog::new(
-                                &project.canvas_state,
-                            ),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::MotionBlur(
+                        crate::ops::effect_dialogs::MotionBlurDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::FilterBoxBlur)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::BoxBlur(
-                            crate::ops::effect_dialogs::BoxBlurDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::BoxBlur(
+                        crate::ops::effect_dialogs::BoxBlurDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::FilterZoomBlur)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::ZoomBlur(
-                            crate::ops::effect_dialogs::ZoomBlurDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::ZoomBlur(
+                        crate::ops::effect_dialogs::ZoomBlurDialog::new(&project.canvas_state),
+                    );
+                }
                 // Filter — sharpen / noise
                 if kb.is_pressed(ctx, BindableAction::FilterSharpen)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::Sharpen(
-                            crate::ops::effect_dialogs::SharpenDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::Sharpen(
+                        crate::ops::effect_dialogs::SharpenDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::FilterReduceNoise)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::ReduceNoise(
-                            crate::ops::effect_dialogs::ReduceNoiseDialog::new(
-                                &project.canvas_state,
-                            ),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::ReduceNoise(
+                        crate::ops::effect_dialogs::ReduceNoiseDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::FilterAddNoise)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::AddNoise(
-                            crate::ops::effect_dialogs::AddNoiseDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::AddNoise(
+                        crate::ops::effect_dialogs::AddNoiseDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::FilterMedian)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::Median(
-                            crate::ops::effect_dialogs::MedianDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::Median(
+                        crate::ops::effect_dialogs::MedianDialog::new(&project.canvas_state),
+                    );
+                }
                 // Filter — distort
                 if kb.is_pressed(ctx, BindableAction::FilterCrystallize)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::Crystallize(
-                            crate::ops::effect_dialogs::CrystallizeDialog::new(
-                                &project.canvas_state,
-                            ),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::Crystallize(
+                        crate::ops::effect_dialogs::CrystallizeDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::FilterDents)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::Dents(
-                            crate::ops::effect_dialogs::DentsDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::Dents(
+                        crate::ops::effect_dialogs::DentsDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::FilterPixelate)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::Pixelate(
-                            crate::ops::effect_dialogs::PixelateDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::Pixelate(
+                        crate::ops::effect_dialogs::PixelateDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::FilterBulge)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::Bulge(
-                            crate::ops::effect_dialogs::BulgeDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::Bulge(
+                        crate::ops::effect_dialogs::BulgeDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::FilterTwist)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::Twist(
-                            crate::ops::effect_dialogs::TwistDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::Twist(
+                        crate::ops::effect_dialogs::TwistDialog::new(&project.canvas_state),
+                    );
+                }
                 // Filter — stylize
                 if kb.is_pressed(ctx, BindableAction::FilterGlow)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::Glow(
-                            crate::ops::effect_dialogs::GlowDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::Glow(
+                        crate::ops::effect_dialogs::GlowDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::FilterVignette)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::Vignette(
-                            crate::ops::effect_dialogs::VignetteDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::Vignette(
+                        crate::ops::effect_dialogs::VignetteDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::FilterHalftone)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::Halftone(
-                            crate::ops::effect_dialogs::HalftoneDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::Halftone(
+                        crate::ops::effect_dialogs::HalftoneDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::FilterInk)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::Ink(
-                            crate::ops::effect_dialogs::InkDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::Ink(
+                        crate::ops::effect_dialogs::InkDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::FilterOilPainting)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::OilPainting(
-                            crate::ops::effect_dialogs::OilPaintingDialog::new(
-                                &project.canvas_state,
-                            ),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::OilPainting(
+                        crate::ops::effect_dialogs::OilPaintingDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::FilterColorFilter)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::ColorFilter(
-                            crate::ops::effect_dialogs::ColorFilterDialog::new(
-                                &project.canvas_state,
-                            ),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::ColorFilter(
+                        crate::ops::effect_dialogs::ColorFilterDialog::new(&project.canvas_state),
+                    );
+                }
                 // Filter — glitch
                 if kb.is_pressed(ctx, BindableAction::FilterPixelDrag)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::PixelDrag(
-                            crate::ops::effect_dialogs::PixelDragDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::PixelDrag(
+                        crate::ops::effect_dialogs::PixelDragDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::FilterRgbDisplace)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::RgbDisplace(
-                            crate::ops::effect_dialogs::RgbDisplaceDialog::new(
-                                &project.canvas_state,
-                            ),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::RgbDisplace(
+                        crate::ops::effect_dialogs::RgbDisplaceDialog::new(&project.canvas_state),
+                    );
+                }
                 // Filter — AI (requires ONNX runtime)
                 if kb.is_pressed(ctx, BindableAction::FilterRemoveBackground) && self.onnx_available
                 {
@@ -2103,31 +2932,33 @@ impl eframe::App for PaintFEApp {
                 }
                 // Generate
                 if kb.is_pressed(ctx, BindableAction::GenerateGrid)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::Grid(
-                            crate::ops::effect_dialogs::GridDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::Grid(
+                        crate::ops::effect_dialogs::GridDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::GenerateDropShadow)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::DropShadow(
-                            crate::ops::effect_dialogs::DropShadowDialog::new(
-                                &project.canvas_state,
-                            ),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::DropShadow(
+                        crate::ops::effect_dialogs::DropShadowDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::GenerateOutline)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::Outline(
-                            crate::ops::effect_dialogs::OutlineDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::Outline(
+                        crate::ops::effect_dialogs::OutlineDialog::new(&project.canvas_state),
+                    );
+                }
                 if kb.is_pressed(ctx, BindableAction::GenerateContours)
-                    && let Some(project) = self.active_project() {
-                        self.active_dialog = ActiveDialog::Contours(
-                            crate::ops::effect_dialogs::ContoursDialog::new(&project.canvas_state),
-                        );
-                    }
+                    && let Some(project) = self.active_project()
+                {
+                    self.active_dialog = ActiveDialog::Contours(
+                        crate::ops::effect_dialogs::ContoursDialog::new(&project.canvas_state),
+                    );
+                }
             }
         }
 
@@ -2143,7 +2974,7 @@ impl eframe::App for PaintFEApp {
                     .hover_pos()
                     .is_some_and(|pos| canvas_rect.is_some_and(|r| r.contains(pos)))
             });
-            let over_ui = ctx.is_pointer_over_area();
+            let over_ui = ctx.is_pointer_over_egui();
 
             if primary_pressed && over_canvas && !over_ui {
                 // Extract pixels into overlay and blank the source area.
@@ -2184,7 +3015,7 @@ impl eframe::App for PaintFEApp {
                     .hover_pos()
                     .is_some_and(|pos| canvas_rect.is_some_and(|r| r.contains(pos)))
             });
-            let over_ui = ctx.is_pointer_over_area();
+            let over_ui = ctx.is_pointer_over_egui();
 
             // Compute current canvas position from mouse (without borrowing self mutably).
             let cur_canvas_pos: Option<(i32, i32)> =
@@ -2236,6 +3067,57 @@ impl eframe::App for PaintFEApp {
 
         // --- Process Dialogs ---
 
+        // Paste size confirmation (when clipboard image exceeds current canvas bounds)
+        if let Some(req) = self.pending_paste_request.as_ref() {
+            let mut do_resize = false;
+            let mut do_keep = false;
+            let mut do_cancel = false;
+            egui::Window::new("Paste Image")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label(format!(
+                        "Clipboard image is larger than the current canvas ({}x{}).",
+                        req.image.width(),
+                        req.image.height()
+                    ));
+                    ui.label("Resize canvas to fit the pasted image?");
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        let btn_size = egui::vec2(136.0, 28.0);
+                        if ui
+                            .add(egui::Button::new("Resize Canvas").min_size(btn_size))
+                            .clicked()
+                        {
+                            do_resize = true;
+                        }
+                        if ui
+                            .add(egui::Button::new("Keep Canvas").min_size(btn_size))
+                            .clicked()
+                        {
+                            do_keep = true;
+                        }
+                        if ui
+                            .add(egui::Button::new("Cancel").min_size(btn_size))
+                            .clicked()
+                        {
+                            do_cancel = true;
+                        }
+                    });
+                });
+
+            if do_resize && let Some(request) = self.pending_paste_request.take() {
+                self.apply_pending_paste_request(request, true);
+            }
+            if do_keep && let Some(request) = self.pending_paste_request.take() {
+                self.apply_pending_paste_request(request, false);
+            }
+            if do_cancel {
+                self.pending_paste_request = None;
+            }
+        }
+
         // Unsaved Changes Confirmation
         if let Some(close_idx) = self.pending_close_index {
             let name = self
@@ -2257,19 +3139,28 @@ impl eframe::App for PaintFEApp {
                     ui.horizontal(|ui| {
                         let btn_size = egui::vec2(100.0, 28.0);
                         if ui
-                            .add(egui::Button::new("Save").min_size(btn_size))
+                            .add(
+                                egui::Button::new(egui::RichText::new("Save").strong())
+                                    .min_size(btn_size),
+                            )
                             .clicked()
                         {
                             do_save = true;
                         }
                         if ui
-                            .add(egui::Button::new("Don't Save").min_size(btn_size))
+                            .add(
+                                egui::Button::new(egui::RichText::new("Don't Save").strong())
+                                    .min_size(btn_size),
+                            )
                             .clicked()
                         {
                             do_discard = true;
                         }
                         if ui
-                            .add(egui::Button::new("Cancel").min_size(btn_size))
+                            .add(
+                                egui::Button::new(egui::RichText::new("Cancel").strong())
+                                    .min_size(btn_size),
+                            )
                             .clicked()
                         {
                             do_cancel = true;
@@ -2363,7 +3254,10 @@ impl eframe::App for PaintFEApp {
                             ui.horizontal(|ui| {
                                 ui.add_space(pad);
                                 if ui
-                                    .add(egui::Button::new("Save").min_size(btn_size))
+                                    .add(
+                                        egui::Button::new(egui::RichText::new("Save").strong())
+                                            .min_size(btn_size),
+                                    )
                                     .clicked()
                                 {
                                     do_save = true;
@@ -2371,7 +3265,9 @@ impl eframe::App for PaintFEApp {
                                 if ui
                                     .add(
                                         egui::Button::new(
-                                            egui::RichText::new("Exit Without").color(danger_text),
+                                            egui::RichText::new("Exit Without")
+                                                .strong()
+                                                .color(danger_text),
                                         )
                                         .fill(danger_fill)
                                         .min_size(btn_size),
@@ -2381,7 +3277,10 @@ impl eframe::App for PaintFEApp {
                                     do_exit = true;
                                 }
                                 if ui
-                                    .add(egui::Button::new("Cancel").min_size(btn_size))
+                                    .add(
+                                        egui::Button::new(egui::RichText::new("Cancel").strong())
+                                            .min_size(btn_size),
+                                    )
                                     .clicked()
                                 {
                                     do_cancel = true;
@@ -2430,9 +3329,11 @@ impl eframe::App for PaintFEApp {
         }
 
         // New File Dialog - creates a new project tab
+        self.settings.persist_new_file_lock_aspect = self.new_file_dialog.lock_aspect_ratio();
         if let Some((width, height)) = self.new_file_dialog.show(ctx) {
             self.new_project(width, height);
         }
+        self.settings.persist_new_file_lock_aspect = self.new_file_dialog.lock_aspect_ratio();
 
         // Save File Dialog - saves the active project
         let save_dialog_was_open = self.save_file_dialog.open;
@@ -2627,11 +3528,12 @@ impl eframe::App for PaintFEApp {
         // --- Top Menu Bar ---
         let menu_kb = self.settings.keybindings.clone();
         let has_project = !self.projects.is_empty();
-        let menu_resp = egui::TopBottomPanel::top("menu_bar")
+        #[allow(deprecated)]
+        let menu_resp = egui::Panel::top("menu_bar")
             .frame(self.theme.menu_frame())
-            .exact_height(28.0)
+            .exact_size(28.0)
             .show(ctx, |ui| {
-                egui::menu::bar(ui, |ui| {
+                egui::MenuBar::new().ui(ui, |ui| {
                     ui.menu_button(t!("menu.file"), |ui| {
                         if self
                             .assets
@@ -2645,8 +3547,10 @@ impl eframe::App for PaintFEApp {
                             .clicked()
                         {
                             self.new_file_dialog.load_clipboard_dimensions();
+                            self.new_file_dialog
+                                .set_lock_aspect_ratio(self.settings.persist_new_file_lock_aspect);
                             self.new_file_dialog.open_dialog();
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -2660,7 +3564,7 @@ impl eframe::App for PaintFEApp {
                             .clicked()
                         {
                             self.handle_open_file(ctx.input(|i| i.time));
-                            ui.close_menu();
+                            ui.close();
                         }
                         ui.separator();
                         if self
@@ -2676,7 +3580,7 @@ impl eframe::App for PaintFEApp {
                             .clicked()
                         {
                             self.handle_save(ctx.input(|i| i.time));
-                            ui.close_menu();
+                            ui.close();
                         }
                         {
                             let any_dirty =
@@ -2694,7 +3598,7 @@ impl eframe::App for PaintFEApp {
                                 .clicked()
                             {
                                 self.handle_save_all(ctx.input(|i| i.time));
-                                ui.close_menu();
+                                ui.close();
                             }
                         }
                         if self
@@ -2757,7 +3661,7 @@ impl eframe::App for PaintFEApp {
                                 }
                             }
                             self.save_file_dialog.open = true;
-                            ui.close_menu();
+                            ui.close();
                         }
                         ui.separator();
                         if self
@@ -2777,7 +3681,7 @@ impl eframe::App for PaintFEApp {
                                     eprintln!("Print error: {}", e);
                                 }
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         ui.separator();
                         if self
@@ -2785,7 +3689,7 @@ impl eframe::App for PaintFEApp {
                             .menu_item(ui, Icon::MenuFileQuit, &t!("menu.file.quit"))
                             .clicked()
                         {
-                            ui.close_menu();
+                            ui.close();
                             let dirty_count = self.projects.iter().filter(|p| p.is_dirty).count();
                             if self.settings.confirm_on_exit && dirty_count > 0 {
                                 self.pending_exit = true;
@@ -2796,7 +3700,9 @@ impl eframe::App for PaintFEApp {
                     });
 
                     ui.menu_button(t!("menu.edit"), |ui| {
-                        ui.set_enabled(has_project);
+                        if !has_project {
+                            ui.disable();
+                        }
                         let can_undo = self.active_project().is_some_and(|p| p.history.can_undo());
                         let can_redo = self.active_project().is_some_and(|p| p.history.can_redo());
 
@@ -2828,7 +3734,7 @@ impl eframe::App for PaintFEApp {
                                 project.canvas_state.clear_selection();
                                 project.history.undo(&mut project.canvas_state);
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -2845,7 +3751,7 @@ impl eframe::App for PaintFEApp {
                             if let Some(project) = self.active_project_mut() {
                                 project.history.redo(&mut project.canvas_state);
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
 
                         ui.separator();
@@ -2870,7 +3776,7 @@ impl eframe::App for PaintFEApp {
                             self.do_snapshot_op("Cut Selection", |s| {
                                 crate::ops::clipboard::cut_selection(s);
                             });
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -2887,7 +3793,7 @@ impl eframe::App for PaintFEApp {
                             if let Some(project) = self.active_project() {
                                 crate::ops::clipboard::copy_selection(&project.canvas_state);
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -2901,20 +3807,19 @@ impl eframe::App for PaintFEApp {
                             )
                             .clicked()
                         {
-                            // Commit existing paste first.
-                            if self.paste_overlay.is_some() {
-                                self.commit_paste_overlay();
-                            }
-                            if let Some(project) = self.active_project_mut() {
-                                let (cw, ch) =
-                                    (project.canvas_state.width, project.canvas_state.height);
-                                if let Some(overlay) = PasteOverlay::from_clipboard(cw, ch) {
-                                    project.canvas_state.clear_selection();
-                                    self.paste_overlay = Some(overlay);
-                                    self.canvas.open_paste_menu = true;
-                                }
-                            }
-                            ui.close_menu();
+                            let cursor_canvas = if self.active_project_index < self.projects.len() {
+                                ctx.input(|i| i.pointer.latest_pos()).and_then(|pp| {
+                                    self.canvas.last_canvas_rect.and_then(|rect| {
+                                        let state =
+                                            &self.projects[self.active_project_index].canvas_state;
+                                        self.canvas.screen_to_canvas_f32_pub(pp, rect, state)
+                                    })
+                                })
+                            } else {
+                                None
+                            };
+                            self.queue_paste_from_clipboard(cursor_canvas);
+                            ui.close();
                         }
                         if self
                             .assets
@@ -2938,7 +3843,7 @@ impl eframe::App for PaintFEApp {
                                     );
                                 });
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
 
                         ui.separator();
@@ -2963,7 +3868,7 @@ impl eframe::App for PaintFEApp {
                                 project.canvas_state.invalidate_selection_overlay();
                                 project.canvas_state.mark_dirty(None);
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -2981,7 +3886,7 @@ impl eframe::App for PaintFEApp {
                                 project.canvas_state.clear_selection();
                                 project.canvas_state.mark_dirty(None);
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -3011,7 +3916,7 @@ impl eframe::App for PaintFEApp {
                                 project.canvas_state.invalidate_selection_overlay();
                                 project.canvas_state.mark_dirty(None);
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -3030,7 +3935,7 @@ impl eframe::App for PaintFEApp {
                                 self.active_dialog =
                                     crate::ops::dialogs::ActiveDialog::ColorRange(dlg);
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
 
                         ui.separator();
@@ -3041,14 +3946,16 @@ impl eframe::App for PaintFEApp {
                             .clicked()
                         {
                             self.settings_window.open = true;
-                            ui.close_menu();
+                            ui.close();
                         }
                     });
 
                     // ==================== CANVAS MENU (was: Image) ====================
                     let no_dialog = !modal_open;
                     ui.menu_button(t!("menu.canvas"), |ui| {
-                        ui.set_enabled(has_project);
+                        if !has_project {
+                            ui.disable();
+                        }
                         if self
                             .assets
                             .menu_item_shortcut_below_enabled(
@@ -3062,13 +3969,13 @@ impl eframe::App for PaintFEApp {
                             .clicked()
                         {
                             if let Some(project) = self.active_project() {
-                                self.active_dialog = ActiveDialog::ResizeImage(
-                                    crate::ops::dialogs::ResizeImageDialog::new(
-                                        &project.canvas_state,
-                                    ),
+                                let mut dlg = crate::ops::dialogs::ResizeImageDialog::new(
+                                    &project.canvas_state,
                                 );
+                                dlg.lock_aspect = self.settings.persist_resize_lock_aspect;
+                                self.active_dialog = ActiveDialog::ResizeImage(dlg);
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -3083,13 +3990,13 @@ impl eframe::App for PaintFEApp {
                             .clicked()
                         {
                             if let Some(project) = self.active_project() {
-                                self.active_dialog = ActiveDialog::ResizeCanvas(
-                                    crate::ops::dialogs::ResizeCanvasDialog::new(
-                                        &project.canvas_state,
-                                    ),
+                                let mut dlg = crate::ops::dialogs::ResizeCanvasDialog::new(
+                                    &project.canvas_state,
                                 );
+                                dlg.lock_aspect = self.settings.persist_resize_lock_aspect;
+                                self.active_dialog = ActiveDialog::ResizeCanvas(dlg);
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         let has_sel = self
                             .active_project()
@@ -3107,7 +4014,7 @@ impl eframe::App for PaintFEApp {
                             self.do_snapshot_op("Crop to Selection", |s| {
                                 crate::ops::adjustments::crop_to_selection(s);
                             });
-                            ui.close_menu();
+                            ui.close();
                         }
                         ui.separator();
                         if self
@@ -3122,8 +4029,38 @@ impl eframe::App for PaintFEApp {
                                 );
                                 self.canvas.gpu_clear_layers();
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
+                        ui.separator();
+                        let align_enabled = no_dialog
+                            && self.active_project().is_some_and(|p| {
+                                p.canvas_state
+                                    .layers
+                                    .get(p.canvas_state.active_layer_index)
+                                    .is_some_and(|l| !l.is_text_layer())
+                            });
+                        let align_resp = self.assets.menu_item_enabled(
+                            ui,
+                            Icon::MenuCanvasAlign,
+                            &t!("menu.canvas.align"),
+                            align_enabled,
+                        );
+                        if !align_enabled {
+                            align_resp
+                                .clone()
+                                .on_disabled_hover_text("Align works only on raster layers.");
+                        }
+                        if align_resp.clicked() {
+                            if let Some(project) = self.active_project() {
+                                self.active_dialog = ActiveDialog::AlignLayer(
+                                    crate::ops::dialogs::AlignLayerDialog::new(
+                                        &project.canvas_state,
+                                    ),
+                                );
+                            }
+                            ui.close();
+                        }
+
                         ui.separator();
                         ui.menu_button(t!("menu.canvas.flip_canvas"), |ui| {
                             ui.set_min_width(ui.min_rect().width().max(160.0));
@@ -3139,7 +4076,7 @@ impl eframe::App for PaintFEApp {
                                 self.do_snapshot_op("Flip Horizontal", |s| {
                                     crate::ops::transform::flip_canvas_horizontal(s);
                                 });
-                                ui.close_menu();
+                                ui.close();
                             }
                             if self
                                 .assets
@@ -3153,7 +4090,7 @@ impl eframe::App for PaintFEApp {
                                 self.do_snapshot_op("Flip Vertical", |s| {
                                     crate::ops::transform::flip_canvas_vertical(s);
                                 });
-                                ui.close_menu();
+                                ui.close();
                             }
                         });
                         ui.menu_button(t!("menu.canvas.rotate_canvas"), |ui| {
@@ -3170,7 +4107,7 @@ impl eframe::App for PaintFEApp {
                                 self.do_snapshot_op("Rotate 90° CW", |s| {
                                     crate::ops::transform::rotate_canvas_90cw(s);
                                 });
-                                ui.close_menu();
+                                ui.close();
                             }
                             if self
                                 .assets
@@ -3184,7 +4121,7 @@ impl eframe::App for PaintFEApp {
                                 self.do_snapshot_op("Rotate 90° CCW", |s| {
                                     crate::ops::transform::rotate_canvas_90ccw(s);
                                 });
-                                ui.close_menu();
+                                ui.close();
                             }
                             if self
                                 .assets
@@ -3198,7 +4135,7 @@ impl eframe::App for PaintFEApp {
                                 self.do_snapshot_op("Rotate 180°", |s| {
                                     crate::ops::transform::rotate_canvas_180(s);
                                 });
-                                ui.close_menu();
+                                ui.close();
                             }
                         });
                         ui.separator();
@@ -3216,7 +4153,7 @@ impl eframe::App for PaintFEApp {
                             self.do_snapshot_op("Flatten All Layers", |s| {
                                 crate::ops::transform::flatten_image(s);
                             });
-                            ui.close_menu();
+                            ui.close();
                         }
                     });
 
@@ -3224,7 +4161,9 @@ impl eframe::App for PaintFEApp {
 
                     // ==================== COLOR MENU (was: Adjustments) ====================
                     ui.menu_button(t!("menu.color"), |ui| {
-                        ui.set_enabled(has_project);
+                        if !has_project {
+                            ui.disable();
+                        }
                         // --- Instant adjustments (no dialog) ---
                         if self
                             .assets
@@ -3235,7 +4174,7 @@ impl eframe::App for PaintFEApp {
                                 let idx = s.active_layer_index;
                                 crate::ops::adjustments::auto_levels(s, idx);
                             });
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -3246,7 +4185,7 @@ impl eframe::App for PaintFEApp {
                                 let idx = s.active_layer_index;
                                 crate::ops::filters::desaturate_layer(s, idx);
                             });
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -3257,7 +4196,7 @@ impl eframe::App for PaintFEApp {
                                 let idx = s.active_layer_index;
                                 crate::ops::adjustments::invert_colors_gpu(s, idx, gpu);
                             });
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -3272,7 +4211,7 @@ impl eframe::App for PaintFEApp {
                                 let idx = s.active_layer_index;
                                 crate::ops::adjustments::invert_alpha(s, idx);
                             });
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -3283,7 +4222,7 @@ impl eframe::App for PaintFEApp {
                                 let idx = s.active_layer_index;
                                 crate::ops::adjustments::sepia(s, idx);
                             });
-                            ui.close_menu();
+                            ui.close();
                         }
                         ui.separator();
                         // --- Parameterized adjustments (with dialog) ---
@@ -3304,7 +4243,7 @@ impl eframe::App for PaintFEApp {
                                     ),
                                 );
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -3321,7 +4260,7 @@ impl eframe::App for PaintFEApp {
                                     crate::ops::dialogs::CurvesDialog::new(&project.canvas_state),
                                 );
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -3338,7 +4277,7 @@ impl eframe::App for PaintFEApp {
                                     crate::ops::dialogs::ExposureDialog::new(&project.canvas_state),
                                 );
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -3357,7 +4296,7 @@ impl eframe::App for PaintFEApp {
                                     ),
                                 );
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -3376,7 +4315,7 @@ impl eframe::App for PaintFEApp {
                                     ),
                                 );
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -3393,7 +4332,7 @@ impl eframe::App for PaintFEApp {
                                     crate::ops::dialogs::LevelsDialog::new(&project.canvas_state),
                                 );
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -3412,7 +4351,7 @@ impl eframe::App for PaintFEApp {
                                     ),
                                 );
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         ui.separator();
                         // --- Additional color adjustments ---
@@ -3431,7 +4370,7 @@ impl eframe::App for PaintFEApp {
                                     crate::ops::dialogs::VibranceDialog::new(&project.canvas_state),
                                 );
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -3450,7 +4389,7 @@ impl eframe::App for PaintFEApp {
                                     ),
                                 );
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -3469,7 +4408,7 @@ impl eframe::App for PaintFEApp {
                                     ),
                                 );
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -3488,7 +4427,7 @@ impl eframe::App for PaintFEApp {
                                     ),
                                 );
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -3507,7 +4446,7 @@ impl eframe::App for PaintFEApp {
                                     ),
                                 );
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -3526,13 +4465,15 @@ impl eframe::App for PaintFEApp {
                                     ),
                                 );
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                     });
 
                     // ==================== FILTER MENU (was: Effects) ====================
                     ui.menu_button(t!("menu.filter"), |ui| {
-                        ui.set_enabled(has_project);
+                        if !has_project {
+                            ui.disable();
+                        }
                         // -- Blur submenu --
                         ui.menu_button(t!("menu.filter.blur"), |ui| {
                             if self
@@ -3552,7 +4493,7 @@ impl eframe::App for PaintFEApp {
                                         ),
                                     );
                                 }
-                                ui.close_menu();
+                                ui.close();
                             }
                             if self
                                 .assets
@@ -3571,7 +4512,7 @@ impl eframe::App for PaintFEApp {
                                         ),
                                     );
                                 }
-                                ui.close_menu();
+                                ui.close();
                             }
                             if self
                                 .assets
@@ -3590,7 +4531,7 @@ impl eframe::App for PaintFEApp {
                                         ),
                                     );
                                 }
-                                ui.close_menu();
+                                ui.close();
                             }
                             if self
                                 .assets
@@ -3609,7 +4550,7 @@ impl eframe::App for PaintFEApp {
                                         ),
                                     );
                                 }
-                                ui.close_menu();
+                                ui.close();
                             }
                             if self
                                 .assets
@@ -3628,7 +4569,7 @@ impl eframe::App for PaintFEApp {
                                         ),
                                     );
                                 }
-                                ui.close_menu();
+                                ui.close();
                             }
                         });
 
@@ -3651,7 +4592,7 @@ impl eframe::App for PaintFEApp {
                                         ),
                                     );
                                 }
-                                ui.close_menu();
+                                ui.close();
                             }
                             if self
                                 .assets
@@ -3670,7 +4611,7 @@ impl eframe::App for PaintFEApp {
                                         ),
                                     );
                                 }
-                                ui.close_menu();
+                                ui.close();
                             }
                         });
 
@@ -3693,7 +4634,7 @@ impl eframe::App for PaintFEApp {
                                         ),
                                     );
                                 }
-                                ui.close_menu();
+                                ui.close();
                             }
                             if self
                                 .assets
@@ -3712,7 +4653,7 @@ impl eframe::App for PaintFEApp {
                                         ),
                                     );
                                 }
-                                ui.close_menu();
+                                ui.close();
                             }
                             if self
                                 .assets
@@ -3731,7 +4672,7 @@ impl eframe::App for PaintFEApp {
                                         ),
                                     );
                                 }
-                                ui.close_menu();
+                                ui.close();
                             }
                             if self
                                 .assets
@@ -3750,7 +4691,7 @@ impl eframe::App for PaintFEApp {
                                         ),
                                     );
                                 }
-                                ui.close_menu();
+                                ui.close();
                             }
                             if self
                                 .assets
@@ -3769,7 +4710,7 @@ impl eframe::App for PaintFEApp {
                                         ),
                                     );
                                 }
-                                ui.close_menu();
+                                ui.close();
                             }
                         });
 
@@ -3792,7 +4733,7 @@ impl eframe::App for PaintFEApp {
                                         ),
                                     );
                                 }
-                                ui.close_menu();
+                                ui.close();
                             }
                             if self
                                 .assets
@@ -3811,7 +4752,7 @@ impl eframe::App for PaintFEApp {
                                         ),
                                     );
                                 }
-                                ui.close_menu();
+                                ui.close();
                             }
                         });
 
@@ -3834,7 +4775,7 @@ impl eframe::App for PaintFEApp {
                                         ),
                                     );
                                 }
-                                ui.close_menu();
+                                ui.close();
                             }
                             if self
                                 .assets
@@ -3853,7 +4794,7 @@ impl eframe::App for PaintFEApp {
                                         ),
                                     );
                                 }
-                                ui.close_menu();
+                                ui.close();
                             }
                             if self
                                 .assets
@@ -3872,7 +4813,7 @@ impl eframe::App for PaintFEApp {
                                         ),
                                     );
                                 }
-                                ui.close_menu();
+                                ui.close();
                             }
                             if self
                                 .assets
@@ -3891,7 +4832,7 @@ impl eframe::App for PaintFEApp {
                                         ),
                                     );
                                 }
-                                ui.close_menu();
+                                ui.close();
                             }
                             if self
                                 .assets
@@ -3910,7 +4851,7 @@ impl eframe::App for PaintFEApp {
                                         ),
                                     );
                                 }
-                                ui.close_menu();
+                                ui.close();
                             }
                             if self
                                 .assets
@@ -3929,7 +4870,26 @@ impl eframe::App for PaintFEApp {
                                         ),
                                     );
                                 }
-                                ui.close_menu();
+                                ui.close();
+                            }
+                            if self
+                                .assets
+                                .menu_item_enabled(
+                                    ui,
+                                    Icon::MenuFilterCanvasBorder,
+                                    &t!("menu.filter.stylize.canvas_border"),
+                                    no_dialog,
+                                )
+                                .clicked()
+                            {
+                                if let Some(project) = self.active_project() {
+                                    self.active_dialog = ActiveDialog::CanvasBorder(
+                                        crate::ops::effect_dialogs::CanvasBorderDialog::new(
+                                            &project.canvas_state,
+                                        ),
+                                    );
+                                }
+                                ui.close();
                             }
                         });
 
@@ -3952,7 +4912,7 @@ impl eframe::App for PaintFEApp {
                                         ),
                                     );
                                 }
-                                ui.close_menu();
+                                ui.close();
                             }
                             if self
                                 .assets
@@ -3971,7 +4931,7 @@ impl eframe::App for PaintFEApp {
                                         ),
                                     );
                                 }
-                                ui.close_menu();
+                                ui.close();
                             }
                         });
 
@@ -3992,7 +4952,7 @@ impl eframe::App for PaintFEApp {
                             self.active_dialog = ActiveDialog::RemoveBackground(
                                 crate::ops::effect_dialogs::RemoveBackgroundDialog::new(),
                             );
-                            ui.close_menu();
+                            ui.close();
                         }
 
                         // -- Custom Scripts submenu (only shown if scripts exist) --
@@ -4005,7 +4965,7 @@ impl eframe::App for PaintFEApp {
                                         // Run button — effect name, takes remaining space
                                         if ui.button(&effect.name).clicked() {
                                             action = Some(CustomScriptAction::Run(idx));
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                         // Push Edit and Delete to the right
                                         ui.with_layout(
@@ -4022,7 +4982,7 @@ impl eframe::App for PaintFEApp {
                                                     .on_hover_text("Delete this custom effect");
                                                 if del_btn.clicked() {
                                                     action = Some(CustomScriptAction::Delete(idx));
-                                                    ui.close_menu();
+                                                    ui.close();
                                                 }
                                                 let edit_btn = ui
                                                     .small_button(
@@ -4031,7 +4991,7 @@ impl eframe::App for PaintFEApp {
                                                     .on_hover_text("Edit in Script Editor");
                                                 if edit_btn.clicked() {
                                                     action = Some(CustomScriptAction::Edit(idx));
-                                                    ui.close_menu();
+                                                    ui.close();
                                                 }
                                             },
                                         );
@@ -4066,7 +5026,9 @@ impl eframe::App for PaintFEApp {
 
                     // ==================== GENERATE MENU (was: Effects > Render) ====================
                     ui.menu_button(t!("menu.generate"), |ui| {
-                        ui.set_enabled(has_project);
+                        if !has_project {
+                            ui.disable();
+                        }
                         if self
                             .assets
                             .menu_item_enabled(
@@ -4084,7 +5046,7 @@ impl eframe::App for PaintFEApp {
                                     ),
                                 );
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -4103,7 +5065,7 @@ impl eframe::App for PaintFEApp {
                                     ),
                                 );
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -4122,7 +5084,7 @@ impl eframe::App for PaintFEApp {
                                     ),
                                 );
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -4141,7 +5103,7 @@ impl eframe::App for PaintFEApp {
                                     ),
                                 );
                             }
-                            ui.close_menu();
+                            ui.close();
                         }
                     });
 
@@ -4164,6 +5126,7 @@ impl eframe::App for PaintFEApp {
                             &mut self.window_visibility.colors,
                             t!("menu.view.colors_panel"),
                         );
+                        ui.checkbox(&mut self.window_visibility.palette, "Palette Panel");
                         ui.checkbox(
                             &mut self.window_visibility.script_editor,
                             t!("menu.view.script_editor"),
@@ -4218,7 +5181,7 @@ impl eframe::App for PaintFEApp {
                             .clicked()
                         {
                             self.canvas.zoom_in();
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -4232,7 +5195,7 @@ impl eframe::App for PaintFEApp {
                             .clicked()
                         {
                             self.canvas.zoom_out();
-                            ui.close_menu();
+                            ui.close();
                         }
                         if self
                             .assets
@@ -4246,7 +5209,7 @@ impl eframe::App for PaintFEApp {
                             .clicked()
                         {
                             self.canvas.reset_zoom();
-                            ui.close_menu();
+                            ui.close();
                         }
 
                         ui.separator();
@@ -4264,7 +5227,7 @@ impl eframe::App for PaintFEApp {
                                     self.settings.theme_mode = self.theme.mode;
                                     self.settings.save();
                                 }
-                                ui.close_menu();
+                                ui.close();
                             }
                             if ui.radio(is_dark, t!("menu.view.theme.dark")).clicked() {
                                 if !is_dark {
@@ -4273,7 +5236,7 @@ impl eframe::App for PaintFEApp {
                                     self.settings.theme_mode = self.theme.mode;
                                     self.settings.save();
                                 }
-                                ui.close_menu();
+                                ui.close();
                             }
                         });
                     });
@@ -4296,13 +5259,16 @@ impl eframe::App for PaintFEApp {
         }
 
         // --- Row 2: Actions + Project Tabs ---
-        let toolbar_resp = egui::TopBottomPanel::top("toolbar_tabs")
+        #[allow(deprecated)]
+        let toolbar_resp = egui::Panel::top("toolbar_tabs")
             .frame(self.theme.toolbar_frame())
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     // === File Actions ===
                     if self.assets.small_icon_button(ui, Icon::New).clicked() {
                         self.new_file_dialog.load_clipboard_dimensions();
+                        self.new_file_dialog
+                            .set_lock_aspect_ratio(self.settings.persist_new_file_lock_aspect);
                         self.new_file_dialog.open_dialog();
                     }
                     if self.assets.small_icon_button(ui, Icon::Open).clicked() {
@@ -4497,7 +5463,7 @@ impl eframe::App for PaintFEApp {
 
                     // Scrollable area for tabs — full remaining width, no arrows by default
                     let scroll_out = egui::ScrollArea::horizontal()
-                        .id_source("project_tabs_scroll")
+                        .id_salt("project_tabs_scroll")
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 2.0;
@@ -4592,19 +5558,19 @@ impl eframe::App for PaintFEApp {
                                     let text = if is_active { text.strong() } else { text };
 
                                     // --- Flat-bottom rounding (top-left, top-right, bottom-right, bottom-left) ---
-                                    let rounding = egui::Rounding {
-                                        nw: 5.0,
-                                        ne: 5.0,
-                                        sw: 0.0,
-                                        se: 0.0,
+                                    let rounding = egui::CornerRadius {
+                                        nw: 5,
+                                        ne: 5,
+                                        sw: 0,
+                                        se: 0,
                                     };
 
                                     // --- Tab frame ---
-                                    let tab_resp = egui::Frame::none()
+                                    let tab_resp = egui::Frame::NONE
                                         .fill(fill)
                                         .stroke(stroke)
-                                        .inner_margin(egui::Margin::symmetric(10.0, 4.0))
-                                        .rounding(rounding)
+                                        .inner_margin(egui::Margin::symmetric(10, 4))
+                                        .corner_radius(rounding)
                                         .show(ui, |ui| {
                                             ui.horizontal(|ui| {
                                                 // Dirty dot indicator
@@ -4677,7 +5643,7 @@ impl eframe::App for PaintFEApp {
                                                         let cr = close_resp.rect.expand(2.0);
                                                         ui.painter().rect_filled(
                                                             cr,
-                                                            egui::Rounding::same(3.0),
+                                                            egui::CornerRadius::same(3),
                                                             egui::Color32::from_rgba_unmultiplied(
                                                                 255, 80, 80, 30,
                                                             ),
@@ -4725,7 +5691,7 @@ impl eframe::App for PaintFEApp {
                                         );
                                         ui.painter().rect_filled(
                                             stripe_rect,
-                                            egui::Rounding::same(1.0),
+                                            egui::CornerRadius::same(1),
                                             stripe_color,
                                         );
                                     }
@@ -4825,10 +5791,10 @@ impl eframe::App for PaintFEApp {
                                         }
                                     }
                                 };
-                                let plus_resp = egui::Frame::none()
+                                let plus_resp = egui::Frame::NONE
                                     .fill(plus_fill)
-                                    .rounding(egui::Rounding::same(4.0))
-                                    .inner_margin(egui::Margin::symmetric(4.0, 2.0))
+                                    .corner_radius(egui::CornerRadius::same(4))
+                                    .inner_margin(egui::Margin::symmetric(4, 2))
                                     .show(ui, |ui| {
                                         let plus_text =
                                             egui::RichText::new("+").size(14.0).color(plus_color);
@@ -4845,6 +5811,9 @@ impl eframe::App for PaintFEApp {
                                 }
                                 if plus_resp.inner.clicked() {
                                     self.new_file_dialog.load_clipboard_dimensions();
+                                    self.new_file_dialog.set_lock_aspect_ratio(
+                                        self.settings.persist_new_file_lock_aspect,
+                                    );
                                     self.new_file_dialog.open_dialog();
                                 }
                             });
@@ -4863,6 +5832,7 @@ impl eframe::App for PaintFEApp {
                         && from < self.projects.len()
                         && to <= self.projects.len()
                     {
+                        self.persist_active_project_view();
                         let project = self.projects.remove(from);
                         let insert_at = to.min(self.projects.len());
                         self.projects.insert(insert_at, project);
@@ -4878,9 +5848,12 @@ impl eframe::App for PaintFEApp {
                         {
                             self.active_project_index += 1;
                         }
+                        self.restore_active_project_view();
                     }
                 });
             });
+
+        self.persist_active_project_view();
 
         // Sync primary color from colors panel to tools
         self.tools_panel.properties.color = self.colors_panel.get_primary_color();
@@ -4895,10 +5868,28 @@ impl eframe::App for PaintFEApp {
             }
         }
 
+        if let Some(project) = self.active_project() {
+            let switched_project = self.recent_color_project_id != Some(project.id);
+            let undo_count = project.history.undo_count();
+
+            if switched_project {
+                self.recent_color_project_id = Some(project.id);
+                self.recent_color_undo_count = undo_count;
+            } else {
+                if undo_count > self.recent_color_undo_count {
+                    self.palette_panel
+                        .observe_color(self.colors_panel.get_primary_color());
+                }
+                self.recent_color_undo_count = undo_count;
+            }
+        }
+
+        self.persist_tool_settings_if_changed();
+
         // Thin bottom border on toolbar — subtle divider (lighter than border_color)
         {
             let toolbar_rect = toolbar_resp.response.rect;
-            let screen_rect = ctx.screen_rect();
+            let screen_rect = ctx.content_rect();
             let line_color = match self.theme.mode {
                 crate::theme::ThemeMode::Dark => egui::Color32::from_white_alpha(12),
                 crate::theme::ThemeMode::Light => egui::Color32::from_black_alpha(18),
@@ -4919,13 +5910,14 @@ impl eframe::App for PaintFEApp {
         // rounded shelf frame visually floats on top of the canvas.
         let shelf_panel_bg = self.theme.canvas_bg_top;
         let shelf_margin = 6.0;
-        egui::TopBottomPanel::top("tool_shelf_strip")
+        #[allow(deprecated)]
+        egui::Panel::top("tool_shelf_strip")
             .frame(
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(shelf_panel_bg)
-                    .inner_margin(egui::Margin::same(shelf_margin)),
+                    .inner_margin(egui::Margin::same(shelf_margin as i8)),
             )
-            .exact_height(30.0) // Fixed height — tallest tool content (comboboxes) fits without resizing
+            .min_size(30.0) // Allow growth so controls don't get vertically clipped on newer egui metrics
             .show(ctx, |ui| {
                 let shelf_frame = self.theme.tool_shelf_frame();
                 shelf_frame.show(ui, |ui| {
@@ -4935,7 +5927,9 @@ impl eframe::App for PaintFEApp {
                         Some(egui::FontId::proportional(crate::theme::Theme::FONT_LABEL));
                     ui.visuals_mut().override_text_color = Some(self.theme.text_color);
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        ui.set_enabled(has_project);
+                        if !has_project {
+                            ui.disable();
+                        }
                         if let Some(ref mut overlay) = self.paste_overlay {
                             // --- Paste overlay context bar ---
                             crate::signal_widgets::tool_shelf_tag(ui, "PASTE", self.theme.accent);
@@ -4944,7 +5938,7 @@ impl eframe::App for PaintFEApp {
                             // Filter mode
                             ui.label("Filter:");
                             let current_interp = overlay.interpolation;
-                            egui::ComboBox::from_id_source("ctx_paste_filter")
+                            egui::ComboBox::from_id_salt("ctx_paste_filter")
                                 .selected_text(current_interp.label())
                                 .width(110.0)
                                 .show_ui(ui, |ui| {
@@ -5030,6 +6024,7 @@ impl eframe::App for PaintFEApp {
         let canvas_bg_top = self.theme.canvas_bg_top;
         let canvas_bg_bottom = self.theme.canvas_bg_bottom;
 
+        #[allow(deprecated)]
         egui::CentralPanel::default()
             .frame(egui::Frame {
                 fill: canvas_bg_bottom,
@@ -5136,25 +6131,42 @@ impl eframe::App for PaintFEApp {
         // --- Floating Panels ---
         // Detect screen size changes ONCE before any panel renders,
         // so all panels see the same change flag.
-        let screen_rect = ctx.screen_rect();
+        let screen_rect = ctx
+            .input(|i| i.viewport().inner_rect)
+            .unwrap_or_else(|| ctx.content_rect());
         let screen_w = screen_rect.max.x;
         let screen_h = screen_rect.max.y;
-        let screen_size_changed = self.last_screen_size.0 > 0.0
-            && ((screen_w - self.last_screen_size.0).abs() > 0.5
+        let initial_layout_pass = self.last_screen_size.0 <= 0.0 || self.last_screen_size.1 <= 0.0;
+        let screen_size_changed = initial_layout_pass
+            || ((screen_w - self.last_screen_size.0).abs() > 0.5
                 || (screen_h - self.last_screen_size.1).abs() > 0.5);
 
         self.show_floating_tools_panel(ctx, screen_size_changed);
         self.show_floating_layers_panel(ctx, screen_size_changed);
         self.show_floating_history_panel(ctx, screen_size_changed);
         self.show_floating_colors_panel(ctx, screen_size_changed);
+        self.show_floating_palette_panel(ctx, screen_size_changed);
         self.show_floating_script_editor(ctx, screen_size_changed);
+        if self.palette_reposition_settle_frames > 0 {
+            self.palette_reposition_settle_frames -= 1;
+        }
+
+        // Persist last non-trivial window content size for next launch.
+        if screen_w >= 640.0 && screen_h >= 480.0 {
+            self.settings.persist_window_width = screen_w;
+            self.settings.persist_window_height = screen_h;
+        }
+        if let Some(outer_rect) = ctx.input(|i| i.viewport().outer_rect) {
+            self.settings.persist_window_pos = Some((outer_rect.min.x, outer_rect.min.y));
+        }
+        self.persist_window_state_if_changed();
 
         // --- Tool Hint (bottom-left status text) ---
         // Subtle text showing what the current tool does, visible at the bottom-left.
         {
             let hint = &self.tools_panel.tool_hint;
             if !hint.is_empty() {
-                let screen_rect = ctx.screen_rect();
+                let screen_rect = ctx.content_rect();
                 let painter = ctx.layer_painter(egui::LayerId::new(
                     egui::Order::Foreground,
                     egui::Id::new("tool_hint_overlay"),
@@ -5335,7 +6347,7 @@ impl PaintFEApp {
                 .iter()
                 .position(|p| p.path.as_ref().is_some_and(|pp| *pp == path))
             {
-                self.active_project_index = idx;
+                self.switch_to_project(idx);
             }
             return;
         }
@@ -5659,7 +6671,7 @@ impl PaintFEApp {
         if idx >= self.projects.len() {
             return;
         }
-        self.active_project_index = idx;
+        self.switch_to_project(idx);
         let project = &mut self.projects[idx];
         project.canvas_state.ensure_all_text_layers_rasterized();
         let composite = project.canvas_state.composite();
@@ -6163,6 +7175,7 @@ impl PaintFEApp {
 
             ActiveDialog::ResizeImage(dlg) => match dlg.show(ctx) {
                 DialogResult::Ok((w, h, interp)) => {
+                    self.settings.persist_resize_lock_aspect = dlg.lock_aspect;
                     self.active_dialog = ActiveDialog::None;
                     if let Some(project) = self.active_project_mut() {
                         // Rasterize text layers before extracting pixels for resize
@@ -6203,6 +7216,7 @@ impl PaintFEApp {
                     return;
                 }
                 DialogResult::Cancel => {
+                    self.settings.persist_resize_lock_aspect = dlg.lock_aspect;
                     self.active_dialog = ActiveDialog::None;
                     return;
                 }
@@ -6213,7 +7227,13 @@ impl PaintFEApp {
                 let secondary = self.colors_panel.get_secondary_color_f32();
                 match dlg.show(ctx, secondary) {
                     DialogResult::Ok((w, h, anchor, fill)) => {
+                        self.settings.persist_resize_lock_aspect = dlg.lock_aspect;
                         self.active_dialog = ActiveDialog::None;
+                        let fill = if dlg.fill_transparent {
+                            image::Rgba([0, 0, 0, 0])
+                        } else {
+                            fill
+                        };
                         if let Some(project) = self.active_project_mut() {
                             // Rasterize text layers before extracting pixels for canvas resize
                             project.canvas_state.ensure_all_text_layers_rasterized();
@@ -6262,12 +7282,67 @@ impl PaintFEApp {
                         return;
                     }
                     DialogResult::Cancel => {
+                        self.settings.persist_resize_lock_aspect = dlg.lock_aspect;
                         self.active_dialog = ActiveDialog::None;
                         return;
                     }
                     _ => {}
                 }
             }
+
+            ActiveDialog::AlignLayer(dlg) => match dlg.show(ctx) {
+                DialogResult::Changed => {
+                    let idx = dlg.layer_idx;
+                    if let Some(flat) = &dlg.original_flat
+                        && let Some(project) = self.active_project_mut()
+                        && idx < project.canvas_state.layers.len()
+                        && !project.canvas_state.layers[idx].is_text_layer()
+                    {
+                        crate::ops::transform::align_layer_to_anchor_from_flat(
+                            &mut project.canvas_state,
+                            idx,
+                            (dlg.anchor_x, dlg.anchor_y),
+                            flat,
+                        );
+                    }
+                }
+                DialogResult::Ok((_ax, _ay)) => {
+                    self.active_dialog = ActiveDialog::None;
+                    if let Some(project) = self.active_project_mut() {
+                        let idx = dlg.layer_idx;
+                        if let Some(original) = &dlg.original_pixels
+                            && idx < project.canvas_state.layers.len()
+                        {
+                            let aligned = project.canvas_state.layers[idx].pixels.clone();
+                            project.canvas_state.layers[idx].pixels = original.clone();
+                            let mut cmd = SingleLayerSnapshotCommand::new_for_layer(
+                                "Align Layer".to_string(),
+                                &project.canvas_state,
+                                idx,
+                            );
+                            project.canvas_state.layers[idx].pixels = aligned;
+                            cmd.set_after(&project.canvas_state);
+                            project.history.push(Box::new(cmd));
+                        }
+                        project.mark_dirty();
+                    }
+                    return;
+                }
+                DialogResult::Cancel => {
+                    let idx = dlg.layer_idx;
+                    if let Some(original) = &dlg.original_pixels
+                        && let Some(project) = self.active_project_mut()
+                    {
+                        if let Some(layer) = project.canvas_state.layers.get_mut(idx) {
+                            layer.pixels = original.clone();
+                        }
+                        project.canvas_state.mark_dirty(None);
+                    }
+                    self.active_dialog = ActiveDialog::None;
+                    return;
+                }
+                _ => {}
+            },
 
             ActiveDialog::GaussianBlur(dlg) => {
                 match dlg.show(ctx) {
@@ -8473,6 +9548,7 @@ impl PaintFEApp {
                         let ox = dlg.offset_x as i32;
                         let oy = dlg.offset_y as i32;
                         let br = dlg.blur_radius;
+                        let widen = dlg.widen_radius;
                         let c = [
                             (dlg.color[0] * 255.0) as u8,
                             (dlg.color[1] * 255.0) as u8,
@@ -8487,7 +9563,9 @@ impl PaintFEApp {
                             original.clone(),
                             flat.clone(),
                             move |img| {
-                                crate::ops::effects::shadow_core(img, ox, oy, br, c, opacity, None)
+                                crate::ops::effects::shadow_core(
+                                    img, ox, oy, br, widen, c, opacity, None,
+                                )
                             },
                         );
                     }
@@ -8499,6 +9577,7 @@ impl PaintFEApp {
                         let ox = dlg.offset_x as i32;
                         let oy = dlg.offset_y as i32;
                         let br = dlg.blur_radius;
+                        let widen = dlg.widen_radius;
                         let c = [
                             (dlg.color[0] * 255.0) as u8,
                             (dlg.color[1] * 255.0) as u8,
@@ -8513,7 +9592,7 @@ impl PaintFEApp {
                                 flat,
                                 |img| {
                                     crate::ops::effects::shadow_core(
-                                        img, ox, oy, br, c, opacity, None,
+                                        img, ox, oy, br, widen, c, opacity, None,
                                     )
                                 },
                             );
@@ -8565,6 +9644,7 @@ impl PaintFEApp {
                             let ox = dlg.offset_x as i32;
                             let oy = dlg.offset_y as i32;
                             let br = dlg.blur_radius;
+                            let widen = dlg.widen_radius;
                             let c = [
                                 (dlg.color[0] * 255.0) as u8,
                                 (dlg.color[1] * 255.0) as u8,
@@ -8580,7 +9660,7 @@ impl PaintFEApp {
                                 flat.clone(),
                                 move |img| {
                                     crate::ops::effects::shadow_core(
-                                        img, ox, oy, br, c, opacity, None,
+                                        img, ox, oy, br, widen, c, opacity, None,
                                     )
                                 },
                             );
@@ -8693,6 +9773,119 @@ impl PaintFEApp {
                                 flat.clone(),
                                 move |img| {
                                     crate::ops::effects::outline_core(img, width, c, mode, None)
+                                },
+                            );
+                        }
+                    }
+                }
+            },
+
+            ActiveDialog::CanvasBorder(dlg) => match dlg.show(ctx) {
+                DialogResult::Changed => {
+                    dlg.first_open = false;
+                    let idx = dlg.layer_idx;
+                    if let (Some(original), Some(flat)) = (&dlg.original_pixels, &dlg.original_flat)
+                    {
+                        let width = dlg.width as u32;
+                        let primary = self.colors_panel.get_primary_color_f32();
+                        let c = [
+                            (primary[0] * 255.0) as u8,
+                            (primary[1] * 255.0) as u8,
+                            (primary[2] * 255.0) as u8,
+                            255,
+                        ];
+                        self.spawn_preview_job(
+                            ctx.input(|i| i.time),
+                            "Canvas Border".to_string(),
+                            idx,
+                            original.clone(),
+                            flat.clone(),
+                            move |img| {
+                                crate::ops::effects::canvas_border_core(img, width, c, None)
+                            },
+                        );
+                    }
+                }
+                DialogResult::Ok(_) => {
+                    self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                    let idx = dlg.layer_idx;
+                    if let Some(flat) = &dlg.original_flat {
+                        let width = dlg.width as u32;
+                        let primary = self.colors_panel.get_primary_color_f32();
+                        let c = [
+                            (primary[0] * 255.0) as u8,
+                            (primary[1] * 255.0) as u8,
+                            (primary[2] * 255.0) as u8,
+                            255,
+                        ];
+                        if let Some(project) = self.active_project_mut() {
+                            Self::apply_fullres_effect(
+                                &mut project.canvas_state,
+                                idx,
+                                flat,
+                                |img| crate::ops::effects::canvas_border_core(img, width, c, None),
+                            );
+                        }
+                    }
+                    self.active_dialog = ActiveDialog::None;
+                    if let Some(project) = self.active_project_mut() {
+                        let idx = dlg.layer_idx;
+                        if let Some(original) = &dlg.original_pixels
+                            && idx < project.canvas_state.layers.len()
+                        {
+                            let adjusted = project.canvas_state.layers[idx].pixels.clone();
+                            project.canvas_state.layers[idx].pixels = original.clone();
+                            let mut cmd = SingleLayerSnapshotCommand::new_for_layer(
+                                "Canvas Border".to_string(),
+                                &project.canvas_state,
+                                idx,
+                            );
+                            project.canvas_state.layers[idx].pixels = adjusted;
+                            cmd.set_after(&project.canvas_state);
+                            project.history.push(Box::new(cmd));
+                        }
+                        project.mark_dirty();
+                    }
+                    return;
+                }
+                DialogResult::Cancel => {
+                    self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                    let idx = dlg.layer_idx;
+                    if let Some(original) = &dlg.original_pixels
+                        && let Some(project) = self.active_project_mut()
+                    {
+                        if let Some(layer) = project.canvas_state.layers.get_mut(idx) {
+                            layer.pixels = original.clone();
+                        }
+                        project.canvas_state.mark_dirty(None);
+                    }
+                    self.active_dialog = ActiveDialog::None;
+                    return;
+                }
+                _ => {
+                    dlg.poll_flat();
+                    if dlg.first_open && dlg.live_preview && dlg.original_flat.is_some() {
+                        dlg.first_open = false;
+                        let idx = dlg.layer_idx;
+                        if let (Some(original), Some(flat)) =
+                            (&dlg.original_pixels, &dlg.original_flat)
+                        {
+                            let width = dlg.width as u32;
+                            let primary = self.colors_panel.get_primary_color_f32();
+                            let c = [
+                                (primary[0] * 255.0) as u8,
+                                (primary[1] * 255.0) as u8,
+                                (primary[2] * 255.0) as u8,
+                                255,
+                            ];
+                            self.spawn_preview_job(
+                                ctx.input(|i| i.time),
+                                "Canvas Border".to_string(),
+                                idx,
+                                original.clone(),
+                                flat.clone(),
+                                move |img| {
+                                    crate::ops::effects::canvas_border_core(img, width, c, None)
                                 },
                             );
                         }
@@ -9809,12 +11002,27 @@ impl PaintFEApp {
 
 // --- Floating Panel Methods ---
 impl PaintFEApp {
+    fn clamp_floating_pos(
+        pos_x: f32,
+        pos_y: f32,
+        size: egui::Vec2,
+        screen_rect: egui::Rect,
+    ) -> egui::Pos2 {
+        let margin = 8.0;
+        let min_x = screen_rect.min.x + margin;
+        let min_y = screen_rect.min.y + margin;
+        let max_x = (screen_rect.max.x - size.x - margin).max(min_x);
+        let max_y = (screen_rect.max.y - size.y - margin).max(min_y);
+        egui::pos2(pos_x.clamp(min_x, max_x), pos_y.clamp(min_y, max_y))
+    }
+
     /// Show the floating Tools panel (minimalist vertical strip) - anchored to left edge
     fn show_floating_tools_panel(&mut self, ctx: &egui::Context, screen_size_changed: bool) {
         let mut show = self.window_visibility.tools;
         let mut close_clicked = false;
 
         let first_show = self.tools_panel_pos.is_none();
+        let screen_rect = ctx.content_rect();
         let (pos_x, pos_y) = self.tools_panel_pos.unwrap_or((12.0, 128.0));
 
         let hover_id = egui::Id::new("ToolsStrip_hover");
@@ -9829,7 +11037,9 @@ impl PaintFEApp {
             .frame(self.theme.floating_window_frame_animated(hover_t));
 
         if first_show || screen_size_changed {
-            window = window.current_pos(egui::pos2(pos_x, pos_y));
+            let clamped =
+                Self::clamp_floating_pos(pos_x, pos_y, egui::vec2(114.0, 400.0), screen_rect);
+            window = window.current_pos(clamped);
         }
 
         let resp = window.show(ctx, |ui| {
@@ -9902,7 +11112,7 @@ impl PaintFEApp {
         let mut show = self.window_visibility.layers;
         let mut close_clicked = false;
 
-        let screen_rect = ctx.screen_rect();
+        let screen_rect = ctx.content_rect();
         let screen_w = screen_rect.max.x;
 
         let first_show = self.layers_panel_right_offset.is_none();
@@ -9925,7 +11135,9 @@ impl PaintFEApp {
 
         // Only force position on first show or when screen size changes
         if first_show || screen_size_changed {
-            window = window.current_pos(egui::pos2(pos_x, y_pos));
+            let clamped =
+                Self::clamp_floating_pos(pos_x, y_pos, egui::vec2(180.0, 200.0), screen_rect);
+            window = window.current_pos(clamped);
         }
 
         let resp = window.show(ctx, |ui| {
@@ -10064,7 +11276,7 @@ impl PaintFEApp {
         let mut show = self.window_visibility.history;
         let mut close_clicked = false;
 
-        let screen_rect = ctx.screen_rect();
+        let screen_rect = ctx.content_rect();
         let screen_w = screen_rect.max.x;
         let screen_h = screen_rect.max.y;
 
@@ -10087,7 +11299,9 @@ impl PaintFEApp {
             .frame(self.theme.floating_window_frame_animated(hover_t));
 
         if first_show || screen_size_changed {
-            window = window.current_pos(egui::pos2(pos_x, pos_y));
+            let clamped =
+                Self::clamp_floating_pos(pos_x, pos_y, egui::vec2(200.0, 200.0), screen_rect);
+            window = window.current_pos(clamped);
         }
 
         let resp = window.show(ctx, |ui| {
@@ -10132,7 +11346,7 @@ impl PaintFEApp {
         let mut show = self.window_visibility.colors;
         let mut close_clicked = false;
 
-        let screen_rect = ctx.screen_rect();
+        let screen_rect = ctx.content_rect();
         let screen_h = screen_rect.max.y;
 
         let first_show = self.colors_panel_left_offset.is_none();
@@ -10159,12 +11373,17 @@ impl PaintFEApp {
             .frame(self.theme.floating_window_frame_animated(hover_t));
 
         if first_show || screen_size_changed {
-            window = window.current_pos(egui::pos2(x_off, pos_y));
+            let clamped = Self::clamp_floating_pos(x_off, pos_y, panel_size, screen_rect);
+            window = window.current_pos(clamped);
         }
 
         let resp = window.show(ctx, |ui| {
             // Signal Grid panel header
-            let hdr_extra = if self.colors_panel.is_expanded() { 10.0_f32 } else { 20.0_f32 };
+            let hdr_extra = if self.colors_panel.is_expanded() {
+                10.0_f32
+            } else {
+                20.0_f32
+            };
             if signal_widgets::panel_header(
                 ui,
                 &self.theme,
@@ -10193,13 +11412,119 @@ impl PaintFEApp {
     }
 
     /// Show the floating Script Editor panel
+    fn show_floating_palette_panel(&mut self, ctx: &egui::Context, screen_size_changed: bool) {
+        let mut show = self.window_visibility.palette;
+        let mut close_clicked = false;
+
+        let screen_rect = ctx
+            .input(|i| i.viewport().inner_rect)
+            .unwrap_or_else(|| ctx.content_rect());
+
+        let panel_size = egui::vec2(286.0, 138.0);
+        let first_show = self.palette_panel_pos.is_none();
+        let source_pos = if self.palette_reposition_settle_frames > 0 {
+            self.palette_startup_target_pos.or(self.palette_panel_pos)
+        } else {
+            self.palette_panel_pos
+        };
+        let (pos_x, pos_y) = source_pos.unwrap_or((
+            screen_rect.max.x - panel_size.x - 8.0,
+            screen_rect.max.y - panel_size.y - 8.0,
+        ));
+
+        let hover_id = egui::Id::new("Palette_hover");
+        let hover_t = ctx.animate_bool(hover_id, false);
+        let mut window = egui::Window::new("Palette")
+            .open(&mut show)
+            .resizable(false)
+            .collapsible(false)
+            .fixed_size(panel_size)
+            .title_bar(false)
+            .frame(self.theme.floating_window_frame_animated(hover_t));
+
+        let should_reposition =
+            first_show || screen_size_changed || self.palette_reposition_settle_frames > 0;
+
+        if should_reposition {
+            // Keep palette where user placed it. Only apply a relaxed clamp so it remains
+            // reachable if monitor/layout changed, without forcing it inward each launch.
+            let min_x = screen_rect.min.x - panel_size.x + 24.0;
+            let min_y = screen_rect.min.y;
+            let max_x = screen_rect.max.x - 24.0;
+            let max_y = screen_rect.max.y - 24.0;
+            let clamped = egui::pos2(pos_x.clamp(min_x, max_x), pos_y.clamp(min_y, max_y));
+            window = window.fixed_pos(clamped);
+        }
+
+        let resp = window.show(ctx, |ui| {
+            if signal_widgets::panel_header(
+                ui,
+                &self.theme,
+                "Palette",
+                Some(("PALETTE", self.theme.accent4)),
+                0.0,
+            ) {
+                close_clicked = true;
+            }
+            ui.style_mut().override_text_style = Some(egui::TextStyle::Small);
+            if let Some((color, secondary)) = self.palette_panel.show(
+                ui,
+                &self.assets,
+                self.colors_panel.get_primary_color(),
+                self.colors_panel.get_secondary_color(),
+            ) {
+                if secondary {
+                    self.colors_panel.set_secondary_color(color);
+                } else {
+                    self.colors_panel.set_primary_color(color);
+                }
+            }
+        });
+
+        if let Some(inner_resp) = resp {
+            inner_resp.response.context_menu(|ui| {
+                if ui.button("Save Palette").clicked() {
+                    self.palette_panel.save_palette_dialog();
+                    ui.close();
+                }
+                if ui.button("Load Palette").clicked() {
+                    self.palette_panel.load_palette_dialog();
+                    ui.close();
+                }
+                if ui.button("Reset Palette").clicked() {
+                    self.palette_panel.reset_palette_default();
+                    ui.close();
+                }
+                if ui.button("Reset Recents").clicked() {
+                    self.palette_panel.reset_recent_default();
+                    ui.close();
+                }
+            });
+
+            let win_rect = inner_resp.response.rect;
+            if self.palette_reposition_settle_frames == 0 {
+                self.palette_panel_pos = Some((win_rect.min.x, win_rect.min.y));
+                self.palette_startup_target_pos = self.palette_panel_pos;
+            }
+            let hovered =
+                ctx.input(|i| i.pointer.hover_pos().is_some_and(|p| win_rect.contains(p)));
+            ctx.animate_bool(hover_id, hovered);
+        }
+
+        if close_clicked {
+            show = false;
+        }
+        self.window_visibility.palette = show;
+    }
+
+    /// Show the floating Script Editor panel
     fn show_floating_script_editor(&mut self, ctx: &egui::Context, screen_size_changed: bool) {
         let mut show = self.window_visibility.script_editor;
         if !show {
             return;
         }
 
-        let screen_rect = ctx.screen_rect();
+        let screen_rect = ctx.content_rect();
         let screen_w = screen_rect.max.x;
         let screen_h = screen_rect.max.y;
 
@@ -10225,7 +11550,9 @@ impl PaintFEApp {
             .frame(self.theme.floating_window_frame_animated(hover_t));
 
         if first_show || screen_size_changed {
-            window = window.current_pos(egui::pos2(pos_x, pos_y));
+            let clamped =
+                Self::clamp_floating_pos(pos_x, pos_y, egui::vec2(400.0, 350.0), screen_rect);
+            window = window.current_pos(clamped);
         }
 
         let theme_copy = self.theme.clone();

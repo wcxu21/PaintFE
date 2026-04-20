@@ -4,7 +4,7 @@
 //! that match the website's visual language: badges, button variants, gradient
 //! dividers, pill tab bars, card frames, and glow effects.
 
-use eframe::egui::{self, Color32, Rect, Response, Rounding, Sense, Stroke, Ui, Vec2};
+use eframe::egui::{self, Color32, CornerRadius, Rect, Response, Sense, Stroke, Ui, Vec2};
 use eframe::epaint::Shadow;
 
 use crate::signal_draw;
@@ -73,14 +73,18 @@ impl<'a> SignalBadge<'a> {
 
             ui.painter().rect(
                 rect,
-                Rounding::same(4.0),
+                CornerRadius::same(4),
                 fill,
                 Stroke::new(1.0, stroke_color),
+                egui::StrokeKind::Middle,
             );
 
             let text_pos = rect.min + padding;
-            ui.painter()
-                .galley(egui::pos2(text_pos.x, text_pos.y), galley);
+            ui.painter().galley(
+                egui::pos2(text_pos.x, text_pos.y),
+                galley,
+                egui::Color32::TRANSPARENT,
+            );
         }
 
         response
@@ -193,8 +197,11 @@ impl<'a> SignalButton<'a> {
                 .painter()
                 .layout_no_wrap(self.text.to_string(), font, text_color);
             let text_pos = rect.center() - galley.size() / 2.0;
-            ui.painter()
-                .galley(egui::pos2(text_pos.x, text_pos.y), galley);
+            ui.painter().galley(
+                egui::pos2(text_pos.x, text_pos.y),
+                galley,
+                egui::Color32::TRANSPARENT,
+            );
         }
 
         response
@@ -214,7 +221,7 @@ impl<'a> SignalButton<'a> {
             signal_draw::draw_glow_rect(ui.painter(), rect, theme.glow_accent, 8.0, 8.0);
         }
 
-        ui.painter().rect_filled(rect, Rounding::same(8.0), fill);
+        ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
     }
 
     fn paint_ghost(&self, ui: &Ui, rect: Rect, theme: &Theme, hovered: bool, active: bool) {
@@ -234,9 +241,10 @@ impl<'a> SignalButton<'a> {
 
         ui.painter().rect(
             rect,
-            Rounding::same(6.0),
+            CornerRadius::same(6),
             fill,
             Stroke::new(1.0, stroke_color),
+            egui::StrokeKind::Middle,
         );
     }
 
@@ -273,9 +281,10 @@ impl<'a> SignalButton<'a> {
 
         ui.painter().rect(
             rect,
-            Rounding::same(6.0),
+            CornerRadius::same(6),
             fill,
             Stroke::new(1.0, theme.accent3),
+            egui::StrokeKind::Middle,
         );
     }
 }
@@ -313,11 +322,11 @@ pub fn tool_shelf_tag(ui: &mut Ui, label: &str, color: Color32) {
         .color(color)
         .strong();
 
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(fill)
-        .rounding(egui::Rounding::same(4.0))
+        .corner_radius(egui::CornerRadius::same(4))
         .stroke(Stroke::new(1.0, stroke_color))
-        .inner_margin(egui::Margin::symmetric(8.0, 3.0))
+        .inner_margin(egui::Margin::symmetric(8, 3))
         .show(ui, |ui| {
             ui.set_height(14.0); // Fixed inner height so badge doesn't shift between tools
             ui.label(text);
@@ -395,8 +404,11 @@ impl<'a> PillTabBar<'a> {
 
         // Lay out tabs inside the container
         let inner_rect = container_rect.shrink(container_padding);
-        let mut child_ui =
-            ui.child_ui(inner_rect, egui::Layout::left_to_right(egui::Align::Center));
+        let mut child_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(inner_rect)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
 
         for (i, tab) in self.tabs.iter().enumerate() {
             let is_active = i == self.active;
@@ -444,20 +456,25 @@ impl<'a> PillTabBar<'a> {
 
             // Tab background
             if is_active {
-                ui.painter()
-                    .rect(tab_rect, Rounding::same(7.0), theme.bg3, Stroke::NONE);
+                ui.painter().rect(
+                    tab_rect,
+                    CornerRadius::same(7),
+                    theme.bg3,
+                    Stroke::NONE,
+                    egui::StrokeKind::Middle,
+                );
                 // Subtle inset shadow for active tab
                 let shadow_rect =
                     Rect::from_min_size(tab_rect.min, Vec2::new(tab_rect.width(), 2.0));
                 ui.painter().rect_filled(
                     shadow_rect,
-                    Rounding::same(1.0),
+                    CornerRadius::same(1),
                     Color32::from_black_alpha(20),
                 );
             } else if hovered {
                 ui.painter().rect_filled(
                     tab_rect,
-                    Rounding::same(7.0),
+                    CornerRadius::same(7),
                     Color32::from_rgba_unmultiplied(
                         theme.bg3.r(),
                         theme.bg3.g(),
@@ -472,7 +489,8 @@ impl<'a> PillTabBar<'a> {
                 tab_rect.left() + h_pad,
                 tab_rect.center().y - galley.size().y / 2.0,
             );
-            ui.painter().galley(text_pos, galley);
+            ui.painter()
+                .galley(text_pos, galley, egui::Color32::TRANSPARENT);
 
             // Close button
             if tab.closable {
@@ -497,8 +515,11 @@ impl<'a> PillTabBar<'a> {
                     ui.painter()
                         .layout_no_wrap("×".to_string(), close_font, close_color);
                 let close_text_pos = close_rect.center() - close_galley.size() / 2.0;
-                ui.painter()
-                    .galley(egui::pos2(close_text_pos.x, close_text_pos.y), close_galley);
+                ui.painter().galley(
+                    egui::pos2(close_text_pos.x, close_text_pos.y),
+                    close_galley,
+                    egui::Color32::TRANSPARENT,
+                );
 
                 if close_response.clicked() {
                     close_clicked = true;
@@ -534,15 +555,17 @@ struct TabResponse {
 /// });
 /// ```
 pub fn card_frame(theme: &Theme) -> egui::Frame {
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(theme.panel_bg)
-        .rounding(Rounding::same(12.0))
+        .corner_radius(CornerRadius::same(12))
         .stroke(Stroke::new(1.0, theme.border_color))
         .shadow(Shadow {
-            extrusion: 6.0,
+            offset: [0, 0],
+            blur: 6,
+            spread: 0,
             color: Color32::from_black_alpha(20),
         })
-        .inner_margin(egui::Margin::same(12.0))
+        .inner_margin(egui::Margin::same(12))
 }
 
 /// Show a card frame with hover border light-up animation.
@@ -558,15 +581,17 @@ pub fn card_frame_interactive<R>(
 
     let border = lerp_color(theme.border_color, theme.border_lit, hover_t);
 
-    let frame = egui::Frame::none()
+    let frame = egui::Frame::NONE
         .fill(theme.panel_bg)
-        .rounding(Rounding::same(12.0))
+        .corner_radius(CornerRadius::same(12))
         .stroke(Stroke::new(1.0, border))
         .shadow(Shadow {
-            extrusion: 6.0,
+            offset: [0, 0],
+            blur: 6,
+            spread: 0,
             color: Color32::from_black_alpha(20),
         })
-        .inner_margin(egui::Margin::same(12.0));
+        .inner_margin(egui::Margin::same(12));
 
     let resp = frame.show(ui, add_contents);
 
@@ -624,7 +649,7 @@ pub fn panel_header(
                 let hovered = close_resp.hovered();
                 if hovered {
                     ui.painter()
-                        .rect_filled(close_rect, Rounding::same(4.0), theme.bg3);
+                        .rect_filled(close_rect, CornerRadius::same(4), theme.bg3);
                 }
                 let color = if hovered {
                     theme.accent
@@ -634,7 +659,8 @@ pub fn panel_header(
                 let font = egui::FontId::proportional(13.0);
                 let galley = ui.painter().layout_no_wrap("×".to_string(), font, color);
                 let pos = close_rect.center() - galley.size() / 2.0;
-                ui.painter().galley(egui::pos2(pos.x, pos.y), galley);
+                ui.painter()
+                    .galley(egui::pos2(pos.x, pos.y), galley, egui::Color32::TRANSPARENT);
             }
             if close_resp.clicked() {
                 close_clicked = true;

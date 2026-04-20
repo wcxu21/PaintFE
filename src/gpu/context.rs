@@ -44,7 +44,7 @@ impl GpuContext {
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends,
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
         });
 
         // Pick power preference from settings string.
@@ -60,29 +60,28 @@ impl GpuContext {
                 compatible_surface: None, // headless — we only need compute + offscreen
                 force_fallback_adapter: force_fallback,
             })
-            .await?;
+            .await
+            .ok()?;
 
         let adapter_name = adapter.get_info().name.clone();
         let limits = adapter.limits();
 
         let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: Some("PaintFE GPU"),
-                    required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits {
-                        max_texture_dimension_2d: limits.max_texture_dimension_2d,
-                        max_storage_buffer_binding_size: limits.max_storage_buffer_binding_size,
-                        max_compute_workgroup_size_x: limits.max_compute_workgroup_size_x,
-                        max_compute_workgroup_size_y: limits.max_compute_workgroup_size_y,
-                        max_compute_workgroup_size_z: limits.max_compute_workgroup_size_z,
-                        max_compute_workgroups_per_dimension: limits
-                            .max_compute_workgroups_per_dimension,
-                        ..wgpu::Limits::downlevel_defaults()
-                    },
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("PaintFE GPU"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits {
+                    max_texture_dimension_2d: limits.max_texture_dimension_2d,
+                    max_storage_buffer_binding_size: limits.max_storage_buffer_binding_size,
+                    max_compute_workgroup_size_x: limits.max_compute_workgroup_size_x,
+                    max_compute_workgroup_size_y: limits.max_compute_workgroup_size_y,
+                    max_compute_workgroup_size_z: limits.max_compute_workgroup_size_z,
+                    max_compute_workgroups_per_dimension: limits
+                        .max_compute_workgroups_per_dimension,
+                    ..wgpu::Limits::downlevel_defaults()
                 },
-                None,
-            )
+                ..Default::default()
+            })
             .await
             .ok()?;
 

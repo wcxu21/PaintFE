@@ -6,6 +6,27 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## [1.2.0] - 2026-04-20
+
+### Added
+- **Canvas Align dialog**: Added Canvas > Align with a 3x3 anchor grid and live preview to align the active raster layer using non-transparent bounds.
+- **Canvas Border filter**: Added Filter > Stylize > Canvas Border with width control and live preview, applying an inward border from canvas edges using the primary color.
+- **Color Palette widget workflow**: Added palette-focused UI workflow updates to improve color organization and palette usability.
+- **New icon registrations/placeholders**: Added menu icon placeholders and wiring for new actions (Align and Canvas Border).
+- **Regression coverage**: Added transform/filter tests for layer alignment and canvas border behavior.
+
+### Changed
+- **Version bump**: Updated release version from 1.1.13 to 1.2.0.
+- **egui stack update**: Updated egui/eframe stack with major UX/platform improvements, including better Linux drawing tablet behavior, improved font rendering quality, and cleaner overall UI presentation.
+- **Dialog consistency pass**: Refined dialog controls and layout behavior across operation/effect dialogs for more consistent interaction.
+- **Menu/dialog routing expansion**: Extended app menu and dialog routing for newly introduced actions and workflows.
+- **Assets/localization expansion**: Extended icon loading maps and English localization strings for new and updated UI features.
+
+### Fixed
+- **Stability and regressions**: Cleaned and revalidated build/test/clippy issues encountered during this release cycle.
+
+---
+
 ## [1.1.13] - 2026-04-16
 
 ### Added

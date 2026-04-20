@@ -199,7 +199,7 @@ fn drop_shadow() {
             img.put_pixel(x, y, image::Rgba([255, 255, 255, 255]));
         }
     }
-    let result = shadow_core(&img, 5, 5, 3.0, [0, 0, 0, 255], 0.8, None);
+    let result = shadow_core(&img, 5, 5, 3.0, false, [0, 0, 0, 255], 0.8, None);
     assert_golden("filters", "drop_shadow", &result);
 }
 
@@ -220,6 +220,18 @@ fn contours() {
     let img = test_image();
     let result = contours_core(&img, 10.0, 5.0, 1.0, [0, 0, 0, 255], 42, 2, 0.5, None);
     assert_golden("filters", "contours", &result);
+}
+
+#[test]
+fn canvas_border_core_applies_edges_only() {
+    let img = create_solid(8, 8, [10, 20, 30, 255]);
+    let color = [200, 100, 50, 255];
+    let result = canvas_border_core(&img, 2, color, None);
+
+    // Edge pixel should be border color.
+    assert_eq!(result.get_pixel(0, 0).0, color);
+    // Interior pixel should remain unchanged.
+    assert_eq!(result.get_pixel(3, 3).0, [10, 20, 30, 255]);
 }
 
 // =============================================================================

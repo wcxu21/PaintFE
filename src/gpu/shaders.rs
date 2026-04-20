@@ -444,10 +444,10 @@ struct ColorDistParams {
     target_g: u32,
     target_b: u32,
     target_a: u32,
+    distance_mode: u32,
     width: u32,
     height: u32,
     _pad0: u32,
-    _pad1: u32,
 };
 
 @group(0) @binding(0) var input_tex: texture_2d<f32>;
@@ -475,7 +475,36 @@ fn cs_color_distance(@builtin(global_invocation_id) gid: vec3<u32>) {
         let dg = max(g, params.target_g) - min(g, params.target_g);
         let db = max(b, params.target_b) - min(b, params.target_b);
         let da = max(a, params.target_a) - min(a, params.target_a);
-        dist = max(max(dr, dg), max(db, da));
+
+        if (params.distance_mode == 0u) {
+            dist = max(max(dr, dg), max(db, da));
+        } else {
+            let af = f32(a) / 255.0;
+            let taf = f32(params.target_a) / 255.0;
+
+            let rf = pow(pixel.r, 2.2) * af;
+            let gf = pow(pixel.g, 2.2) * af;
+            let bf = pow(pixel.b, 2.2) * af;
+
+            let tr = pow(f32(params.target_r) / 255.0, 2.2) * taf;
+            let tg = pow(f32(params.target_g) / 255.0, 2.2) * taf;
+            let tb = pow(f32(params.target_b) / 255.0, 2.2) * taf;
+
+            let dlin_r = rf - tr;
+            let dlin_g = gf - tg;
+            let dlin_b = bf - tb;
+
+            let dluma = abs(0.2126 * dlin_r + 0.7152 * dlin_g + 0.0722 * dlin_b);
+            let dchroma = sqrt(
+                0.5 * (dlin_r - dlin_g) * (dlin_r - dlin_g)
+                + 0.5 * (dlin_g - dlin_b) * (dlin_g - dlin_b)
+                + 0.5 * (dlin_b - dlin_r) * (dlin_b - dlin_r)
+            );
+            let color_term = clamp(dluma * 0.7 + dchroma * 0.8, 0.0, 1.0);
+            let alpha_term = abs(af - taf);
+            let perceptual = u32(round(max(color_term, alpha_term) * 255.0));
+            dist = min(255u, perceptual);
+        }
     }
 
     let idx = gid.y * params.width + gid.x;
@@ -521,12 +550,18 @@ struct FloodStepParams {
     height: u32,
     step_size: u32,
     direction: u32,
+    connectivity: u32,
+};
+
+struct ChangedFlag {
+    value: atomic<u32>,
 };
 
 @group(0) @binding(0) var<storage, read> color_dist: array<u32>;
 @group(0) @binding(1) var<storage, read_write> flood_a: array<u32>;
 @group(0) @binding(2) var<storage, read_write> flood_b: array<u32>;
 @group(0) @binding(3) var<uniform> params: FloodStepParams;
+@group(0) @binding(4) var<storage, read_write> changed_flag: ChangedFlag;
 
 @compute @workgroup_size(16, 16, 1)
 fn cs_flood_step(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -583,6 +618,45 @@ fn cs_flood_step(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (params.direction == 0u) { n_dist = flood_a[ni]; } else { n_dist = flood_b[ni]; }
         let candidate = max(n_dist, my_color);
         best = min(best, candidate);
+    }
+
+    if (params.connectivity == 8u) {
+        // Up-left
+        if (x - step >= 0 && y - step >= 0) {
+            let ni = u32(y - step) * params.width + u32(x - step);
+            var n_dist: u32;
+            if (params.direction == 0u) { n_dist = flood_a[ni]; } else { n_dist = flood_b[ni]; }
+            let candidate = max(n_dist, my_color);
+            best = min(best, candidate);
+        }
+        // Up-right
+        if (x + step < w && y - step >= 0) {
+            let ni = u32(y - step) * params.width + u32(x + step);
+            var n_dist: u32;
+            if (params.direction == 0u) { n_dist = flood_a[ni]; } else { n_dist = flood_b[ni]; }
+            let candidate = max(n_dist, my_color);
+            best = min(best, candidate);
+        }
+        // Down-left
+        if (x - step >= 0 && y + step < h) {
+            let ni = u32(y + step) * params.width + u32(x - step);
+            var n_dist: u32;
+            if (params.direction == 0u) { n_dist = flood_a[ni]; } else { n_dist = flood_b[ni]; }
+            let candidate = max(n_dist, my_color);
+            best = min(best, candidate);
+        }
+        // Down-right
+        if (x + step < w && y + step < h) {
+            let ni = u32(y + step) * params.width + u32(x + step);
+            var n_dist: u32;
+            if (params.direction == 0u) { n_dist = flood_a[ni]; } else { n_dist = flood_b[ni]; }
+            let candidate = max(n_dist, my_color);
+            best = min(best, candidate);
+        }
+    }
+
+    if (best < my_dist) {
+        atomicMax(&changed_flag.value, 1u);
     }
 
     if (params.direction == 0u) {

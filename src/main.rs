@@ -7,10 +7,43 @@
 
 use eframe::egui;
 use paintfe::app::PaintFEApp;
+use paintfe::assets::AppSettings;
 use paintfe::cli;
 use paintfe::i18n;
 use paintfe::ipc;
 use paintfe::logger;
+
+#[cfg(target_os = "windows")]
+fn sanitize_window_position(pos: (f32, f32)) -> Option<[f32; 2]> {
+    unsafe extern "system" {
+        fn GetSystemMetrics(nIndex: i32) -> i32;
+    }
+    const SM_XVIRTUALSCREEN: i32 = 76;
+    const SM_YVIRTUALSCREEN: i32 = 77;
+    const SM_CXVIRTUALSCREEN: i32 = 78;
+    const SM_CYVIRTUALSCREEN: i32 = 79;
+
+    let vx = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) } as f32;
+    let vy = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) } as f32;
+    let vw = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) } as f32;
+    let vh = unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) } as f32;
+
+    if vw <= 0.0 || vh <= 0.0 {
+        return Some([pos.0, pos.1]);
+    }
+
+    let margin = 16.0;
+    let min_x = vx;
+    let min_y = vy;
+    let max_x = vx + vw - margin;
+    let max_y = vy + vh - margin;
+    Some([pos.0.clamp(min_x, max_x), pos.1.clamp(min_y, max_y)])
+}
+
+#[cfg(not(target_os = "windows"))]
+fn sanitize_window_position(pos: (f32, f32)) -> Option<[f32; 2]> {
+    Some([pos.0, pos.1])
+}
 
 fn main() -> Result<(), eframe::Error> {
     // -- Windows console management ------------------------------------
@@ -114,14 +147,23 @@ fn main() -> Result<(), eframe::Error> {
     // Load application icon (window title bar, taskbar, Alt+Tab)
     let icon = load_app_icon();
 
+    let startup_settings = AppSettings::load();
+
     // Define the native window options
     let options = eframe::NativeOptions {
         viewport: {
             let mut vp = egui::ViewportBuilder::default()
-                .with_inner_size([1280.0, 720.0])
-                .with_maximized(true)
+                .with_inner_size([
+                    startup_settings.persist_window_width.max(640.0),
+                    startup_settings.persist_window_height.max(480.0),
+                ])
                 .with_title("PaintFE")
                 .with_app_id("PaintFE");
+            if let Some((x, y)) = startup_settings.persist_window_pos
+                && let Some(safe_pos) = sanitize_window_position((x, y))
+            {
+                vp = vp.with_position(safe_pos);
+            }
             if let Some(icon_data) = icon {
                 vp = vp.with_icon(std::sync::Arc::new(icon_data));
             }
@@ -135,7 +177,7 @@ fn main() -> Result<(), eframe::Error> {
     eframe::run_native(
         "PaintFE",
         options,
-        Box::new(move |cc| Box::new(PaintFEApp::new(cc, startup_files, ipc_receiver))),
+        Box::new(move |cc| Ok(Box::new(PaintFEApp::new(cc, startup_files, ipc_receiver)))),
     )
 }
 
@@ -181,9 +223,25 @@ fn configure_event_loop(builder: &mut eframe::EventLoopBuilder<eframe::UserEvent
         const WM_SYSCHAR: u32 = 0x0106;
         let msg = unsafe { &*(msg_ptr as *const MSG) };
 
-        // Suppress WM_CHAR for control characters (Ctrl+letter combos).
-        if msg.message == WM_CHAR && (msg.wParam as u32) < 0x20 {
-            return true;
+        // Temporary low-level keyboard diagnostics: capture WM_* key state
+        // without altering message dispatch behavior.
+        paintfe::windows_key_probe::observe_windows_message(msg.message, msg.wParam);
+
+        // Suppress only Ctrl+letter WM_CHAR control codes (1..=26), while
+        // preserving essential control keys used by dialog navigation/editing.
+        //
+        // Keep these intact:
+        // - 0x08 Backspace
+        // - 0x09 Tab
+        // - 0x0D Enter
+        // - 0x1B Escape
+        if msg.message == WM_CHAR {
+            let ch = msg.wParam as u32;
+            let suppress_ctrl_letter =
+                (1..=26).contains(&ch) && ch != 0x08 && ch != 0x09 && ch != 0x0D && ch != 0x1B;
+            if suppress_ctrl_letter {
+                return true;
+            }
         }
 
         // Suppress ALL WM_SYSCHAR messages.  winit 0.28 calls DefWindowProcW

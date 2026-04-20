@@ -1,5 +1,6 @@
 use eframe::egui;
 use egui::{Color32, ColorImage, TextureHandle, TextureOptions};
+use image::ImageEncoder;
 use image::codecs::bmp::BmpEncoder;
 use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
@@ -8,6 +9,7 @@ use image::imageops::FilterType;
 use image::{DynamicImage, RgbaImage};
 use std::io::Cursor;
 use std::path::PathBuf;
+use std::sync::mpsc;
 
 // ============================================================================
 // UNITS ENUM
@@ -113,6 +115,7 @@ pub struct NewFileDialog {
     preset: SizePreset,
     focus_width_on_open: bool,
     replace_width_on_first_edit: bool,
+    clipboard_dims_rx: Option<mpsc::Receiver<Option<(u32, u32)>>>,
 }
 
 impl Default for NewFileDialog {
@@ -130,11 +133,23 @@ impl Default for NewFileDialog {
             preset: SizePreset::Size800x600,
             focus_width_on_open: false,
             replace_width_on_first_edit: false,
+            clipboard_dims_rx: None,
         }
     }
 }
 
 impl NewFileDialog {
+    pub fn set_lock_aspect_ratio(&mut self, lock: bool) {
+        self.lock_aspect_ratio = lock;
+        if lock {
+            self.aspect_ratio = self.width / self.height.max(1.0);
+        }
+    }
+
+    pub fn lock_aspect_ratio(&self) -> bool {
+        self.lock_aspect_ratio
+    }
+
     pub fn open_dialog(&mut self) {
         self.sync_inputs_from_values();
         self.open = true;
@@ -146,7 +161,8 @@ impl NewFileDialog {
     /// Called when the dialog opens so newly-created canvases match the
     /// clipboard image dimensions by default.
     pub fn load_clipboard_dimensions(&mut self) {
-        if let Some((w, h)) = crate::ops::clipboard::get_clipboard_image_dimensions() {
+        // Fast path: in-app clipboard dimensions are available immediately.
+        if let Some((w, h)) = crate::ops::clipboard::get_internal_clipboard_image_dimensions() {
             self.width = w as f32;
             self.height = h as f32;
             self.aspect_ratio = self.width / self.height.max(1.0);
@@ -154,6 +170,15 @@ impl NewFileDialog {
             self.unit = SizeUnit::Pixels;
             self.sync_inputs_from_values();
         }
+
+        // Slow path: probe system clipboard on a background thread so opening the
+        // dialog remains instant even when clipboard providers are sluggish.
+        let (tx, rx) = mpsc::channel();
+        self.clipboard_dims_rx = Some(rx);
+        std::thread::spawn(move || {
+            let dims = crate::ops::clipboard::get_clipboard_image_dimensions();
+            let _ = tx.send(dims);
+        });
     }
 
     fn sync_inputs_from_values(&mut self) {
@@ -242,16 +267,37 @@ impl NewFileDialog {
     /// Show the dialog and return Some((width, height)) if user clicks Create
     pub fn show(&mut self, ctx: &egui::Context) -> Option<(u32, u32)> {
         use crate::ops::dialogs::{
-            DialogColors, accent_separator, paint_dialog_header, section_label,
+            DialogColors, accent_separator, contrast_text_color, paint_dialog_header, section_label,
         };
 
         let mut result = None;
         let mut should_close = false;
 
         if self.open {
+            if let Some(rx) = &self.clipboard_dims_rx {
+                match rx.try_recv() {
+                    Ok(Some((w, h))) => {
+                        self.width = w as f32;
+                        self.height = h as f32;
+                        self.aspect_ratio = self.width / self.height.max(1.0);
+                        self.preset = SizePreset::Custom;
+                        self.unit = SizeUnit::Pixels;
+                        self.sync_inputs_from_values();
+                        self.clipboard_dims_rx = None;
+                    }
+                    Ok(None) => {
+                        self.clipboard_dims_rx = None;
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        self.clipboard_dims_rx = None;
+                    }
+                    Err(mpsc::TryRecvError::Empty) => {}
+                }
+            }
+
             // Keyboard: Enter = Create, Esc = Cancel
-            let enter = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-            let esc = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+            let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
+            let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
             if enter {
                 self.commit_inputs();
                 result = Some(self.to_pixels());
@@ -281,7 +327,7 @@ impl NewFileDialog {
                         .spacing([8.0, 4.0])
                         .show(ui, |ui| {
                             ui.label(t!("common.preset"));
-                            egui::ComboBox::from_id_source("preset_combo")
+                            egui::ComboBox::from_id_salt("preset_combo")
                                 .width(224.0)
                                 .selected_text(self.preset.label())
                                 .show_ui(ui, |ui| {
@@ -400,7 +446,7 @@ impl NewFileDialog {
                                 SizeUnit::Inches => t!("unit.inches"),
                                 SizeUnit::Centimeters => t!("unit.centimeters"),
                             };
-                            egui::ComboBox::from_id_source("units_combo")
+                            egui::ComboBox::from_id_salt("units_combo")
                                 .width(160.0)
                                 .selected_text(unit_label)
                                 .show_ui(ui, |ui| {
@@ -443,7 +489,7 @@ impl NewFileDialog {
                                     ui.add(
                                         egui::DragValue::new(&mut self.ppi)
                                             .speed(1.0)
-                                            .clamp_range(1.0..=1200.0),
+                                            .range(1.0..=1200.0),
                                     );
                                     ui.label(t!("unit.ppi"));
                                 });
@@ -478,7 +524,7 @@ impl NewFileDialog {
                             }
                             let create_btn = egui::Button::new(
                                 egui::RichText::new(format!("  {}  ", t!("common.create")))
-                                    .color(Color32::WHITE)
+                                    .color(contrast_text_color(colors.accent))
                                     .strong(),
                             )
                             .fill(colors.accent);
@@ -778,13 +824,12 @@ pub fn generate_preview(
             // PNG is lossless, just get the size
             let mut cursor = Cursor::new(&mut buffer);
             let encoder = PngEncoder::new(&mut cursor);
-            #[allow(deprecated)]
             encoder
-                .encode(
+                .write_image(
                     image.as_raw(),
                     image.width(),
                     image.height(),
-                    image::ColorType::Rgba8,
+                    image::ExtendedColorType::Rgba8,
                 )
                 .ok()?;
 
@@ -803,7 +848,7 @@ pub fn generate_preview(
                     rgb_image.as_raw(),
                     rgb_image.width(),
                     rgb_image.height(),
-                    image::ColorType::Rgb8,
+                    image::ColorType::Rgb8.into(),
                 )
                 .ok()?;
 
@@ -822,7 +867,7 @@ pub fn generate_preview(
             let dyn_img = DynamicImage::ImageRgba8(image.clone());
             let mut cursor = Cursor::new(&mut buffer);
             dyn_img
-                .write_to(&mut cursor, image::ImageOutputFormat::WebP)
+                .write_to(&mut cursor, image::ImageFormat::WebP)
                 .ok()?;
 
             // Decode back
@@ -843,7 +888,7 @@ pub fn generate_preview(
                     image.as_raw(),
                     image.width(),
                     image.height(),
-                    image::ColorType::Rgba8,
+                    image::ColorType::Rgba8.into(),
                 )
                 .ok()?;
 
@@ -870,11 +915,11 @@ pub fn generate_preview(
             let encoder = PngEncoder::new(&mut cursor);
             #[allow(deprecated)]
             encoder
-                .encode(
+                .write_image(
                     image.as_raw(),
                     image.width(),
                     image.height(),
-                    image::ColorType::Rgba8,
+                    image::ExtendedColorType::Rgba8,
                 )
                 .ok()?;
             // ICO overhead: ~22 bytes header + 16 bytes per entry + PNG data
@@ -895,7 +940,7 @@ pub fn generate_preview(
                     image.as_raw(),
                     image.width(),
                     image.height(),
-                    image::ColorType::Rgba8,
+                    image::ColorType::Rgba8.into(),
                 )
                 .ok()?;
 
@@ -949,7 +994,11 @@ fn rgba_to_color_image(img: &RgbaImage) -> ColorImage {
         .pixels()
         .map(|p| Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
         .collect();
-    ColorImage { size, pixels }
+    ColorImage {
+        size,
+        source_size: egui::Vec2::new(img.width() as f32, img.height() as f32),
+        pixels,
+    }
 }
 
 // ============================================================================
@@ -1205,7 +1254,7 @@ impl SaveFileDialog {
     /// Show the dialog and return SaveAction if user confirms
     pub fn show(&mut self, ctx: &egui::Context) -> Option<SaveAction> {
         use crate::ops::dialogs::{
-            DialogColors, accent_separator, paint_dialog_header, section_label,
+            DialogColors, accent_separator, contrast_text_color, paint_dialog_header, section_label,
         };
 
         let mut result = None;
@@ -1232,8 +1281,8 @@ impl SaveFileDialog {
             }
 
             // Keyboard: Enter = Save (opens native picker), Esc = Cancel
-            let enter = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-            let esc = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+            let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
+            let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
             if esc {
                 should_close = true;
             }
@@ -1321,7 +1370,7 @@ impl SaveFileDialog {
                             }
 
                             // Scroll to zoom (centered on cursor)
-                            let scroll_dy = ctx.input(|i| i.scroll_delta.y);
+                            let scroll_dy = ctx.input(|i| i.smooth_scroll_delta.y);
                             let hover_pos = ctx.input(|i| i.pointer.hover_pos());
                             if rect.contains(hover_pos.unwrap_or(egui::Pos2::ZERO)) && scroll_dy != 0.0 {
                                 let old_zoom = self.preview_zoom;
@@ -1496,7 +1545,7 @@ impl SaveFileDialog {
 
                             // ── FORMAT ────────────────────────────────────────
                             section_label(ui, &colors, "FORMAT");
-                            egui::ComboBox::from_id_source("format_combo")
+                            egui::ComboBox::from_id_salt("format_combo")
                                 .width(220.0)
                                 .selected_text(self.format.label())
                                 .show_ui(ui, |ui| {
@@ -1527,7 +1576,7 @@ impl SaveFileDialog {
                             if self.format == SaveFormat::Tiff {
                                 accent_separator(ui, &colors);
                                 section_label(ui, &colors, "COMPRESSION");
-                                egui::ComboBox::from_id_source("tiff_compression_combo")
+                                egui::ComboBox::from_id_salt("tiff_compression_combo")
                                     .width(160.0)
                                     .selected_text(match self.tiff_compression {
                                         TiffCompression::None    => "None",
@@ -1614,7 +1663,7 @@ impl SaveFileDialog {
                             }
                             let save_btn = egui::Button::new(
                                 egui::RichText::new("  Save  ")
-                                    .color(Color32::WHITE)
+                                    .color(contrast_text_color(colors.accent))
                                     .strong()
                             ).fill(colors.accent);
                             let save_clicked = ui.add(save_btn).clicked() || enter;

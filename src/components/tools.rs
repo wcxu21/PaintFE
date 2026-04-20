@@ -497,6 +497,44 @@ enum MagicWandAsyncResult {
     Global(ThresholdRegionIndex),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WandDistanceMode {
+    LegacyRgba,
+    Perceptual,
+}
+
+impl WandDistanceMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::LegacyRgba => "Legacy RGBA",
+            Self::Perceptual => "Perceptual",
+        }
+    }
+
+    pub fn all() -> &'static [Self] {
+        &[Self::Perceptual, Self::LegacyRgba]
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FloodConnectivity {
+    Four,
+    Eight,
+}
+
+impl FloodConnectivity {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Four => "4-neighbor",
+            Self::Eight => "8-neighbor",
+        }
+    }
+
+    pub fn all() -> &'static [Self] {
+        &[Self::Four, Self::Eight]
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ActiveFillRegion {
     start_x: u32,
@@ -582,6 +620,8 @@ pub struct MagicWandState {
     /// Seeded threshold-query index computed once per click.
     region_index: Option<ThresholdRegionIndex>,
     pub anti_aliased: bool,
+    pub distance_mode: WandDistanceMode,
+    pub connectivity: FloodConnectivity,
     /// Effective selection mode for the current/pending click.
     pub effective_mode: SelectionMode,
     pub global_select: bool,
@@ -607,6 +647,8 @@ impl Clone for MagicWandState {
             tolerance: self.tolerance,
             region_index: self.region_index.clone(),
             anti_aliased: self.anti_aliased,
+            distance_mode: self.distance_mode,
+            connectivity: self.connectivity,
             effective_mode: self.effective_mode,
             global_select: self.global_select,
             base_selection_mask: self.base_selection_mask.clone(),
@@ -629,6 +671,8 @@ impl Default for MagicWandState {
             tolerance: 5.0,
             region_index: None,
             anti_aliased: true,
+            distance_mode: WandDistanceMode::Perceptual,
+            connectivity: FloodConnectivity::Four,
             effective_mode: SelectionMode::Replace,
             global_select: false,
             base_selection_mask: None,
@@ -650,6 +694,8 @@ pub struct FillToolState {
     /// Tolerance for color matching (0 = exact, 100 = all).
     pub tolerance: f32,
     pub anti_aliased: bool,
+    pub distance_mode: WandDistanceMode,
+    pub connectivity: FloodConnectivity,
     pub active_fill: Option<ActiveFillRegion>,
     pub last_preview_tolerance: f32,
     pub fill_color_u8: Option<Rgba<u8>>,
@@ -672,6 +718,8 @@ impl Clone for FillToolState {
         Self {
             tolerance: self.tolerance,
             anti_aliased: self.anti_aliased,
+            distance_mode: self.distance_mode,
+            connectivity: self.connectivity,
             active_fill: self.active_fill.clone(),
             last_preview_tolerance: self.last_preview_tolerance,
             fill_color_u8: self.fill_color_u8,
@@ -694,6 +742,8 @@ impl Default for FillToolState {
         Self {
             tolerance: 5.0,
             anti_aliased: true,
+            distance_mode: WandDistanceMode::Perceptual,
+            connectivity: FloodConnectivity::Four,
             active_fill: None,
             last_preview_tolerance: 5.0,
             fill_color_u8: None,
@@ -1632,6 +1682,8 @@ pub struct ToolsPanel {
     active_layer_rgba_prewarm_rx: Option<std::sync::mpsc::Receiver<FlatLayerCache>>,
     active_layer_rgba_prewarm_key: Option<(usize, u64, u32, u32)>,
     pub brush_resize_drag_binding: KeyCombo,
+    pub injected_enter_pressed: bool,
+    pub injected_escape_pressed: bool,
 }
 
 impl Default for ToolsPanel {
@@ -1679,6 +1731,8 @@ impl Default for ToolsPanel {
             active_layer_rgba_prewarm_rx: None,
             active_layer_rgba_prewarm_key: None,
             brush_resize_drag_binding: KeyCombo::modifiers_only(false, true, false),
+            injected_enter_pressed: false,
+            injected_escape_pressed: false,
         }
     }
 }
@@ -2318,10 +2372,15 @@ impl ToolsPanel {
                         btn_rect,
                         2.0,
                         egui::Stroke::new(2.0, ui.visuals().selection.bg_fill),
+                        egui::StrokeKind::Middle,
                     );
                 } else if hovered {
-                    ui.painter()
-                        .rect_stroke(btn_rect, 4.0, ui.visuals().widgets.hovered.bg_stroke);
+                    ui.painter().rect_stroke(
+                        btn_rect,
+                        4.0,
+                        ui.visuals().widgets.hovered.bg_stroke,
+                        egui::StrokeKind::Middle,
+                    );
                 }
 
                 // Draw icon image or emoji fallback
@@ -2432,10 +2491,15 @@ impl ToolsPanel {
                     shape_rect,
                     2.0,
                     egui::Stroke::new(2.0, ui.visuals().selection.bg_fill),
+                    egui::StrokeKind::Middle,
                 );
             } else if hovered {
-                ui.painter()
-                    .rect_stroke(shape_rect, 4.0, ui.visuals().widgets.hovered.bg_stroke);
+                ui.painter().rect_stroke(
+                    shape_rect,
+                    4.0,
+                    ui.visuals().widgets.hovered.bg_stroke,
+                    egui::StrokeKind::Middle,
+                );
             }
 
             if let Some(texture) = assets.get_texture(icon) {
@@ -2512,7 +2576,7 @@ impl ToolsPanel {
                 let sized_texture = egui::load::SizedTexture::from_handle(texture);
                 let img = egui::Image::from_texture(sized_texture)
                     .fit_to_exact_size(egui::vec2(16.0, 16.0));
-                ui.add(egui::ImageButton::new(img).frame(false))
+                ui.add(egui::Button::image(img).frame(false))
                     .on_hover_text(Icon::SwapColors.tooltip())
                     .clicked()
             } else {
@@ -2553,6 +2617,7 @@ impl ToolsPanel {
                 secondary_rect,
                 2.0,
                 egui::Stroke::new(1.0, egui::Color32::from_gray(100)),
+                egui::StrokeKind::Middle,
             );
 
             // Primary color (front, top-left)
@@ -2563,6 +2628,7 @@ impl ToolsPanel {
                 primary_rect,
                 2.0,
                 egui::Stroke::new(1.0, egui::Color32::from_gray(100)),
+                egui::StrokeKind::Middle,
             );
         }
 
@@ -2595,6 +2661,7 @@ impl ToolsPanel {
                 secondary_rect,
                 3.0,
                 egui::Stroke::new(1.0, egui::Color32::from_gray(80)),
+                egui::StrokeKind::Middle,
             );
 
             // Primary color (front, top-left)
@@ -2605,6 +2672,7 @@ impl ToolsPanel {
                 primary_rect,
                 3.0,
                 egui::Stroke::new(1.0, egui::Color32::from_gray(80)),
+                egui::StrokeKind::Middle,
             );
         }
 
@@ -2637,6 +2705,7 @@ impl ToolsPanel {
                 secondary_rect,
                 2.0,
                 egui::Stroke::new(1.0, egui::Color32::from_gray(80)),
+                egui::StrokeKind::Middle,
             );
 
             // Primary color (front, top-left)
@@ -2647,6 +2716,7 @@ impl ToolsPanel {
                 primary_rect,
                 2.0,
                 egui::Stroke::new(1.0, egui::Color32::from_gray(80)),
+                egui::StrokeKind::Middle,
             );
         }
 
@@ -2968,10 +3038,18 @@ impl ToolsPanel {
             }
         };
         if btn_response.clicked() {
-            ui.memory_mut(|m| m.toggle_popup(popup_id));
+            egui::Popup::toggle_id(ui.ctx(), popup_id);
         }
 
-        egui::popup_below_widget(ui, popup_id, &btn_response, |ui| {
+        egui::Popup::new(
+            popup_id,
+            ui.ctx().clone(),
+            egui::PopupAnchor::from(&btn_response),
+            ui.layer_id(),
+        )
+        .open_memory(None::<egui::SetOpenCommand>)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
             ui.set_min_width(240.0);
 
             let cols = 5;
@@ -3139,11 +3217,11 @@ impl ToolsPanel {
 
         // Merged DragValue + dropdown arrow in one frame
         let inactive = ui.visuals().widgets.inactive;
-        let frame_resp = egui::Frame::none()
+        let frame_resp = egui::Frame::NONE
             .fill(inactive.bg_fill)
             .stroke(inactive.bg_stroke)
-            .rounding(inactive.rounding)
-            .inner_margin(egui::Margin::same(0.0))
+            .corner_radius(inactive.corner_radius)
+            .inner_margin(egui::Margin::same(0))
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 // Make inner widgets frameless — the outer Frame provides the border
@@ -3158,7 +3236,7 @@ impl ToolsPanel {
                 let dv_resp = ui.add(
                     egui::DragValue::new(&mut self.properties.size)
                         .speed(0.5)
-                        .clamp_range(1.0..=256.0)
+                        .range(1.0..=256.0)
                         .suffix("px"),
                 );
                 let dv_rect = dv_resp.rect;
@@ -3188,10 +3266,18 @@ impl ToolsPanel {
 
         let arrow_resp = frame_resp.inner;
         if arrow_resp.clicked() {
-            ui.memory_mut(|m| m.toggle_popup(popup_id));
+            egui::Popup::toggle_id(ui.ctx(), popup_id);
         }
         // Anchor popup below the whole merged control, not just the arrow
-        egui::popup_below_widget(ui, popup_id, &frame_resp.response, |ui| {
+        egui::Popup::new(
+            popup_id,
+            ui.ctx().clone(),
+            egui::PopupAnchor::from(&frame_resp.response),
+            ui.layer_id(),
+        )
+        .open_memory(None::<egui::SetOpenCommand>)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
             ui.set_min_width(80.0);
             for &preset in BRUSH_SIZE_PRESETS.iter() {
                 let label = format!("{:.0} px", preset);
@@ -3200,7 +3286,7 @@ impl ToolsPanel {
                     .clicked()
                 {
                     self.properties.size = preset;
-                    ui.memory_mut(|m| m.close_popup());
+                    egui::Popup::close_id(ui.ctx(), popup_id);
                 }
             }
         });
@@ -3222,11 +3308,11 @@ impl ToolsPanel {
         }
 
         let inactive = ui.visuals().widgets.inactive;
-        let frame_resp = egui::Frame::none()
+        let frame_resp = egui::Frame::NONE
             .fill(inactive.bg_fill)
             .stroke(inactive.bg_stroke)
-            .rounding(inactive.rounding)
-            .inner_margin(egui::Margin::same(0.0))
+            .corner_radius(inactive.corner_radius)
+            .inner_margin(egui::Margin::same(0))
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 let vis = ui.visuals_mut();
@@ -3240,7 +3326,7 @@ impl ToolsPanel {
                 let dv_resp = ui.add(
                     egui::DragValue::new(&mut self.text_state.font_size)
                         .speed(0.5)
-                        .clamp_range(6.0..=f32::MAX)
+                        .range(6.0..=f32::MAX)
                         .suffix("px"),
                 );
                 if dv_resp.changed() {
@@ -3274,9 +3360,17 @@ impl ToolsPanel {
 
         let arrow_resp = frame_resp.inner;
         if arrow_resp.clicked() {
-            ui.memory_mut(|m| m.toggle_popup(popup_id));
+            egui::Popup::toggle_id(ui.ctx(), popup_id);
         }
-        egui::popup_below_widget(ui, popup_id, &frame_resp.response, |ui| {
+        egui::Popup::new(
+            popup_id,
+            ui.ctx().clone(),
+            egui::PopupAnchor::from(&frame_resp.response),
+            ui.layer_id(),
+        )
+        .open_memory(None::<egui::SetOpenCommand>)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
             ui.set_min_width(80.0);
             for &preset in TEXT_SIZE_PRESETS.iter() {
                 let label = format!("{:.0} px", preset);
@@ -3288,7 +3382,7 @@ impl ToolsPanel {
                     self.text_state.preview_dirty = true;
                     self.text_state.glyph_cache.clear();
                     self.text_state.ctx_bar_style_dirty = true;
-                    ui.memory_mut(|m| m.close_popup());
+                    egui::Popup::close_id(ui.ctx(), popup_id);
                 }
             }
         });
@@ -3324,7 +3418,7 @@ impl ToolsPanel {
                 .add(
                     egui::DragValue::new(&mut hardness_pct)
                         .speed(1.0)
-                        .clamp_range(0.0..=100.0)
+                        .range(0.0..=100.0)
                         .suffix("%"),
                 )
                 .on_hover_text(t!("ctx.hardness_brush_tooltip"))
@@ -3339,7 +3433,7 @@ impl ToolsPanel {
         // Blend Mode
         ui.label(t!("ctx.blend"));
         let current_mode = self.properties.blending_mode;
-        egui::ComboBox::from_id_source("ctx_blend_mode")
+        egui::ComboBox::from_id_salt("ctx_blend_mode")
             .selected_text(current_mode.name())
             .width(90.0)
             .show_ui(ui, |ui| {
@@ -3368,7 +3462,7 @@ impl ToolsPanel {
             ui.add_enabled_ui(false, |ui| {
                 ui.label("Mode:");
                 let current_bm = self.properties.brush_mode;
-                egui::ComboBox::from_id_source("ctx_brush_mode")
+                egui::ComboBox::from_id_salt("ctx_brush_mode")
                     .selected_text(current_bm.label())
                     .width(70.0)
                     .show_ui(ui, |ui| {
@@ -3394,9 +3488,17 @@ impl ToolsPanel {
                 .circle_filled(dot, 2.5, ui.visuals().hyperlink_color);
         }
         if dyn_resp.clicked() {
-            ui.memory_mut(|m| m.toggle_popup(dyn_popup_id));
+            egui::Popup::toggle_id(ui.ctx(), dyn_popup_id);
         }
-        egui::popup_below_widget(ui, dyn_popup_id, &dyn_resp, |ui| {
+        egui::Popup::new(
+            dyn_popup_id,
+            ui.ctx().clone(),
+            egui::PopupAnchor::from(&dyn_resp),
+            ui.layer_id(),
+        )
+        .open_memory(None::<egui::SetOpenCommand>)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
             ui.set_min_width(220.0);
             egui::Grid::new("brush_dynamics_popup")
                 .num_columns(2)
@@ -3497,7 +3599,7 @@ impl ToolsPanel {
                 .add(
                     egui::DragValue::new(&mut spacing_pct)
                         .speed(1.0)
-                        .clamp_range(1.0..=200.0)
+                        .range(1.0..=200.0)
                         .suffix("%"),
                 )
                 .on_hover_text(t!("ctx.spacing_tooltip"))
@@ -3529,7 +3631,7 @@ impl ToolsPanel {
                 .add(
                     egui::DragValue::new(&mut lo)
                         .speed(1.0)
-                        .clamp_range(0.0..=360.0)
+                        .range(0.0..=360.0)
                         .suffix("°"),
                 )
                 .changed()
@@ -3583,7 +3685,7 @@ impl ToolsPanel {
                 .add(
                     egui::DragValue::new(&mut hi)
                         .speed(1.0)
-                        .clamp_range(0.0..=360.0)
+                        .range(0.0..=360.0)
                         .suffix("°"),
                 )
                 .changed()
@@ -3600,7 +3702,7 @@ impl ToolsPanel {
             ui.add(
                 egui::DragValue::new(&mut self.properties.tip_rotation)
                     .speed(1.0)
-                    .clamp_range(0.0..=359.0)
+                    .range(0.0..=359.0)
                     .suffix("°"),
             )
             .on_hover_text(t!("ctx.rotation_tooltip"));
@@ -3625,7 +3727,7 @@ impl ToolsPanel {
         // Line Pattern
         ui.label(t!("ctx.pattern"));
         let current_pattern = self.line_state.line_tool.options.pattern;
-        egui::ComboBox::from_id_source("ctx_line_pattern")
+        egui::ComboBox::from_id_salt("ctx_line_pattern")
             .selected_text(current_pattern.label())
             .width(70.0)
             .show_ui(ui, |ui| {
@@ -3644,7 +3746,7 @@ impl ToolsPanel {
         // End Shape
         ui.label(t!("ctx.ends"));
         let current_end_shape = self.line_state.line_tool.options.end_shape;
-        egui::ComboBox::from_id_source("ctx_line_end_shape")
+        egui::ComboBox::from_id_salt("ctx_line_end_shape")
             .selected_text(current_end_shape.label())
             .width(60.0)
             .show_ui(ui, |ui| {
@@ -3661,7 +3763,7 @@ impl ToolsPanel {
         // Arrow Side (only visible when Arrow is selected)
         if self.line_state.line_tool.options.end_shape == LineEndShape::Arrow {
             let current_arrow_side = self.line_state.line_tool.options.arrow_side;
-            egui::ComboBox::from_id_source("ctx_line_arrow_side")
+            egui::ComboBox::from_id_salt("ctx_line_arrow_side")
                 .selected_text(current_arrow_side.label())
                 .width(55.0)
                 .show_ui(ui, |ui| {
@@ -3681,7 +3783,7 @@ impl ToolsPanel {
         // Blend Mode
         ui.label(t!("ctx.blend"));
         let current_mode = self.properties.blending_mode;
-        egui::ComboBox::from_id_source("ctx_line_blend_mode")
+        egui::ComboBox::from_id_salt("ctx_line_blend_mode")
             .selected_text(current_mode.name())
             .width(90.0)
             .show_ui(ui, |ui| {
@@ -3714,7 +3816,7 @@ impl ToolsPanel {
             .add(
                 egui::DragValue::new(&mut hardness_pct)
                     .speed(1.0)
-                    .clamp_range(0.0..=100.0)
+                    .range(0.0..=100.0)
                     .suffix("%"),
             )
             .on_hover_text(t!("ctx.hardness_eraser_tooltip"))
@@ -3743,9 +3845,17 @@ impl ToolsPanel {
                 .circle_filled(dot_e, 2.5, ui.visuals().hyperlink_color);
         }
         if dyn_resp_e.clicked() {
-            ui.memory_mut(|m| m.toggle_popup(dyn_popup_id_e));
+            egui::Popup::toggle_id(ui.ctx(), dyn_popup_id_e);
         }
-        egui::popup_below_widget(ui, dyn_popup_id_e, &dyn_resp_e, |ui| {
+        egui::Popup::new(
+            dyn_popup_id_e,
+            ui.ctx().clone(),
+            egui::PopupAnchor::from(&dyn_resp_e),
+            ui.layer_id(),
+        )
+        .open_memory(None::<egui::SetOpenCommand>)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
             ui.set_min_width(180.0);
             egui::Grid::new("eraser_dynamics_popup")
                 .num_columns(2)
@@ -3783,7 +3893,7 @@ impl ToolsPanel {
                 .add(
                     egui::DragValue::new(&mut spacing_pct)
                         .speed(1.0)
-                        .clamp_range(1.0..=200.0)
+                        .range(1.0..=200.0)
                         .suffix("%"),
                 )
                 .on_hover_text(t!("ctx.spacing_tooltip"))
@@ -3801,7 +3911,7 @@ impl ToolsPanel {
     fn show_selection_options(&mut self, ui: &mut egui::Ui) {
         ui.label(t!("ctx.mode"));
         let current = self.selection_state.mode;
-        egui::ComboBox::from_id_source("ctx_sel_mode")
+        egui::ComboBox::from_id_salt("ctx_sel_mode")
             .selected_text(current.label())
             .width(90.0)
             .show_ui(ui, |ui| {
@@ -3824,7 +3934,7 @@ impl ToolsPanel {
     fn show_lasso_options(&mut self, ui: &mut egui::Ui) {
         ui.label(t!("ctx.mode"));
         let current = self.lasso_state.mode;
-        egui::ComboBox::from_id_source("ctx_lasso_mode")
+        egui::ComboBox::from_id_salt("ctx_lasso_mode")
             .selected_text(current.label())
             .width(90.0)
             .show_ui(ui, |ui| {
@@ -3845,7 +3955,7 @@ impl ToolsPanel {
         ui.label("Modify:");
         ui.add(
             egui::DragValue::new(&mut self.sel_modify_radius)
-                .clamp_range(1.0..=200.0)
+                .range(1.0..=200.0)
                 .speed(0.5)
                 .suffix("px")
                 .max_decimals(0),
@@ -3899,7 +4009,7 @@ impl ToolsPanel {
         ui.label(t!("ctx.size"));
         ui.add(
             egui::DragValue::new(&mut self.properties.size)
-                .clamp_range(1.0..=256.0)
+                .range(1.0..=256.0)
                 .speed(0.5)
                 .suffix("px"),
         );
@@ -3911,7 +4021,7 @@ impl ToolsPanel {
         if ui
             .add(
                 egui::DragValue::new(&mut hardness_pct)
-                    .clamp_range(0.0..=100.0)
+                    .range(0.0..=100.0)
                     .speed(0.5)
                     .suffix("%"),
             )
@@ -3940,7 +4050,7 @@ impl ToolsPanel {
         ui.label(t!("ctx.size"));
         ui.add(
             egui::DragValue::new(&mut self.properties.size)
-                .clamp_range(1.0..=256.0)
+                .range(1.0..=256.0)
                 .speed(0.5)
                 .suffix("px"),
         );
@@ -3952,7 +4062,7 @@ impl ToolsPanel {
         if ui
             .add(
                 egui::DragValue::new(&mut hardness_pct)
-                    .clamp_range(0.0..=100.0)
+                    .range(0.0..=100.0)
                     .speed(0.5)
                     .suffix("%"),
             )
@@ -3965,7 +4075,7 @@ impl ToolsPanel {
         // Quality dropdown
         ui.label("Quality:");
         let cur_q = self.content_aware_state.quality;
-        egui::ComboBox::from_id_source("ca_quality")
+        egui::ComboBox::from_id_salt("ca_quality")
             .selected_text(cur_q.label())
             .width(100.0)
             .show_ui(ui, |ui| {
@@ -3982,7 +4092,7 @@ impl ToolsPanel {
             ui.label(t!("ctx.content_aware.sample"));
             ui.add(
                 egui::DragValue::new(&mut self.content_aware_state.sample_radius)
-                    .clamp_range(10.0..=150.0)
+                    .range(10.0..=150.0)
                     .speed(0.5)
                     .suffix("px"),
             );
@@ -3994,7 +4104,7 @@ impl ToolsPanel {
             ui.label("Patch:");
             ui.add(
                 egui::DragValue::new(&mut self.content_aware_state.patch_size)
-                    .clamp_range(3_u32..=11_u32)
+                    .range(3_u32..=11_u32)
                     .speed(0.5)
                     .suffix("px"),
             );
@@ -4115,8 +4225,12 @@ impl ToolsPanel {
                 egui::vec2(handle_width, handle_height),
             );
             ui.painter().rect_filled(handle_rect, 2.0, handle_color);
-            ui.painter()
-                .rect_stroke(handle_rect, 2.0, (1.0, handle_border));
+            ui.painter().rect_stroke(
+                handle_rect,
+                2.0,
+                (1.0, handle_border),
+                egui::StrokeKind::Middle,
+            );
 
             // Draw value text centered on track
             let text = format!("{}%", new_value.round() as i32);
@@ -4199,9 +4313,53 @@ impl ToolsPanel {
 
         ui.separator();
 
+        ui.label("Compare");
+        let prev_distance_mode = self.magic_wand_state.distance_mode;
+        egui::ComboBox::from_id_salt("ctx_magic_wand_distance_mode")
+            .selected_text(self.magic_wand_state.distance_mode.label())
+            .width(120.0)
+            .show_ui(ui, |ui| {
+                for &mode in WandDistanceMode::all() {
+                    if ui
+                        .selectable_label(mode == self.magic_wand_state.distance_mode, mode.label())
+                        .clicked()
+                    {
+                        self.magic_wand_state.distance_mode = mode;
+                    }
+                }
+            });
+        if self.magic_wand_state.distance_mode != prev_distance_mode {
+            self.clear_magic_wand_async_state();
+            ui.ctx().request_repaint();
+        }
+
+        ui.separator();
+
+        ui.label("Connectivity");
+        let prev_connectivity = self.magic_wand_state.connectivity;
+        egui::ComboBox::from_id_salt("ctx_magic_wand_connectivity")
+            .selected_text(self.magic_wand_state.connectivity.label())
+            .width(120.0)
+            .show_ui(ui, |ui| {
+                for &mode in FloodConnectivity::all() {
+                    if ui
+                        .selectable_label(mode == self.magic_wand_state.connectivity, mode.label())
+                        .clicked()
+                    {
+                        self.magic_wand_state.connectivity = mode;
+                    }
+                }
+            });
+        if self.magic_wand_state.connectivity != prev_connectivity {
+            self.clear_magic_wand_async_state();
+            ui.ctx().request_repaint();
+        }
+
+        ui.separator();
+
         ui.label(t!("ctx.mode"));
         let current = self.selection_state.mode;
-        egui::ComboBox::from_id_source("ctx_magic_wand_mode")
+        egui::ComboBox::from_id_salt("ctx_magic_wand_mode")
             .selected_text(current.label())
             .width(90.0)
             .show_ui(ui, |ui| {
@@ -4239,6 +4397,50 @@ impl ToolsPanel {
             self.fill_state.recalc_pending = true;
             ui.ctx().request_repaint();
         }
+
+        ui.separator();
+
+        ui.label("Compare");
+        let prev_distance_mode = self.fill_state.distance_mode;
+        egui::ComboBox::from_id_salt("ctx_fill_distance_mode")
+            .selected_text(self.fill_state.distance_mode.label())
+            .width(120.0)
+            .show_ui(ui, |ui| {
+                for &mode in WandDistanceMode::all() {
+                    if ui
+                        .selectable_label(mode == self.fill_state.distance_mode, mode.label())
+                        .clicked()
+                    {
+                        self.fill_state.distance_mode = mode;
+                    }
+                }
+            });
+        if self.fill_state.distance_mode != prev_distance_mode {
+            self.clear_fill_preview_state();
+            ui.ctx().request_repaint();
+        }
+
+        ui.separator();
+
+        ui.label("Connectivity");
+        let prev_connectivity = self.fill_state.connectivity;
+        egui::ComboBox::from_id_salt("ctx_fill_connectivity")
+            .selected_text(self.fill_state.connectivity.label())
+            .width(120.0)
+            .show_ui(ui, |ui| {
+                for &mode in FloodConnectivity::all() {
+                    if ui
+                        .selectable_label(mode == self.fill_state.connectivity, mode.label())
+                        .clicked()
+                    {
+                        self.fill_state.connectivity = mode;
+                    }
+                }
+            });
+        if self.fill_state.connectivity != prev_connectivity {
+            self.clear_fill_preview_state();
+            ui.ctx().request_repaint();
+        }
     }
 
     pub fn show_properties_toolbar(&mut self, ui: &mut egui::Ui, assets: &Assets) {
@@ -4254,7 +4456,7 @@ impl ToolsPanel {
             .add(
                 egui::DragValue::new(&mut hardness_pct)
                     .speed(1.0)
-                    .clamp_range(0.0..=100.0)
+                    .range(0.0..=100.0)
                     .suffix("%"),
             )
             .on_hover_text(t!("ctx.hardness_brush_tooltip"))
@@ -4268,7 +4470,7 @@ impl ToolsPanel {
         // Blend Mode Dropdown (for brush painting)
         ui.label(t!("ctx.blend"));
         let current_mode = self.properties.blending_mode;
-        egui::ComboBox::from_id_source("tool_blend_mode")
+        egui::ComboBox::from_id_salt("tool_blend_mode")
             .selected_text(current_mode.name())
             .width(90.0)
             .show_ui(ui, |ui: &mut egui::Ui| {
@@ -4555,21 +4757,38 @@ impl ToolsPanel {
         let is_primary_released = ui.input(|i| {
             i.pointer.primary_released()
                 || i.events.iter().any(|e| {
-                    matches!(e, egui::Event::Touch { phase: egui::TouchPhase::End, .. })
+                    matches!(
+                        e,
+                        egui::Event::Touch {
+                            phase: egui::TouchPhase::End,
+                            ..
+                        }
+                    )
                 })
         });
         let is_primary_clicked = ui.input(|i| i.pointer.primary_clicked());
         let is_primary_pressed = ui.input(|i| {
             i.pointer.primary_pressed()
                 || i.events.iter().any(|e| {
-                    matches!(e, egui::Event::Touch { phase: egui::TouchPhase::Start, .. })
+                    matches!(
+                        e,
+                        egui::Event::Touch {
+                            phase: egui::TouchPhase::Start,
+                            ..
+                        }
+                    )
                 })
         }); // Just pressed this frame
         let is_secondary_down = ui.input(|i| i.pointer.secondary_down());
         let is_secondary_released = ui.input(|i| i.pointer.secondary_released());
         let is_secondary_clicked = ui.input(|i| i.pointer.secondary_clicked());
         let shift_held = ui.input(|i| i.modifiers.shift);
-        let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+        let enter_pressed =
+            ui.input(|i| i.key_pressed(egui::Key::Enter)) || self.injected_enter_pressed;
+        let escape_pressed_global =
+            ui.input(|i| i.key_pressed(egui::Key::Escape)) || self.injected_escape_pressed;
+        self.injected_enter_pressed = false;
+        self.injected_escape_pressed = false;
 
         // Read pen/touch pressure from egui touch events (Apple Pencil, Wacom, etc.)
         // Uses the latest Touch event's force value; falls back to 1.0 (no pen).
@@ -5370,7 +5589,7 @@ impl ToolsPanel {
             }
 
             Tool::RectangleSelect | Tool::EllipseSelect => {
-                let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                let esc_pressed = escape_pressed_global;
                 let alt_held = ui.input(|i| i.modifiers.alt);
                 let ctrl_held = ui.input(|i| i.modifiers.command);
                 let is_secondary_pressed =
@@ -5491,9 +5710,10 @@ impl ToolsPanel {
                             Tool::RectangleSelect => "Rectangle Select",
                             _ => "Ellipse Select",
                         };
-                        self.pending_history_commands.push(Box::new(
-                            SelectionCommand::new(tool_name, sel_before, sel_after),
-                        ));
+                        self.pending_history_commands
+                            .push(Box::new(SelectionCommand::new(
+                                tool_name, sel_before, sel_after,
+                            )));
                     }
 
                     self.selection_state.drag_start = None;
@@ -5507,7 +5727,7 @@ impl ToolsPanel {
 
             // Magic Wand tool - color-based selection with live preview
             Tool::MagicWand => {
-                let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                let esc_pressed = escape_pressed_global;
                 let shift_held_mw = ui.input(|i| i.modifiers.shift);
                 let alt_held_mw = ui.input(|i| i.modifiers.alt);
                 let ctrl_held_mw = ui.input(|i| i.modifiers.command);
@@ -5606,7 +5826,7 @@ impl ToolsPanel {
 
             // Fill tool - flood fill with live preview
             Tool::Fill => {
-                let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                let esc_pressed = escape_pressed_global;
 
                 // Guard: auto-rasterize text layers before destructive fill
                 if (is_primary_clicked || is_secondary_clicked)
@@ -5751,7 +5971,7 @@ impl ToolsPanel {
             // TEXT TOOL — click to place cursor, type to add text
             // ================================================================
             Tool::Text => {
-                let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                let escape_pressed = escape_pressed_global;
                 let ctrl_enter =
                     ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command);
 
@@ -6700,7 +6920,7 @@ impl ToolsPanel {
 
                 // Click to place origin (or commit existing + start new)
                 // Only if not dragging the handle
-                let any_popup_open = ui.ctx().memory(|m| m.any_popup_open());
+                let any_popup_open = egui::Popup::is_any_open(ui.ctx());
                 if is_primary_clicked
                     && !self.text_state.dragging_handle
                     && !self.text_state.text_box_click_guard
@@ -6985,7 +7205,7 @@ impl ToolsPanel {
                 // focus.  When a DragValue or other UI widget is focused the
                 // same keystrokes would otherwise leak into the text layer.
                 let canvas_has_focus = ui.ctx().memory(|m| {
-                    match m.focus() {
+                    match m.focused() {
                         Some(id) => canvas_state.canvas_widget_id == Some(id),
                         None => true, // no widget focused — canvas owns input
                     }
@@ -7244,7 +7464,7 @@ impl ToolsPanel {
                     return;
                 }
 
-                let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                let escape_pressed = escape_pressed_global;
 
                 // Escape: reset
                 if escape_pressed && self.liquify_state.is_active {
@@ -7384,7 +7604,7 @@ impl ToolsPanel {
                     return;
                 }
 
-                let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                let escape_pressed = escape_pressed_global;
 
                 // Escape: reset to original
                 if escape_pressed && self.mesh_warp_state.is_active {
@@ -7565,7 +7785,7 @@ impl ToolsPanel {
                     return;
                 }
 
-                let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                let escape_pressed = escape_pressed_global;
 
                 // Escape: cancel
                 if escape_pressed {
@@ -7892,7 +8112,7 @@ impl ToolsPanel {
             // GRADIENT TOOL — click+drag to define gradient direction
             // ================================================================
             Tool::Gradient => {
-                let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                let escape_pressed = escape_pressed_global;
 
                 // Guard: auto-rasterize text layers before destructive gradient
                 if is_primary_pressed
@@ -8080,7 +8300,7 @@ impl ToolsPanel {
                 let alt_held = ui.input(|i| i.modifiers.alt);
 
                 // Enter/Escape: clear source point
-                if enter_pressed || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if enter_pressed || escape_pressed_global {
                     self.clone_stamp_state.source = None;
                     self.clone_stamp_state.offset = None;
                     self.clone_stamp_state.offset_locked = false;
@@ -8397,7 +8617,7 @@ impl ToolsPanel {
             // LASSO SELECT — freeform polygon selection
             // ================================================================
             Tool::Lasso => {
-                let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                let esc_pressed = escape_pressed_global;
                 let alt_held_l = ui.input(|i| i.modifiers.alt);
                 let is_secondary_pressed =
                     ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary));
@@ -8494,9 +8714,12 @@ impl ToolsPanel {
                         canvas_state.mark_dirty(None);
                     }
                     let sel_after = canvas_state.selection_mask.clone();
-                    self.pending_history_commands.push(Box::new(
-                        SelectionCommand::new("Lasso Select", sel_before, sel_after),
-                    ));
+                    self.pending_history_commands
+                        .push(Box::new(SelectionCommand::new(
+                            "Lasso Select",
+                            sel_before,
+                            sel_after,
+                        )));
                     ui.ctx().request_repaint();
                 }
             }
@@ -8560,7 +8783,12 @@ impl ToolsPanel {
                     let accent_faint =
                         Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 30);
                     painter.rect_filled(r, 0.0, accent_faint);
-                    painter.rect_stroke(r, 0.0, egui::Stroke::new(1.0, accent));
+                    painter.rect_stroke(
+                        r,
+                        0.0,
+                        egui::Stroke::new(1.0, accent),
+                        egui::StrokeKind::Middle,
+                    );
                 }
 
                 // On release: zoom-to-rect if dragging, otherwise simple click zoom
@@ -8636,7 +8864,7 @@ impl ToolsPanel {
             // PERSPECTIVE CROP — 4-corner quad, drag handles
             // ================================================================
             Tool::PerspectiveCrop => {
-                let esc_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                let esc_pressed = escape_pressed_global;
 
                 if esc_pressed {
                     self.perspective_crop_state.active = false;
@@ -10925,7 +11153,55 @@ impl ToolsPanel {
     #[inline]
     fn tolerance_threshold_u8(tolerance: f32) -> u8 {
         let normalized = (tolerance / 100.0).clamp(0.0, 1.0);
-        (normalized * normalized * 255.0).round().clamp(0.0, 255.0) as u8
+        (normalized * 255.0).round().clamp(0.0, 255.0) as u8
+    }
+
+    #[inline]
+    fn srgb_to_linear(v: f32) -> f32 {
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    #[inline]
+    fn perceptual_distance(flat_rgba: &[u8], idx: usize, target: &Rgba<u8>) -> u8 {
+        let base = idx * 4;
+        let r = flat_rgba[base] as f32 / 255.0;
+        let g = flat_rgba[base + 1] as f32 / 255.0;
+        let b = flat_rgba[base + 2] as f32 / 255.0;
+        let a = flat_rgba[base + 3] as f32 / 255.0;
+
+        let tr = target.0[0] as f32 / 255.0;
+        let tg = target.0[1] as f32 / 255.0;
+        let tb = target.0[2] as f32 / 255.0;
+        let ta = target.0[3] as f32 / 255.0;
+
+        if ta <= 0.0 && a <= 0.0 {
+            return 0;
+        }
+
+        let r_lin = Self::srgb_to_linear(r) * a;
+        let g_lin = Self::srgb_to_linear(g) * a;
+        let b_lin = Self::srgb_to_linear(b) * a;
+        let tr_lin = Self::srgb_to_linear(tr) * ta;
+        let tg_lin = Self::srgb_to_linear(tg) * ta;
+        let tb_lin = Self::srgb_to_linear(tb) * ta;
+
+        let dr = r_lin - tr_lin;
+        let dg = g_lin - tg_lin;
+        let db = b_lin - tb_lin;
+
+        let dluma = (0.2126 * dr + 0.7152 * dg + 0.0722 * db).abs();
+        let dchroma = (0.5 * (dr - dg) * (dr - dg)
+            + 0.5 * (dg - db) * (dg - db)
+            + 0.5 * (db - dr) * (db - dr))
+            .sqrt();
+        let color_term = (dluma * 0.7 + dchroma * 0.8).clamp(0.0, 1.0);
+        let alpha_term = (a - ta).abs();
+
+        ((color_term.max(alpha_term) * 255.0).round()).clamp(0.0, 255.0) as u8
     }
 
     #[inline]
@@ -11357,9 +11633,12 @@ impl ToolsPanel {
                 .or_else(|| canvas_state.selection_mask.clone());
             let after = canvas_state.selection_mask.clone();
             if before != after {
-                self.pending_history_commands.push(Box::new(
-                    SelectionCommand::new("Magic Wand Select", before, after),
-                ));
+                self.pending_history_commands
+                    .push(Box::new(SelectionCommand::new(
+                        "Magic Wand Select",
+                        before,
+                        after,
+                    )));
             }
             return;
         }
@@ -11653,6 +11932,8 @@ impl ToolsPanel {
         let selection_mask = canvas_state.selection_mask.clone();
         let width = canvas_state.width;
         let height = canvas_state.height;
+        let distance_mode = self.fill_state.distance_mode;
+        let connectivity = self.fill_state.connectivity;
         let color_or_aa_changed = self.fill_state.last_preview_aa != anti_aliased
             || self.fill_state.last_preview_tolerance < 0.0
             || self.fill_state.fill_color_u8 != Some(fill_color_u8);
@@ -11723,6 +12004,7 @@ impl ToolsPanel {
                             &active_fill.target_color,
                             width,
                             height,
+                            distance_mode,
                         )
                     } else {
                         Self::compute_flood_distance_map(
@@ -11731,6 +12013,8 @@ impl ToolsPanel {
                             &active_fill.target_color,
                             width,
                             height,
+                            distance_mode,
+                            connectivity,
                         )
                     };
                     let fill_mask = Self::build_threshold_mask(&region_index, threshold, false);
@@ -11818,6 +12102,8 @@ impl ToolsPanel {
         let w = canvas_state.width;
         let h = canvas_state.height;
         let global = self.magic_wand_state.global_select;
+        let distance_mode = self.magic_wand_state.distance_mode;
+        let connectivity = self.magic_wand_state.connectivity;
 
         // GPU path: compute distances synchronously on GPU
         if let Some(gpu) = gpu_renderer {
@@ -11831,6 +12117,7 @@ impl ToolsPanel {
                     target_color.0,
                     w,
                     h,
+                    distance_mode,
                     &mut distances,
                 )
             } else {
@@ -11843,6 +12130,8 @@ impl ToolsPanel {
                     start_pos.1,
                     w,
                     h,
+                    distance_mode,
+                    connectivity,
                     &mut distances,
                 )
             };
@@ -11867,11 +12156,24 @@ impl ToolsPanel {
 
         rayon::spawn(move || {
             let result = if global {
-                let map = Self::compute_global_distance_map(&flat_rgba, &target_color, w, h);
+                let map = Self::compute_global_distance_map(
+                    &flat_rgba,
+                    &target_color,
+                    w,
+                    h,
+                    distance_mode,
+                );
                 MagicWandAsyncResult::Global(map)
             } else {
-                let map =
-                    Self::compute_flood_distance_map(&flat_rgba, start_pos, &target_color, w, h);
+                let map = Self::compute_flood_distance_map(
+                    &flat_rgba,
+                    start_pos,
+                    &target_color,
+                    w,
+                    h,
+                    distance_mode,
+                    connectivity,
+                );
                 MagicWandAsyncResult::Flood(map)
             };
             let _ = tx.send(result);
@@ -11892,12 +12194,15 @@ impl ToolsPanel {
         target_color: &Rgba<u8>,
         width: u32,
         height: u32,
+        distance_mode: WandDistanceMode,
+        connectivity: FloodConnectivity,
     ) -> ThresholdRegionIndex {
         let n = (width * height) as usize;
         let w = width as usize;
 
         let seed_idx = seed.1 as usize * w + seed.0 as usize;
-        let seed_dist = Self::pixel_color_distance(flat_rgba, seed_idx, target_color);
+        let seed_dist =
+            Self::pixel_color_distance(flat_rgba, seed_idx, target_color, distance_mode);
 
         let mut distances = vec![u8::MAX; n];
         distances[seed_idx] = seed_dist;
@@ -11919,16 +12224,30 @@ impl ToolsPanel {
             let x = (idx % w) as u32;
             let y = (idx / w) as u32;
 
-            // 4-connected neighbors
-            let neighbors: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
-            for (dx, dy) in neighbors {
+            let neighbors_4: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
+            let neighbors_8: [(i32, i32); 8] = [
+                (-1, 0),
+                (1, 0),
+                (0, -1),
+                (0, 1),
+                (-1, -1),
+                (1, -1),
+                (-1, 1),
+                (1, 1),
+            ];
+            let neighbors: &[(i32, i32)] = match connectivity {
+                FloodConnectivity::Four => &neighbors_4,
+                FloodConnectivity::Eight => &neighbors_8,
+            };
+            for &(dx, dy) in neighbors {
                 let nx = x as i32 + dx;
                 let ny = y as i32 + dy;
                 if nx < 0 || ny < 0 || nx >= width as i32 || ny >= height as i32 {
                     continue;
                 }
                 let ni = ny as usize * w + nx as usize;
-                let neighbor_dist = Self::pixel_color_distance(flat_rgba, ni, target_color);
+                let neighbor_dist =
+                    Self::pixel_color_distance(flat_rgba, ni, target_color, distance_mode);
                 let new_cost = (cost as u8).max(neighbor_dist);
                 if new_cost < distances[ni] {
                     distances[ni] = new_cost;
@@ -11948,6 +12267,7 @@ impl ToolsPanel {
         target_color: &Rgba<u8>,
         width: u32,
         height: u32,
+        distance_mode: WandDistanceMode,
     ) -> ThresholdRegionIndex {
         let n = (width * height) as usize;
         let mut out = vec![0u8; n];
@@ -11957,7 +12277,7 @@ impl ToolsPanel {
             .for_each(|(chunk_idx, chunk)| {
                 let base = chunk_idx * 4096;
                 for (j, val) in chunk.iter_mut().enumerate() {
-                    *val = Self::pixel_color_distance(flat_rgba, base + j, &tc);
+                    *val = Self::pixel_color_distance(flat_rgba, base + j, &tc, distance_mode);
                 }
             });
         ThresholdRegionIndex::from_distances(out, width, height)
@@ -11966,7 +12286,16 @@ impl ToolsPanel {
     /// Max-component color distance between a flat RGBA pixel at `idx` and `target`.
     /// Returns a value in [0.0, 255.0].
     #[inline]
-    fn pixel_color_distance(flat_rgba: &[u8], idx: usize, target: &Rgba<u8>) -> u8 {
+    fn pixel_color_distance(
+        flat_rgba: &[u8],
+        idx: usize,
+        target: &Rgba<u8>,
+        mode: WandDistanceMode,
+    ) -> u8 {
+        if mode == WandDistanceMode::Perceptual {
+            return Self::perceptual_distance(flat_rgba, idx, target);
+        }
+
         let base = idx * 4;
         let r = flat_rgba[base];
         let g = flat_rgba[base + 1];
@@ -12067,6 +12396,7 @@ impl ToolsPanel {
                         target_color.0,
                         canvas_state.width,
                         canvas_state.height,
+                        self.fill_state.distance_mode,
                         &mut distances,
                     )
                 } else {
@@ -12079,6 +12409,8 @@ impl ToolsPanel {
                         start_pos.1,
                         canvas_state.width,
                         canvas_state.height,
+                        self.fill_state.distance_mode,
+                        self.fill_state.connectivity,
                         &mut distances,
                     )
                 };
@@ -13470,7 +13802,12 @@ impl ToolsPanel {
             painter.line_segment([c[2], c[3]], stroke);
             painter.line_segment([c[3], c[0]], stroke);
         } else {
-            painter.rect_stroke(border_rect, 0.0, egui::Stroke::new(1.0, accent_semi));
+            painter.rect_stroke(
+                border_rect,
+                0.0,
+                egui::Stroke::new(1.0, accent_semi),
+                egui::StrokeKind::Middle,
+            );
         }
 
         // --- Resize handles, rotation handle, delete button (text layer only) ---
@@ -13495,7 +13832,7 @@ impl ToolsPanel {
                     egui::vec2(handle_size * 2.0, handle_size * 2.0),
                 );
                 painter.rect_filled(hr, 1.0, accent_fill);
-                painter.rect_stroke(hr, 1.0, handle_stroke);
+                painter.rect_stroke(hr, 1.0, handle_stroke, egui::StrokeKind::Middle);
             }
 
             // --- Rotation handle (circle above top-center with connector line) ---
@@ -14192,7 +14529,7 @@ impl ToolsPanel {
         // Shape dropdown
         ui.label(t!("ctx.shapes.shape"));
         let current_shape = self.gradient_state.shape;
-        egui::ComboBox::from_id_source("gradient_shape")
+        egui::ComboBox::from_id_salt("gradient_shape")
             .selected_text(current_shape.label())
             .width(120.0)
             .show_ui(ui, |ui| {
@@ -14249,7 +14586,7 @@ impl ToolsPanel {
             secondary_color.b(),
             secondary_color.a(),
         ];
-        egui::ComboBox::from_id_source("gradient_preset")
+        egui::ComboBox::from_id_salt("gradient_preset")
             .selected_text(current_preset.label())
             .width(150.0)
             .show_ui(ui, |ui| {
@@ -14340,7 +14677,12 @@ impl ToolsPanel {
         }
 
         // Outline
-        painter.rect_stroke(bar_rect, 1.0, egui::Stroke::new(1.0, Color32::DARK_GRAY));
+        painter.rect_stroke(
+            bar_rect,
+            1.0,
+            egui::Stroke::new(1.0, Color32::DARK_GRAY),
+            egui::StrokeKind::Middle,
+        );
 
         // Draw stop handles
         let stop_y = bar_rect.max.y + stop_radius + 1.0;
@@ -14497,7 +14839,12 @@ impl ToolsPanel {
                     }
                 }
                 p.rect_filled(swatch_rect, 2.0, preview_color);
-                p.rect_stroke(swatch_rect, 2.0, egui::Stroke::new(1.0, Color32::DARK_GRAY));
+                p.rect_stroke(
+                    swatch_rect,
+                    2.0,
+                    egui::Stroke::new(1.0, Color32::DARK_GRAY),
+                    egui::StrokeKind::Middle,
+                );
 
                 // Hex label
                 ui.label(format!(
@@ -14569,7 +14916,7 @@ impl ToolsPanel {
         ui.label(t!("ctx.text.font"));
         let family_label = self.text_state.font_family.clone();
         let popup_id = ui.make_persistent_id("ctx_text_font_popup");
-        let is_open = ui.memory(|mem| mem.is_popup_open(popup_id));
+        let is_open = egui::Popup::is_id_open(ui.ctx(), popup_id);
 
         if self.text_state.available_fonts.is_empty() {
             // Still loading
@@ -14588,7 +14935,7 @@ impl ToolsPanel {
                 .min_size(egui::vec2(140.0, 0.0)),
             );
             if button_response.clicked() {
-                ui.memory_mut(|mem| mem.toggle_popup(popup_id));
+                egui::Popup::toggle_id(ui.ctx(), popup_id);
             }
             if is_open {
                 let below = button_response.rect;
@@ -14774,7 +15121,7 @@ impl ToolsPanel {
                                             {
                                                 self.text_state.font_weight = 400;
                                             }
-                                            ui.memory_mut(|mem| mem.close_popup());
+                                            egui::Popup::close_id(ui.ctx(), popup_id);
                                         }
                                     }
                                 },
@@ -14815,7 +15162,7 @@ impl ToolsPanel {
                         && !popup_rect.contains(pos)
                         && !button_response.rect.contains(pos)
                     {
-                        ui.memory_mut(|mem| mem.close_popup());
+                        egui::Popup::close_id(ui.ctx(), popup_id);
                     }
                 }
             }
@@ -14832,7 +15179,7 @@ impl ToolsPanel {
                 .find(|w| w.1 == self.text_state.font_weight)
                 .map(|w| w.0.as_str())
                 .unwrap_or("Regular");
-            egui::ComboBox::from_id_source("ctx_text_weight")
+            egui::ComboBox::from_id_salt("ctx_text_weight")
                 .selected_text(current_weight_label)
                 .width(90.0)
                 .show_ui(ui, |ui| {
@@ -14925,7 +15272,7 @@ impl ToolsPanel {
             .add(
                 egui::DragValue::new(&mut self.text_state.width_scale)
                     .speed(0.01)
-                    .clamp_range(0.01..=f32::MAX)
+                    .range(0.01..=f32::MAX)
                     .suffix("×"),
             )
             .changed()
@@ -14938,7 +15285,7 @@ impl ToolsPanel {
             .add(
                 egui::DragValue::new(&mut self.text_state.height_scale)
                     .speed(0.01)
-                    .clamp_range(0.01..=f32::MAX)
+                    .range(0.01..=f32::MAX)
                     .suffix("×"),
             )
             .changed()
@@ -14952,7 +15299,7 @@ impl ToolsPanel {
             .add(
                 egui::DragValue::new(&mut self.text_state.line_spacing)
                     .speed(0.01)
-                    .clamp_range(0.5..=5.0)
+                    .range(0.5..=5.0)
                     .suffix("×"),
             )
             .changed()
@@ -14971,7 +15318,7 @@ impl ToolsPanel {
 
         ui.separator();
         ui.label(t!("ctx.blend"));
-        egui::ComboBox::from_id_source("ctx_text_blend")
+        egui::ComboBox::from_id_salt("ctx_text_blend")
             .selected_text(self.properties.blending_mode.name())
             .width(80.0)
             .show_ui(ui, |ui| {
@@ -16031,7 +16378,7 @@ impl ToolsPanel {
 
     fn show_liquify_options(&mut self, ui: &mut egui::Ui) {
         ui.label(t!("ctx.mode"));
-        egui::ComboBox::from_id_source("ctx_liquify_mode")
+        egui::ComboBox::from_id_salt("ctx_liquify_mode")
             .selected_text(self.liquify_state.mode.label())
             .width(90.0)
             .show_ui(ui, |ui| {
@@ -16052,7 +16399,7 @@ impl ToolsPanel {
             .add(
                 egui::DragValue::new(&mut strength_pct)
                     .speed(1)
-                    .clamp_range(1..=100)
+                    .range(1..=100)
                     .suffix("%"),
             )
             .changed()
@@ -16065,7 +16412,7 @@ impl ToolsPanel {
         ui.add(
             egui::DragValue::new(&mut self.properties.size)
                 .speed(0.5)
-                .clamp_range(5.0..=500.0)
+                .range(5.0..=500.0)
                 .suffix("px"),
         );
 
@@ -16205,7 +16552,7 @@ impl ToolsPanel {
             "{}×{}",
             self.mesh_warp_state.grid_cols, self.mesh_warp_state.grid_rows
         );
-        egui::ComboBox::from_id_source("ctx_meshwarp_grid")
+        egui::ComboBox::from_id_salt("ctx_meshwarp_grid")
             .selected_text(&grid_label)
             .width(60.0)
             .show_ui(ui, |ui| {
@@ -16417,7 +16764,7 @@ impl ToolsPanel {
         ui.add(
             egui::DragValue::new(&mut self.color_remover_state.smoothness)
                 .speed(0.2)
-                .clamp_range(0..=20)
+                .range(0..=20)
                 .suffix("px"),
         );
 
@@ -16453,7 +16800,7 @@ impl ToolsPanel {
         ui.add(
             egui::DragValue::new(&mut self.properties.size)
                 .speed(0.5)
-                .clamp_range(1.0..=500.0)
+                .range(1.0..=500.0)
                 .suffix("px"),
         );
         ui.separator();
@@ -16569,10 +16916,18 @@ impl ToolsPanel {
             }
         };
         if btn_response.clicked() {
-            ui.memory_mut(|m| m.toggle_popup(popup_id));
+            egui::Popup::toggle_id(ui.ctx(), popup_id);
         }
 
-        egui::popup_below_widget(ui, popup_id, &btn_response, |ui| {
+        egui::Popup::new(
+            popup_id,
+            ui.ctx().clone(),
+            egui::PopupAnchor::from(&btn_response),
+            ui.layer_id(),
+        )
+        .open_memory(None::<egui::SetOpenCommand>)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
             ui.set_min_width(180.0);
             let picker_shapes = ShapeKind::picker_shapes();
             let cols = 5;
@@ -16641,7 +16996,7 @@ impl ToolsPanel {
 
         ui.separator();
         ui.label(t!("ctx.mode"));
-        egui::ComboBox::from_id_source("ctx_shapes_fill")
+        egui::ComboBox::from_id_salt("ctx_shapes_fill")
             .selected_text(self.shapes_state.fill_mode.label())
             .width(70.0)
             .show_ui(ui, |ui| {
@@ -16660,7 +17015,7 @@ impl ToolsPanel {
         ui.add(
             egui::DragValue::new(&mut self.properties.size)
                 .speed(0.5)
-                .clamp_range(1.0..=100.0)
+                .range(1.0..=100.0)
                 .suffix("px"),
         );
 
@@ -16670,7 +17025,7 @@ impl ToolsPanel {
             ui.add(
                 egui::DragValue::new(&mut self.shapes_state.corner_radius)
                     .speed(0.5)
-                    .clamp_range(0.0..=500.0)
+                    .range(0.0..=500.0)
                     .suffix("px"),
             );
         }
@@ -16684,7 +17039,7 @@ impl ToolsPanel {
 
         ui.separator();
         ui.label(t!("ctx.blend"));
-        egui::ComboBox::from_id_source("ctx_shapes_blend")
+        egui::ComboBox::from_id_salt("ctx_shapes_blend")
             .selected_text(self.properties.blending_mode.name())
             .width(80.0)
             .show_ui(ui, |ui| {
@@ -16869,10 +17224,11 @@ impl ToolsPanel {
             .collect();
 
         // Use accent color for the selection frame
+        let style = painter.ctx().style_of(painter.ctx().theme());
         let accent = Color32::from_rgb(
-            painter.ctx().style().visuals.hyperlink_color.r(),
-            painter.ctx().style().visuals.hyperlink_color.g(),
-            painter.ctx().style().visuals.hyperlink_color.b(),
+            style.visuals.hyperlink_color.r(),
+            style.visuals.hyperlink_color.g(),
+            style.visuals.hyperlink_color.b(),
         );
         let accent_semi = Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 200);
         let bb_stroke = egui::Stroke::new(1.0, accent_semi);
@@ -16891,6 +17247,7 @@ impl ToolsPanel {
                 egui::Rect::from_center_size(*corner, egui::vec2(hs * 2.0, hs * 2.0)),
                 1.0,
                 egui::Stroke::new(1.0, Color32::BLACK),
+                egui::StrokeKind::Middle,
             );
         }
 

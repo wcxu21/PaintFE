@@ -132,6 +132,7 @@ pub enum Icon {
     MenuCanvasRotateCw,
     MenuCanvasRotateCcw,
     MenuCanvasRotate180,
+    MenuCanvasAlign,
     MenuCanvasFlatten,
 
     // === Menu: Color ===
@@ -174,6 +175,7 @@ pub enum Icon {
     MenuFilterInk,
     MenuFilterOilPainting,
     MenuFilterColorFilter,
+    MenuFilterCanvasBorder,
     MenuFilterGlitch,
     MenuFilterPixelDrag,
     MenuFilterRgbDisplace,
@@ -318,6 +320,7 @@ impl Icon {
             Icon::MenuCanvasRotateCw => "\u{21BB}",
             Icon::MenuCanvasRotateCcw => "\u{21BA}",
             Icon::MenuCanvasRotate180 => "\u{1F504}",
+            Icon::MenuCanvasAlign => "\u{2B1A}",
             Icon::MenuCanvasFlatten => "\u{229F}",
             // Menu: Color
             Icon::MenuColorAutoLevels => "\u{1F532}",
@@ -358,6 +361,7 @@ impl Icon {
             Icon::MenuFilterInk => "\u{1F58B}",
             Icon::MenuFilterOilPainting => "\u{1F3A8}",
             Icon::MenuFilterColorFilter => "\u{1F3AD}",
+            Icon::MenuFilterCanvasBorder => "\u{25A3}",
             Icon::MenuFilterGlitch => "\u{26A1}",
             Icon::MenuFilterPixelDrag => "\u{1F4A2}",
             Icon::MenuFilterRgbDisplace => "\u{1F308}",
@@ -1148,6 +1152,11 @@ impl Assets {
         );
         self.load_icon(
             ctx,
+            Icon::MenuCanvasAlign,
+            include_bytes!("../assets/icons/menu/canvas_align.png"),
+        );
+        self.load_icon(
+            ctx,
             Icon::MenuCanvasFlatten,
             include_bytes!("../assets/icons/menu/canvas_flatten.png"),
         );
@@ -1339,6 +1348,11 @@ impl Assets {
             ctx,
             Icon::MenuFilterColorFilter,
             include_bytes!("../assets/icons/menu/filter_color_filter.png"),
+        );
+        self.load_icon(
+            ctx,
+            Icon::MenuFilterCanvasBorder,
+            include_bytes!("../assets/icons/menu/filter_canvas_border.png"),
         );
         self.load_icon(
             ctx,
@@ -1800,7 +1814,7 @@ impl Assets {
         } else {
             // Use text fallback
             let text = egui::RichText::new(icon.emoji()).size(size.y * 0.5);
-            ui.add_sized(size, egui::SelectableLabel::new(selected, text))
+            ui.add_sized(size, egui::Button::selectable(selected, text))
         };
         response.on_hover_text(icon.tooltip()).clicked()
     }
@@ -1925,7 +1939,7 @@ impl Assets {
             let _img = egui::Image::from_texture(sized_texture).fit_to_exact_size(icon_size);
             let layout = egui::Layout::left_to_right(egui::Align::Center);
             let response = ui.with_layout(layout, |ui| {
-                let r = ui.add(egui::SelectableLabel::new(selected, ""));
+                let r = ui.add(egui::Button::selectable(selected, ""));
                 // Paint icon on top of the response rect, left-aligned
                 let icon_rect = egui::Rect::from_min_size(
                     r.rect.left_center() - Vec2::new(-4.0, icon_size.y / 2.0),
@@ -1992,8 +2006,7 @@ impl Assets {
             ui.painter()
                 .layout_no_wrap(text.to_string(), text_font.clone(), label_color);
 
-        let desired_width = (padding.x + icon_size + icon_gap + text_galley.size().x + padding.x)
-            .max(ui.available_width());
+        let desired_width = padding.x + icon_size + icon_gap + text_galley.size().x + padding.x;
         let row_height = icon_size.max(text_galley.size().y) + padding.y * 2.0;
 
         let sense = if enabled {
@@ -2046,7 +2059,8 @@ impl Assets {
                 icon_rect.right() + icon_gap,
                 rect.center().y - text_galley.size().y / 2.0,
             );
-            ui.painter().galley(text_pos, text_galley);
+            ui.painter()
+                .galley(text_pos, text_galley, egui::Color32::TRANSPARENT);
         }
 
         response
@@ -2117,15 +2131,18 @@ impl Assets {
             shortcut_color,
         );
 
-        let min_shortcut_gap = 24.0_f32;
-        let desired_width = (padding.x
+        let min_shortcut_gap = 14.0_f32;
+        // Keep a stable label column so shortcut hints align to one right column
+        // across rows (prevents uneven spacing in menus like File).
+        let min_label_column_width = 76.0_f32;
+        let label_column_width = text_galley.size().x.max(min_label_column_width);
+        let desired_width = padding.x
             + icon_size
             + icon_gap
-            + text_galley.size().x
+            + label_column_width
             + min_shortcut_gap
             + shortcut_galley.size().x
-            + padding.x)
-            .max(ui.available_width());
+            + padding.x;
         let row_height = icon_size
             .max(text_galley.size().y)
             .max(shortcut_galley.size().y)
@@ -2182,14 +2199,16 @@ impl Assets {
                 icon_rect.right() + icon_gap,
                 rect.center().y - text_galley.size().y / 2.0,
             );
-            ui.painter().galley(text_pos, text_galley);
+            ui.painter()
+                .galley(text_pos, text_galley, egui::Color32::TRANSPARENT);
 
             // Shortcut text (right-aligned)
             let shortcut_pos = egui::pos2(
                 rect.right() - padding.x - shortcut_galley.size().x,
                 rect.center().y - shortcut_galley.size().y / 2.0,
             );
-            ui.painter().galley(shortcut_pos, shortcut_galley);
+            ui.painter()
+                .galley(shortcut_pos, shortcut_galley, egui::Color32::TRANSPARENT);
         }
 
         response
@@ -2261,8 +2280,7 @@ impl Assets {
         );
 
         let text_width = text_galley.size().x.max(shortcut_galley.size().x);
-        let desired_width =
-            (padding.x + icon_size + icon_gap + text_width + padding.x).max(ui.available_width());
+        let desired_width = padding.x + icon_size + icon_gap + text_width + padding.x;
         let line_gap = 1.0_f32;
         let row_height = (text_galley.size().y + line_gap + shortcut_galley.size().y)
             .max(icon_size)
@@ -2318,13 +2336,17 @@ impl Assets {
             let text_top = rect.center().y - total_text_h / 2.0;
 
             // Label text
-            ui.painter()
-                .galley(egui::pos2(text_x, text_top), text_galley);
+            ui.painter().galley(
+                egui::pos2(text_x, text_top),
+                text_galley,
+                egui::Color32::TRANSPARENT,
+            );
 
             // Shortcut text below
             ui.painter().galley(
                 egui::pos2(text_x, text_top + total_text_h - shortcut_galley.size().y),
                 shortcut_galley,
+                egui::Color32::TRANSPARENT,
             );
         }
 
@@ -2509,6 +2531,7 @@ pub enum BindableAction {
     // File
     NewFile,
     OpenFile,
+    CloseProject,
     Save,
     SaveAll,
     SaveAs,
@@ -2613,6 +2636,7 @@ impl BindableAction {
         match self {
             Self::NewFile => t!("keybind.new_file"),
             Self::OpenFile => t!("keybind.open_file"),
+            Self::CloseProject => t!("menu.file.close"),
             Self::Save => t!("keybind.save"),
             Self::SaveAll => t!("keybind.save_all"),
             Self::SaveAs => t!("keybind.save_as"),
@@ -2704,7 +2728,12 @@ impl BindableAction {
     /// Category for grouping in UI
     pub fn category(&self) -> String {
         match self {
-            Self::NewFile | Self::OpenFile | Self::Save | Self::SaveAll | Self::SaveAs => {
+            Self::NewFile
+            | Self::OpenFile
+            | Self::CloseProject
+            | Self::Save
+            | Self::SaveAll
+            | Self::SaveAs => {
                 t!("keybind_category.file")
             }
             Self::Undo
@@ -2794,6 +2823,7 @@ impl BindableAction {
         &[
             NewFile,
             OpenFile,
+            CloseProject,
             Save,
             SaveAll,
             SaveAs,
@@ -2897,6 +2927,7 @@ impl Default for KeyBindings {
         // File
         map.insert(NewFile, KeyCombo::ctrl_key(Key::N));
         map.insert(OpenFile, KeyCombo::ctrl_key(Key::O));
+        map.insert(CloseProject, KeyCombo::ctrl_key(Key::W));
         map.insert(Save, KeyCombo::ctrl_key(Key::S));
         map.insert(
             SaveAll,
@@ -2922,7 +2953,7 @@ impl Default for KeyBindings {
         map.insert(ResizeImage, KeyCombo::ctrl_key(Key::R));
         map.insert(ResizeCanvas, KeyCombo::ctrl_shift_key(Key::R));
         // View
-        map.insert(ViewZoomIn, KeyCombo::ctrl_key(Key::PlusEquals));
+        map.insert(ViewZoomIn, KeyCombo::ctrl_key(Key::Equals));
         map.insert(ViewZoomOut, KeyCombo::ctrl_key(Key::Minus));
         map.insert(ViewFitToWindow, KeyCombo::ctrl_key(Key::Num0));
         // Tools
@@ -2983,6 +3014,7 @@ impl KeyBindings {
         let action = match action_name {
             "NewFile" => Some(BindableAction::NewFile),
             "OpenFile" => Some(BindableAction::OpenFile),
+            "CloseProject" => Some(BindableAction::CloseProject),
             "Save" => Some(BindableAction::Save),
             "SaveAll" => Some(BindableAction::SaveAll),
             "SaveAs" => Some(BindableAction::SaveAs),
@@ -3084,7 +3116,8 @@ impl KeyBindings {
             // Text-based binding (like [ or ])
             ctx.input_mut(|i| {
                 // Check modifier match
-                if combo.ctrl != i.modifiers.command {
+                let command_or_ctrl = i.modifiers.command || i.modifiers.ctrl;
+                if combo.ctrl != command_or_ctrl {
                     return false;
                 }
                 if combo.shift != i.modifiers.shift {
@@ -3107,26 +3140,155 @@ impl KeyBindings {
                 found
             })
         } else if let Some(key) = combo.key {
-            let mods = egui::Modifiers {
-                alt: combo.alt,
-                ctrl: if cfg!(target_os = "macos") {
-                    false
-                } else {
-                    combo.ctrl
-                },
-                shift: combo.shift,
-                mac_cmd: if cfg!(target_os = "macos") {
-                    combo.ctrl
-                } else {
-                    false
-                },
-                command: combo.ctrl,
-            };
-            ctx.input_mut(|i| i.consume_key(mods, key))
+            #[cfg(target_os = "windows")]
+            {
+                if let Some(vk) = egui_key_to_windows_vk(key) {
+                    let win_mod_match = ctx.input(|i| {
+                        let event_ctrl = i.modifiers.command || i.modifiers.ctrl;
+                        combo.ctrl == event_ctrl
+                            && combo.shift == i.modifiers.shift
+                            && combo.alt == i.modifiers.alt
+                    });
+                    let is_down_now = win_mod_match && crate::windows_key_probe::is_vk_down(vk);
+                    let edge_id = egui::Id::new(format!("kb_win_edge_{:?}", action));
+                    let was_down = ctx.data_mut(|d| d.get_temp::<bool>(edge_id).unwrap_or(false));
+                    ctx.data_mut(|d| d.insert_temp(edge_id, is_down_now));
+                    if is_down_now && !was_down {
+                        return true;
+                    }
+                }
+            }
+
+            // Primary path: state-based edge detection. This is resilient when
+            // backend event streams are inconsistent but key-down state is valid.
+            let is_down_now = ctx.input(|i| {
+                let event_ctrl = i.modifiers.command || i.modifiers.ctrl;
+                i.key_down(key)
+                    && combo.ctrl == event_ctrl
+                    && combo.shift == i.modifiers.shift
+                    && combo.alt == i.modifiers.alt
+            });
+            let edge_id = egui::Id::new(format!("kb_edge_{:?}", action));
+            let was_down = ctx.data_mut(|d| d.get_temp::<bool>(edge_id).unwrap_or(false));
+            ctx.data_mut(|d| d.insert_temp(edge_id, is_down_now));
+            if is_down_now && !was_down {
+                return true;
+            }
+
+            ctx.input_mut(|i| {
+                // Prefer event-level matching so we can normalize Ctrl/Command
+                // consistently across backends and keyboard layouts.
+                let mut found = false;
+                i.events.retain(|ev| {
+                    if found {
+                        return true;
+                    }
+                    if let egui::Event::Key {
+                        key: pressed_key,
+                        pressed,
+                        modifiers,
+                        ..
+                    } = ev
+                    {
+                        let event_ctrl = modifiers.command || modifiers.ctrl;
+                        if *pressed
+                            && *pressed_key == key
+                            && combo.ctrl == event_ctrl
+                            && combo.shift == modifiers.shift
+                            && combo.alt == modifiers.alt
+                        {
+                            found = true;
+                            return false; // consume the matched key event
+                        }
+                    }
+                    true
+                });
+                if found {
+                    return true;
+                }
+
+                // Fallback to egui consume_key for platforms/backends that don't
+                // emit the expected key event shape.
+                let mods = egui::Modifiers {
+                    alt: combo.alt,
+                    ctrl: if cfg!(target_os = "macos") {
+                        false
+                    } else {
+                        combo.ctrl
+                    },
+                    shift: combo.shift,
+                    mac_cmd: if cfg!(target_os = "macos") {
+                        combo.ctrl
+                    } else {
+                        false
+                    },
+                    command: combo.ctrl,
+                };
+                i.consume_key(mods, key)
+                    || (!cfg!(target_os = "macos")
+                        && combo.ctrl
+                        && i.consume_key(
+                            egui::Modifiers {
+                                alt: combo.alt,
+                                ctrl: true,
+                                shift: combo.shift,
+                                mac_cmd: false,
+                                command: false,
+                            },
+                            key,
+                        ))
+            })
         } else {
             false
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+fn egui_key_to_windows_vk(key: egui::Key) -> Option<usize> {
+    Some(match key {
+        egui::Key::A => 0x41,
+        egui::Key::B => 0x42,
+        egui::Key::C => 0x43,
+        egui::Key::D => 0x44,
+        egui::Key::E => 0x45,
+        egui::Key::F => 0x46,
+        egui::Key::G => 0x47,
+        egui::Key::H => 0x48,
+        egui::Key::I => 0x49,
+        egui::Key::J => 0x4A,
+        egui::Key::K => 0x4B,
+        egui::Key::L => 0x4C,
+        egui::Key::M => 0x4D,
+        egui::Key::N => 0x4E,
+        egui::Key::O => 0x4F,
+        egui::Key::P => 0x50,
+        egui::Key::Q => 0x51,
+        egui::Key::R => 0x52,
+        egui::Key::S => 0x53,
+        egui::Key::T => 0x54,
+        egui::Key::U => 0x55,
+        egui::Key::V => 0x56,
+        egui::Key::W => 0x57,
+        egui::Key::X => 0x58,
+        egui::Key::Y => 0x59,
+        egui::Key::Z => 0x5A,
+        egui::Key::Num0 => 0x30,
+        egui::Key::Num1 => 0x31,
+        egui::Key::Num2 => 0x32,
+        egui::Key::Num3 => 0x33,
+        egui::Key::Num4 => 0x34,
+        egui::Key::Num5 => 0x35,
+        egui::Key::Num6 => 0x36,
+        egui::Key::Num7 => 0x37,
+        egui::Key::Num8 => 0x38,
+        egui::Key::Num9 => 0x39,
+        egui::Key::Minus => 0xBD,
+        egui::Key::Equals => 0xBB,
+        egui::Key::Enter => 0x0D,
+        egui::Key::Escape => 0x1B,
+        _ => return None,
+    })
 }
 
 /// Convert egui::Key to display name
@@ -3148,7 +3310,7 @@ fn key_name(k: egui::Key) -> &'static str {
         egui::Key::PageUp => "PageUp",
         egui::Key::PageDown => "PageDown",
         egui::Key::Minus => "-",
-        egui::Key::PlusEquals => "+",
+        egui::Key::Equals => "+",
         egui::Key::Num0 => "0",
         egui::Key::Num1 => "1",
         egui::Key::Num2 => "2",
@@ -3205,6 +3367,7 @@ fn key_name(k: egui::Key) -> &'static str {
         egui::Key::F18 => "F18",
         egui::Key::F19 => "F19",
         egui::Key::F20 => "F20",
+        _ => "?",
     }
 }
 
@@ -3227,7 +3390,7 @@ fn parse_key_name(s: &str) -> Option<egui::Key> {
         "PageUp" => Some(egui::Key::PageUp),
         "PageDown" => Some(egui::Key::PageDown),
         "-" => Some(egui::Key::Minus),
-        "+" => Some(egui::Key::PlusEquals),
+        "+" => Some(egui::Key::Equals),
         "0" => Some(egui::Key::Num0),
         "1" => Some(egui::Key::Num1),
         "2" => Some(egui::Key::Num2),
@@ -3347,6 +3510,63 @@ pub struct AppSettings {
     /// Show a save-confirmation dialog when the user exits with unsaved projects.
     pub confirm_on_exit: bool,
 
+    // Main window size persistence
+    pub persist_window_width: f32,
+    pub persist_window_height: f32,
+    pub persist_window_pos: Option<(f32, f32)>,
+
+    // Floating widget persistence
+    pub persist_tools_visible: bool,
+    pub persist_layers_visible: bool,
+    pub persist_history_visible: bool,
+    pub persist_colors_visible: bool,
+    pub persist_palette_visible: bool,
+    pub persist_script_editor_visible: bool,
+    pub persist_tools_panel_pos: Option<(f32, f32)>,
+    pub persist_layers_panel_right_offset: Option<(f32, f32)>,
+    pub persist_history_panel_right_offset: Option<(f32, f32)>,
+    pub persist_colors_panel_left_offset: Option<(f32, f32)>,
+    pub persist_palette_panel_pos: Option<(f32, f32)>,
+    pub persist_palette_panel_left_offset: Option<(f32, f32)>,
+    pub persist_palette_panel_right_offset: Option<(f32, f32)>,
+    pub persist_palette_recent_colors: String,
+    pub persist_script_right_offset: Option<(f32, f32)>,
+    pub persist_colors_panel_expanded: bool,
+
+    // Dialog option persistence
+    pub persist_new_file_lock_aspect: bool,
+    pub persist_resize_lock_aspect: bool,
+
+    // Tool option persistence
+    pub persisted_active_tool: String,
+    pub persisted_brush_size: f32,
+    pub persisted_brush_hardness: f32,
+    pub persisted_brush_flow: f32,
+    pub persisted_brush_spacing: f32,
+    pub persisted_brush_scatter: f32,
+    pub persisted_brush_hue_jitter: f32,
+    pub persisted_brush_brightness_jitter: f32,
+    pub persisted_brush_anti_aliased: bool,
+    pub persisted_pressure_size: bool,
+    pub persisted_pressure_opacity: bool,
+    pub persisted_pressure_min_size: f32,
+    pub persisted_pressure_min_opacity: f32,
+    pub persisted_brush_mode: String,
+    pub persisted_brush_tip: String,
+    pub persisted_fill_tolerance: f32,
+    pub persisted_fill_anti_aliased: bool,
+    pub persisted_fill_global: bool,
+    pub persisted_wand_tolerance: f32,
+    pub persisted_wand_anti_aliased: bool,
+    pub persisted_wand_global: bool,
+    pub persisted_color_remover_tolerance: f32,
+    pub persisted_color_remover_smoothness: u32,
+    pub persisted_color_remover_contiguous: bool,
+    pub persisted_smudge_strength: f32,
+    pub persisted_shapes_fill_mode: String,
+    pub persisted_shapes_anti_alias: bool,
+    pub persisted_shapes_corner_radius: f32,
+
     // --- Advanced Customization (Phase 10) ---
     /// Master toggle — when false, all overrides are ignored.
     pub advanced_customization: bool,
@@ -3426,6 +3646,59 @@ impl Default for AppSettings {
             create_canvas_on_startup: true,
 
             confirm_on_exit: true,
+
+            persist_window_width: 1280.0,
+            persist_window_height: 720.0,
+            persist_window_pos: None,
+
+            persist_tools_visible: true,
+            persist_layers_visible: true,
+            persist_history_visible: false,
+            persist_colors_visible: false,
+            persist_palette_visible: false,
+            persist_script_editor_visible: false,
+            persist_tools_panel_pos: None,
+            persist_layers_panel_right_offset: None,
+            persist_history_panel_right_offset: None,
+            persist_colors_panel_left_offset: None,
+            persist_palette_panel_pos: None,
+            persist_palette_panel_left_offset: None,
+            persist_palette_panel_right_offset: None,
+            persist_palette_recent_colors: String::new(),
+            persist_script_right_offset: None,
+            persist_colors_panel_expanded: false,
+
+            persist_new_file_lock_aspect: true,
+            persist_resize_lock_aspect: true,
+
+            persisted_active_tool: "brush".to_string(),
+            persisted_brush_size: 10.0,
+            persisted_brush_hardness: 0.75,
+            persisted_brush_flow: 1.0,
+            persisted_brush_spacing: 0.01,
+            persisted_brush_scatter: 0.0,
+            persisted_brush_hue_jitter: 0.0,
+            persisted_brush_brightness_jitter: 0.0,
+            persisted_brush_anti_aliased: true,
+            persisted_pressure_size: false,
+            persisted_pressure_opacity: false,
+            persisted_pressure_min_size: 0.1,
+            persisted_pressure_min_opacity: 0.1,
+            persisted_brush_mode: "normal".to_string(),
+            persisted_brush_tip: String::new(),
+            persisted_fill_tolerance: 5.0,
+            persisted_fill_anti_aliased: true,
+            persisted_fill_global: false,
+            persisted_wand_tolerance: 5.0,
+            persisted_wand_anti_aliased: true,
+            persisted_wand_global: false,
+            persisted_color_remover_tolerance: 5.0,
+            persisted_color_remover_smoothness: 3,
+            persisted_color_remover_contiguous: true,
+            persisted_smudge_strength: 0.6,
+            persisted_shapes_fill_mode: "filled".to_string(),
+            persisted_shapes_anti_alias: true,
+            persisted_shapes_corner_radius: 10.0,
 
             // Advanced Customization defaults
             advanced_customization: false,
@@ -3550,6 +3823,18 @@ impl AppSettings {
         } else {
             Self::str_to_color(s)
         }
+    }
+
+    fn opt_pair_to_str(v: Option<(f32, f32)>) -> String {
+        match v {
+            Some((a, b)) => format!("{a},{b}"),
+            None => String::new(),
+        }
+    }
+
+    fn str_to_opt_pair(s: &str) -> Option<(f32, f32)> {
+        let (a, b) = s.split_once(',')?;
+        Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
     }
 
     /// Build a `ThemeOverrides` from the current settings.
@@ -3893,6 +4178,202 @@ impl AppSettings {
         );
         // Append keybinding lines
         let mut content = content;
+        content.push_str(&format!(
+            "persist_window_width={}\n",
+            self.persist_window_width
+        ));
+        content.push_str(&format!(
+            "persist_window_height={}\n",
+            self.persist_window_height
+        ));
+        content.push_str(&format!(
+            "persist_window_pos={}\n",
+            Self::opt_pair_to_str(self.persist_window_pos)
+        ));
+        content.push_str(&format!(
+            "persist_tools_visible={}\n",
+            self.persist_tools_visible
+        ));
+        content.push_str(&format!(
+            "persist_layers_visible={}\n",
+            self.persist_layers_visible
+        ));
+        content.push_str(&format!(
+            "persist_history_visible={}\n",
+            self.persist_history_visible
+        ));
+        content.push_str(&format!(
+            "persist_colors_visible={}\n",
+            self.persist_colors_visible
+        ));
+        content.push_str(&format!(
+            "persist_palette_visible={}\n",
+            self.persist_palette_visible
+        ));
+        content.push_str(&format!(
+            "persist_script_editor_visible={}\n",
+            self.persist_script_editor_visible
+        ));
+        content.push_str(&format!(
+            "persist_tools_panel_pos={}\n",
+            Self::opt_pair_to_str(self.persist_tools_panel_pos)
+        ));
+        content.push_str(&format!(
+            "persist_layers_panel_right_offset={}\n",
+            Self::opt_pair_to_str(self.persist_layers_panel_right_offset)
+        ));
+        content.push_str(&format!(
+            "persist_history_panel_right_offset={}\n",
+            Self::opt_pair_to_str(self.persist_history_panel_right_offset)
+        ));
+        content.push_str(&format!(
+            "persist_colors_panel_left_offset={}\n",
+            Self::opt_pair_to_str(self.persist_colors_panel_left_offset)
+        ));
+        content.push_str(&format!(
+            "persist_palette_panel_pos={}\n",
+            Self::opt_pair_to_str(self.persist_palette_panel_pos)
+        ));
+        content.push_str(&format!(
+            "persist_palette_panel_left_offset={}\n",
+            Self::opt_pair_to_str(self.persist_palette_panel_left_offset)
+        ));
+        content.push_str(&format!(
+            "persist_palette_panel_right_offset={}\n",
+            Self::opt_pair_to_str(self.persist_palette_panel_right_offset)
+        ));
+        content.push_str(&format!(
+            "persist_palette_recent_colors={}\n",
+            self.persist_palette_recent_colors
+        ));
+        content.push_str(&format!(
+            "persist_script_right_offset={}\n",
+            Self::opt_pair_to_str(self.persist_script_right_offset)
+        ));
+        content.push_str(&format!(
+            "persist_colors_panel_expanded={}\n",
+            self.persist_colors_panel_expanded
+        ));
+        content.push_str(&format!(
+            "persist_new_file_lock_aspect={}\n",
+            self.persist_new_file_lock_aspect
+        ));
+        content.push_str(&format!(
+            "persist_resize_lock_aspect={}\n",
+            self.persist_resize_lock_aspect
+        ));
+        content.push_str(&format!(
+            "persisted_active_tool={}\n",
+            self.persisted_active_tool
+        ));
+        content.push_str(&format!(
+            "persisted_brush_size={}\n",
+            self.persisted_brush_size
+        ));
+        content.push_str(&format!(
+            "persisted_brush_hardness={}\n",
+            self.persisted_brush_hardness
+        ));
+        content.push_str(&format!(
+            "persisted_brush_flow={}\n",
+            self.persisted_brush_flow
+        ));
+        content.push_str(&format!(
+            "persisted_brush_spacing={}\n",
+            self.persisted_brush_spacing
+        ));
+        content.push_str(&format!(
+            "persisted_brush_scatter={}\n",
+            self.persisted_brush_scatter
+        ));
+        content.push_str(&format!(
+            "persisted_brush_hue_jitter={}\n",
+            self.persisted_brush_hue_jitter
+        ));
+        content.push_str(&format!(
+            "persisted_brush_brightness_jitter={}\n",
+            self.persisted_brush_brightness_jitter
+        ));
+        content.push_str(&format!(
+            "persisted_brush_anti_aliased={}\n",
+            self.persisted_brush_anti_aliased
+        ));
+        content.push_str(&format!(
+            "persisted_pressure_size={}\n",
+            self.persisted_pressure_size
+        ));
+        content.push_str(&format!(
+            "persisted_pressure_opacity={}\n",
+            self.persisted_pressure_opacity
+        ));
+        content.push_str(&format!(
+            "persisted_pressure_min_size={}\n",
+            self.persisted_pressure_min_size
+        ));
+        content.push_str(&format!(
+            "persisted_pressure_min_opacity={}\n",
+            self.persisted_pressure_min_opacity
+        ));
+        content.push_str(&format!(
+            "persisted_brush_mode={}\n",
+            self.persisted_brush_mode
+        ));
+        content.push_str(&format!(
+            "persisted_brush_tip={}\n",
+            self.persisted_brush_tip
+        ));
+        content.push_str(&format!(
+            "persisted_fill_tolerance={}\n",
+            self.persisted_fill_tolerance
+        ));
+        content.push_str(&format!(
+            "persisted_fill_anti_aliased={}\n",
+            self.persisted_fill_anti_aliased
+        ));
+        content.push_str(&format!(
+            "persisted_fill_global={}\n",
+            self.persisted_fill_global
+        ));
+        content.push_str(&format!(
+            "persisted_wand_tolerance={}\n",
+            self.persisted_wand_tolerance
+        ));
+        content.push_str(&format!(
+            "persisted_wand_anti_aliased={}\n",
+            self.persisted_wand_anti_aliased
+        ));
+        content.push_str(&format!(
+            "persisted_wand_global={}\n",
+            self.persisted_wand_global
+        ));
+        content.push_str(&format!(
+            "persisted_color_remover_tolerance={}\n",
+            self.persisted_color_remover_tolerance
+        ));
+        content.push_str(&format!(
+            "persisted_color_remover_smoothness={}\n",
+            self.persisted_color_remover_smoothness
+        ));
+        content.push_str(&format!(
+            "persisted_color_remover_contiguous={}\n",
+            self.persisted_color_remover_contiguous
+        ));
+        content.push_str(&format!(
+            "persisted_smudge_strength={}\n",
+            self.persisted_smudge_strength
+        ));
+        content.push_str(&format!(
+            "persisted_shapes_fill_mode={}\n",
+            self.persisted_shapes_fill_mode
+        ));
+        content.push_str(&format!(
+            "persisted_shapes_anti_alias={}\n",
+            self.persisted_shapes_anti_alias
+        ));
+        content.push_str(&format!(
+            "persisted_shapes_corner_radius={}\n",
+            self.persisted_shapes_corner_radius
+        ));
         for line in self.keybindings.to_config_lines() {
             content.push_str(&line);
             content.push('\n');
@@ -4073,6 +4554,153 @@ impl AppSettings {
                 }
                 "confirm_on_exit" => {
                     s.confirm_on_exit = val == "true";
+                }
+                "persist_window_width" => {
+                    s.persist_window_width = val.parse().unwrap_or(1280.0);
+                }
+                "persist_window_height" => {
+                    s.persist_window_height = val.parse().unwrap_or(720.0);
+                }
+                "persist_window_pos" => {
+                    s.persist_window_pos = Self::str_to_opt_pair(val);
+                }
+                "persist_tools_visible" => {
+                    s.persist_tools_visible = val == "true";
+                }
+                "persist_layers_visible" => {
+                    s.persist_layers_visible = val == "true";
+                }
+                "persist_history_visible" => {
+                    s.persist_history_visible = val == "true";
+                }
+                "persist_colors_visible" => {
+                    s.persist_colors_visible = val == "true";
+                }
+                "persist_palette_visible" => {
+                    s.persist_palette_visible = val == "true";
+                }
+                "persist_script_editor_visible" => {
+                    s.persist_script_editor_visible = val == "true";
+                }
+                "persist_tools_panel_pos" => {
+                    s.persist_tools_panel_pos = Self::str_to_opt_pair(val);
+                }
+                "persist_layers_panel_right_offset" => {
+                    s.persist_layers_panel_right_offset = Self::str_to_opt_pair(val);
+                }
+                "persist_history_panel_right_offset" => {
+                    s.persist_history_panel_right_offset = Self::str_to_opt_pair(val);
+                }
+                "persist_colors_panel_left_offset" => {
+                    s.persist_colors_panel_left_offset = Self::str_to_opt_pair(val);
+                }
+                "persist_palette_panel_pos" => {
+                    s.persist_palette_panel_pos = Self::str_to_opt_pair(val);
+                }
+                "persist_palette_panel_left_offset" => {
+                    s.persist_palette_panel_left_offset = Self::str_to_opt_pair(val);
+                }
+                "persist_palette_panel_right_offset" => {
+                    s.persist_palette_panel_right_offset = Self::str_to_opt_pair(val);
+                }
+                "persist_palette_recent_colors" => {
+                    s.persist_palette_recent_colors = val.to_string();
+                }
+                "persist_script_right_offset" => {
+                    s.persist_script_right_offset = Self::str_to_opt_pair(val);
+                }
+                "persist_colors_panel_expanded" => {
+                    s.persist_colors_panel_expanded = val == "true";
+                }
+                "persist_new_file_lock_aspect" => {
+                    s.persist_new_file_lock_aspect = val == "true";
+                }
+                "persist_resize_lock_aspect" => {
+                    s.persist_resize_lock_aspect = val == "true";
+                }
+                "persisted_active_tool" => {
+                    s.persisted_active_tool = val.to_string();
+                }
+                "persisted_brush_size" => {
+                    s.persisted_brush_size = val.parse().unwrap_or(10.0);
+                }
+                "persisted_brush_hardness" => {
+                    s.persisted_brush_hardness = val.parse().unwrap_or(0.75);
+                }
+                "persisted_brush_flow" => {
+                    s.persisted_brush_flow = val.parse().unwrap_or(1.0);
+                }
+                "persisted_brush_spacing" => {
+                    s.persisted_brush_spacing = val.parse().unwrap_or(0.01);
+                }
+                "persisted_brush_scatter" => {
+                    s.persisted_brush_scatter = val.parse().unwrap_or(0.0);
+                }
+                "persisted_brush_hue_jitter" => {
+                    s.persisted_brush_hue_jitter = val.parse().unwrap_or(0.0);
+                }
+                "persisted_brush_brightness_jitter" => {
+                    s.persisted_brush_brightness_jitter = val.parse().unwrap_or(0.0);
+                }
+                "persisted_brush_anti_aliased" => {
+                    s.persisted_brush_anti_aliased = val == "true";
+                }
+                "persisted_pressure_size" => {
+                    s.persisted_pressure_size = val == "true";
+                }
+                "persisted_pressure_opacity" => {
+                    s.persisted_pressure_opacity = val == "true";
+                }
+                "persisted_pressure_min_size" => {
+                    s.persisted_pressure_min_size = val.parse().unwrap_or(0.1);
+                }
+                "persisted_pressure_min_opacity" => {
+                    s.persisted_pressure_min_opacity = val.parse().unwrap_or(0.1);
+                }
+                "persisted_brush_mode" => {
+                    s.persisted_brush_mode = val.to_string();
+                }
+                "persisted_brush_tip" => {
+                    s.persisted_brush_tip = val.to_string();
+                }
+                "persisted_fill_tolerance" => {
+                    s.persisted_fill_tolerance = val.parse().unwrap_or(5.0);
+                }
+                "persisted_fill_anti_aliased" => {
+                    s.persisted_fill_anti_aliased = val == "true";
+                }
+                "persisted_fill_global" => {
+                    s.persisted_fill_global = val == "true";
+                }
+                "persisted_wand_tolerance" => {
+                    s.persisted_wand_tolerance = val.parse().unwrap_or(5.0);
+                }
+                "persisted_wand_anti_aliased" => {
+                    s.persisted_wand_anti_aliased = val == "true";
+                }
+                "persisted_wand_global" => {
+                    s.persisted_wand_global = val == "true";
+                }
+                "persisted_color_remover_tolerance" => {
+                    s.persisted_color_remover_tolerance = val.parse().unwrap_or(5.0);
+                }
+                "persisted_color_remover_smoothness" => {
+                    s.persisted_color_remover_smoothness = val.parse().unwrap_or(3);
+                }
+                "persisted_color_remover_contiguous" => {
+                    s.persisted_color_remover_contiguous = val == "true";
+                }
+                "persisted_smudge_strength" => {
+                    s.persisted_smudge_strength = val.parse().unwrap_or(0.6);
+                }
+                "persisted_shapes_fill_mode" => {
+                    s.persisted_shapes_fill_mode = val.to_string();
+                }
+                "persisted_shapes_anti_alias" => {
+                    s.persisted_shapes_anti_alias = val == "true";
+                }
+                "persisted_shapes_corner_radius" => {
+                    s.persisted_shapes_corner_radius = val.parse().unwrap_or(10.0);
                 }
                 "default_canvas_width" => {
                     s.default_canvas_width = val.parse().unwrap_or(800u32).clamp(1, 65535);
@@ -4344,7 +4972,7 @@ impl SettingsWindow {
                 {
                     let available_width = ui.available_width();
                     let header_height = 32.0;
-                    let v = ctx.style().visuals.clone();
+                    let v = ctx.global_style().visuals.clone();
                     let accent = v.selection.stroke.color;
                     let is_dark = v.dark_mode;
                     let accent_faint = if is_dark {
@@ -4358,10 +4986,10 @@ impl SettingsWindow {
                         Sense::hover(),
                     );
                     let painter = ui.painter();
-                    painter.rect_filled(rect, egui::Rounding::ZERO, accent_faint);
+                    painter.rect_filled(rect, egui::CornerRadius::ZERO, accent_faint);
                     painter.rect_filled(
                         egui::Rect::from_min_size(rect.min, Vec2::new(3.0, header_height)),
-                        egui::Rounding::ZERO,
+                        egui::CornerRadius::ZERO,
                         accent,
                     );
                     painter.text(
@@ -4383,7 +5011,7 @@ impl SettingsWindow {
                     if btn_response.hovered() {
                         painter.rect_filled(
                             btn_rect,
-                            egui::Rounding::ZERO,
+                            egui::CornerRadius::ZERO,
                             Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 55),
                         );
                     }
@@ -4499,7 +5127,7 @@ impl SettingsWindow {
                         // tall tabs scroll instead of growing the window.
                         let scroll_id = format!("settings_tab_scroll_{:?}", self.active_tab);
                         egui::ScrollArea::vertical()
-                            .id_source(scroll_id)
+                            .id_salt(scroll_id)
                             .auto_shrink([false; 2])
                             .max_height(1000.0)
                             .show(ui, |ui| {
@@ -4529,6 +5157,10 @@ impl SettingsWindow {
 
         self.open = show && !should_close;
         if !self.open {
+            // Persist any staged interface/theme edits when closing settings.
+            if self.dirty {
+                self.apply_theme(settings, theme, ctx);
+            }
             // Clear the sync flag when window closes
             ctx.data_mut(|d| d.insert_temp(id, false));
         }
@@ -4563,7 +5195,7 @@ impl SettingsWindow {
                     .map(|(_, name)| name.to_string())
                     .unwrap_or_else(|| current_code.clone())
             };
-            egui::ComboBox::from_id_source("language_select")
+            egui::ComboBox::from_id_salt("language_select")
                 .selected_text(&display_text)
                 .show_ui(ui, |ui| {
                     if ui
@@ -4621,7 +5253,7 @@ impl SettingsWindow {
                         .find(|(v, _)| *v == settings.auto_save_minutes)
                         .map(|(_, l)| *l)
                         .unwrap_or("Custom");
-                    egui::ComboBox::from_id_source("auto_save_interval")
+                    egui::ComboBox::from_id_salt("auto_save_interval")
                         .selected_text(current_label)
                         .show_ui(ui, |ui| {
                             for &(val, label) in OPTIONS {
@@ -4663,7 +5295,7 @@ impl SettingsWindow {
         Self::section_header(ui, &t!("settings.general.display"));
         ui.horizontal(|ui| {
             ui.label(t!("settings.general.pixel_grid"));
-            egui::ComboBox::from_id_source("pixel_grid_mode")
+            egui::ComboBox::from_id_salt("pixel_grid_mode")
                 .selected_text(settings.pixel_grid_mode.name())
                 .show_ui(ui, |ui| {
                     for &mode in PixelGridMode::all() {
@@ -4698,11 +5330,23 @@ impl SettingsWindow {
                 .min_col_width(160.0)
                 .show(ui, |ui| {
                     ui.label("Default width:");
-                    Self::settings_drag_u32(ui, &mut settings.default_canvas_width, 1..=65535u32, " px", 800);
+                    Self::settings_drag_u32(
+                        ui,
+                        &mut settings.default_canvas_width,
+                        1..=65535u32,
+                        " px",
+                        800,
+                    );
                     ui.end_row();
 
                     ui.label("Default height:");
-                    Self::settings_drag_u32(ui, &mut settings.default_canvas_height, 1..=65535u32, " px", 600);
+                    Self::settings_drag_u32(
+                        ui,
+                        &mut settings.default_canvas_height,
+                        1..=65535u32,
+                        " px",
+                        600,
+                    );
                     ui.end_row();
                 });
         }
@@ -4827,9 +5471,11 @@ impl SettingsWindow {
 
                 let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
                     backends: wgpu::Backends::all(),
-                    ..Default::default()
+                    ..wgpu::InstanceDescriptor::new_without_display_handle()
                 });
-                for adapter in instance.enumerate_adapters(wgpu::Backends::all()) {
+                for adapter in
+                    pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()))
+                {
                     let info = adapter.get_info();
                     // Skip software/fallback adapters (CPU-simulated or unknown)
                     if info.device_type != wgpu::DeviceType::Other
@@ -4855,7 +5501,7 @@ impl SettingsWindow {
                     ui.weak("Detecting GPUs...");
                     ui.ctx().request_repaint();
                 } else {
-                    egui::ComboBox::from_id_source("gpu_adapter_sel")
+                    egui::ComboBox::from_id_salt("gpu_adapter_sel")
                         .selected_text(&settings.preferred_gpu)
                         .show_ui(ui, |ui| {
                             for adapter in &self.gpu_adapters {
@@ -4915,7 +5561,7 @@ impl SettingsWindow {
                     ThemeMode::Light => t!("settings.interface.mode.light"),
                     ThemeMode::Dark => t!("settings.interface.mode.dark"),
                 };
-                egui::ComboBox::from_id_source("theme_mode_sel")
+                egui::ComboBox::from_id_salt("theme_mode_sel")
                     .selected_text(&current_name)
                     .show_ui(ui, |ui| {
                         if ui
@@ -4942,7 +5588,7 @@ impl SettingsWindow {
                 ui.end_row();
 
                 ui.label(t!("settings.interface.accent_preset"));
-                egui::ComboBox::from_id_source("accent_preset")
+                egui::ComboBox::from_id_salt("accent_preset")
                     .selected_text(self.staged_preset.label())
                     .show_ui(ui, |ui| {
                         for &preset in ThemePreset::all() {
@@ -5025,7 +5671,7 @@ impl SettingsWindow {
             .min_col_width(140.0)
             .show(ui, |ui| {
                 ui.label(t!("settings.interface.zoom_filter"));
-                egui::ComboBox::from_id_source("zoom_filter_sel")
+                egui::ComboBox::from_id_salt("zoom_filter_sel")
                     .selected_text(settings.zoom_filter_mode.name())
                     .show_ui(ui, |ui| {
                         for &mode in ZoomFilterMode::all() {
@@ -5041,7 +5687,13 @@ impl SettingsWindow {
                 ui.end_row();
 
                 ui.label(t!("settings.interface.brightness"));
-                if Self::settings_slider(ui, &mut settings.checkerboard_brightness, 0.5..=2.0, 0.1, 1.0) {
+                if Self::settings_slider(
+                    ui,
+                    &mut settings.checkerboard_brightness,
+                    0.5..=2.0,
+                    0.1,
+                    1.0,
+                ) {
                     settings.save();
                 }
                 ui.end_row();
@@ -5081,7 +5733,7 @@ impl SettingsWindow {
                 .min_col_width(140.0)
                 .show(ui, |ui| {
                     ui.label("UI Density");
-                    egui::ComboBox::from_id_source("ui_density_sel")
+                    egui::ComboBox::from_id_salt("ui_density_sel")
                         .selected_text(settings.ui_density.label())
                         .show_ui(ui, |ui| {
                             for &density in UiDensity::all() {
@@ -5203,6 +5855,24 @@ impl SettingsWindow {
                         &mut settings.ov_button_active,
                         &mut self.dirty,
                     );
+                    Self::opt_color_row(
+                        ui,
+                        "Slider/Control Track",
+                        &mut settings.ov_bg3,
+                        &mut self.dirty,
+                    );
+                    Self::opt_color_row(
+                        ui,
+                        "Input Background",
+                        &mut settings.ov_bg2,
+                        &mut self.dirty,
+                    );
+                    Self::opt_color_row(
+                        ui,
+                        "Control Border",
+                        &mut settings.ov_border_lit,
+                        &mut self.dirty,
+                    );
                 });
 
             // --- Panels & Windows ---
@@ -5252,7 +5922,13 @@ impl SettingsWindow {
                     });
                     ui.horizontal(|ui| {
                         ui.label("Grid Opacity:");
-                        if Self::settings_slider(ui, &mut settings.canvas_grid_opacity, 0.0..=1.0, 0.05, 0.4) {
+                        if Self::settings_slider(
+                            ui,
+                            &mut settings.canvas_grid_opacity,
+                            0.0..=1.0,
+                            0.05,
+                            0.4,
+                        ) {
                             self.dirty = true;
                         }
                     });
@@ -5267,7 +5943,7 @@ impl SettingsWindow {
                 .body(|ui| {
                     Self::opt_f32_row(
                         ui,
-                        "Widget Rounding",
+                        "Widget CornerRadius",
                         &mut settings.widget_rounding,
                         0.0,
                         24.0,
@@ -5275,7 +5951,7 @@ impl SettingsWindow {
                     );
                     Self::opt_f32_row(
                         ui,
-                        "Window Rounding",
+                        "Window CornerRadius",
                         &mut settings.window_rounding,
                         0.0,
                         24.0,
@@ -5283,7 +5959,7 @@ impl SettingsWindow {
                     );
                     Self::opt_f32_row(
                         ui,
-                        "Menu Rounding",
+                        "Menu CornerRadius",
                         &mut settings.menu_rounding,
                         0.0,
                         24.0,
@@ -5306,13 +5982,25 @@ impl SettingsWindow {
                     );
                     ui.horizontal(|ui| {
                         ui.label("Glow Intensity:");
-                        if Self::settings_slider(ui, &mut settings.glow_intensity, 0.0..=2.0, 0.1, 1.0) {
+                        if Self::settings_slider(
+                            ui,
+                            &mut settings.glow_intensity,
+                            0.0..=2.0,
+                            0.1,
+                            1.0,
+                        ) {
                             self.dirty = true;
                         }
                     });
                     ui.horizontal(|ui| {
                         ui.label("Shadow Strength:");
-                        if Self::settings_slider(ui, &mut settings.shadow_strength, 0.0..=2.0, 0.1, 1.0) {
+                        if Self::settings_slider(
+                            ui,
+                            &mut settings.shadow_strength,
+                            0.0..=2.0,
+                            0.1,
+                            1.0,
+                        ) {
                             self.dirty = true;
                         }
                     });
@@ -5579,22 +6267,42 @@ impl SettingsWindow {
             let min = *range.start();
             let max = *range.end();
             let step_f = step as f32;
-            if ui.small_button("\u{25C4}").on_hover_text("Decrease").clicked() {
-                *value = (*value - step_f).max(min);
+
+            if ui
+                .add(egui::Slider::new(value, range).step_by(step))
+                .changed()
+            {
                 changed = true;
             }
-            if ui.add(egui::Slider::new(value, range).step_by(step)).changed() {
-                changed = true;
-            }
-            if ui.small_button("\u{25BA}").on_hover_text("Increase").clicked() {
-                *value = (*value + step_f).min(max);
-                changed = true;
-            }
+
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                if ui.small_button("-").on_hover_text("Decrease").clicked() {
+                    *value = (*value - step_f).max(min);
+                    changed = true;
+                }
+
+                if ui
+                    .add_sized(
+                        [58.0, 16.0],
+                        egui::DragValue::new(value)
+                            .range(min..=max)
+                            .speed(step_f.max(0.001) as f64)
+                            .max_decimals(3),
+                    )
+                    .changed()
+                {
+                    changed = true;
+                }
+
+                if ui.small_button("+").on_hover_text("Increase").clicked() {
+                    *value = (*value + step_f).min(max);
+                    changed = true;
+                }
+            });
+
             let at_default = (*value - default).abs() < step_f * 0.01;
-            let reset_btn = ui.add_enabled(
-                !at_default,
-                egui::Button::new("\u{21BA}").small(),
-            );
+            let reset_btn = ui.add_enabled(!at_default, egui::Button::new("\u{21BA}").small());
             if reset_btn.on_hover_text("Reset to default").clicked() {
                 *value = default;
                 changed = true;
@@ -5616,16 +6324,14 @@ impl SettingsWindow {
         ui.horizontal(|ui| {
             let min = *range.start();
             let max = *range.end();
-            if ui.small_button("\u{2212}").on_hover_text("Decrease").clicked()
-                && *value > min
-            {
+            if ui.small_button("-").on_hover_text("Decrease").clicked() && *value > min {
                 *value -= 1;
                 changed = true;
             }
             if ui
                 .add(
                     egui::DragValue::new(value)
-                        .clamp_range(range)
+                        .range(range)
                         .speed(1.0)
                         .suffix(suffix),
                 )
@@ -5633,16 +6339,12 @@ impl SettingsWindow {
             {
                 changed = true;
             }
-            if ui.small_button("\u{2B}").on_hover_text("Increase").clicked()
-                && *value < max
-            {
+            if ui.small_button("+").on_hover_text("Increase").clicked() && *value < max {
                 *value += 1;
                 changed = true;
             }
-            let reset_btn = ui.add_enabled(
-                *value != default,
-                egui::Button::new("\u{21BA}").small(),
-            );
+            let reset_btn =
+                ui.add_enabled(*value != default, egui::Button::new("\u{21BA}").small());
             if reset_btn.on_hover_text("Reset to default").clicked() {
                 *value = default;
                 changed = true;
@@ -5664,16 +6366,14 @@ impl SettingsWindow {
         ui.horizontal(|ui| {
             let min = *range.start();
             let max = *range.end();
-            if ui.small_button("\u{2212}").on_hover_text("Decrease").clicked()
-                && *value > min
-            {
+            if ui.small_button("-").on_hover_text("Decrease").clicked() && *value > min {
                 *value -= 1;
                 changed = true;
             }
             if ui
                 .add(
                     egui::DragValue::new(value)
-                        .clamp_range(range)
+                        .range(range)
                         .speed(1.0)
                         .suffix(suffix),
                 )
@@ -5681,16 +6381,12 @@ impl SettingsWindow {
             {
                 changed = true;
             }
-            if ui.small_button("\u{2B}").on_hover_text("Increase").clicked()
-                && *value < max
-            {
+            if ui.small_button("+").on_hover_text("Increase").clicked() && *value < max {
                 *value += 1;
                 changed = true;
             }
-            let reset_btn = ui.add_enabled(
-                *value != default,
-                egui::Button::new("\u{21BA}").small(),
-            );
+            let reset_btn =
+                ui.add_enabled(*value != default, egui::Button::new("\u{21BA}").small());
             if reset_btn.on_hover_text("Reset to default").clicked() {
                 *value = default;
                 changed = true;
@@ -6022,7 +6718,7 @@ impl SettingsWindow {
         // Keybinds table — the outer ScrollArea (in show()) handles scrolling.
         // Cap height so buttons below remain accessible without scrolling far.
         egui::ScrollArea::vertical()
-            .id_source("keybinds_inner_scroll")
+            .id_salt("keybinds_inner_scroll")
             .auto_shrink([false; 2])
             .max_height(880.0)
             .show(ui, |ui| {
@@ -6050,7 +6746,7 @@ impl SettingsWindow {
                                     .unwrap_or_else(|| {
                                         KeyCombo::modifiers_only(false, true, false)
                                     });
-                                egui::ComboBox::from_id_source("brush_resize_drag_modifier")
+                                egui::ComboBox::from_id_salt("brush_resize_drag_modifier")
                                     .selected_text(current.display())
                                     .show_ui(ui, |ui| {
                                         let options = [

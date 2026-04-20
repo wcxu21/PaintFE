@@ -217,7 +217,7 @@ fn script_math_functions() {
 fn script_syntax_error() {
     let err = run_script("let x = ;").unwrap_err();
     assert!(
-        err.message.len() > 0,
+        !err.message.is_empty(),
         "syntax error should produce an error message"
     );
 }
@@ -226,7 +226,7 @@ fn script_syntax_error() {
 fn script_runtime_error() {
     let err = run_script("let x = 1 / 0;").unwrap_err();
     assert!(
-        err.message.len() > 0,
+        !err.message.is_empty(),
         "division by zero should produce a runtime error"
     );
 }

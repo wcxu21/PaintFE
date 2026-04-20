@@ -13,6 +13,7 @@ mod common;
 
 use image::{Rgba, RgbaImage};
 use paintfe::canvas::{CanvasState, Layer};
+use paintfe::components::tools::{FloodConnectivity, WandDistanceMode};
 use paintfe::gpu::GradientGpuParams;
 use paintfe::gpu::renderer::GpuRenderer;
 use paintfe::ops::transform::DisplacementField;
@@ -272,6 +273,8 @@ fn gpu_flood_fill_uniform_image() {
         16, // seed y
         w,
         h,
+        WandDistanceMode::Perceptual,
+        FloodConnectivity::Four,
         &mut distances,
     );
     assert!(success, "GPU flood fill should succeed");
@@ -313,6 +316,8 @@ fn gpu_flood_fill_two_colors() {
         16,
         w,
         h,
+        WandDistanceMode::Perceptual,
+        FloodConnectivity::Four,
         &mut distances,
     );
     assert!(success);
@@ -321,13 +326,49 @@ fn gpu_flood_fill_two_colors() {
     let d_white = distances[(16 * w + 8) as usize];
     assert_eq!(d_white, 0, "white region distance should be 0");
 
-    // Black region should have high distance from white seed
+    // Black region should have clearly higher distance from white seed.
+    // With perceptual distance enabled this value is lower than the legacy
+    // max-channel metric but still well separated from the white region.
     let d_black = distances[(16 * w + 24) as usize];
     assert!(
-        d_black > 200,
-        "black region distance should be >200, got {}",
+        d_black >= 150,
+        "black region distance should be >=150, got {}",
         d_black
     );
+}
+
+#[test]
+fn gpu_magic_wand_mask_generation() {
+    require_gpu!(gpu);
+
+    let w = 32u32;
+    let h = 32u32;
+    let mut distances = vec![255u8; (w * h) as usize];
+    for y in 0..h {
+        for x in 0..w {
+            let idx = (y * w + x) as usize;
+            distances[idx] = if x < 16 { 0 } else { 255 };
+        }
+    }
+
+    let mut out = Vec::new();
+    gpu.magic_wand_pipeline.generate_into(
+        &gpu.ctx,
+        &distances,
+        distances.as_ptr() as usize,
+        None,
+        None,
+        w,
+        h,
+        8,
+        true,
+        0,
+        &mut out,
+    );
+
+    assert_eq!(out.len(), (w * h) as usize);
+    assert_eq!(out[(16 * w + 8) as usize], 255);
+    assert_eq!(out[(16 * w + 24) as usize], 0);
 }
 
 // =============================================================================

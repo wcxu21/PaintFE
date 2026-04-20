@@ -162,8 +162,7 @@ impl LayersPanel {
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut self.search_query)
                     .hint_text("Filter layers…")
-                    .desired_width(ui.available_width() - 20.0)
-                    .frame(true),
+                    .desired_width(ui.available_width() - 20.0),
             );
             // Clear button — only show when there's text
             if !self.search_query.is_empty() && ui.small_button("×").clicked() {
@@ -241,7 +240,7 @@ impl LayersPanel {
         // when content EXCEEDS stored size, so the window never grows.
         let scroll_h = (ui.available_height() - 60.0).max(80.0);
         egui::ScrollArea::vertical()
-            .id_source("layer_scroll")
+            .id_salt("layer_scroll")
             .max_height(scroll_h)
             .auto_shrink([false, false])
             .show(ui, |ui: &mut egui::Ui| {
@@ -660,7 +659,12 @@ impl LayersPanel {
                     ui.visuals().widgets.active.bg_fill
                 };
                 painter.rect_filled(bg_rect, 4.0, drag_bg);
-                painter.rect_stroke(bg_rect, 4.0, egui::Stroke::new(1.5, selection_color));
+                painter.rect_stroke(
+                    bg_rect,
+                    4.0,
+                    egui::Stroke::new(1.5, selection_color),
+                    egui::StrokeKind::Middle,
+                );
             } else {
                 painter.rect_filled(bg_rect, 4.0, row_bg);
             }
@@ -807,8 +811,11 @@ impl LayersPanel {
                     name_text = name_text.strong();
                 }
 
-                let mut child_ui =
-                    ui.child_ui(name_rect, egui::Layout::top_down(egui::Align::LEFT));
+                let mut child_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(name_rect)
+                        .layout(egui::Layout::top_down(egui::Align::LEFT)),
+                );
                 child_ui.spacing_mut().item_spacing.y = 0.0;
                 // Vertically center the content block within the row
                 let content_h = if is_text { 13.0 + 9.0 + 1.0 } else { 13.0 };
@@ -816,7 +823,7 @@ impl LayersPanel {
                 if pad > 0.0 {
                     child_ui.add_space(pad);
                 }
-                child_ui.add(egui::Label::new(name_text).truncate(true));
+                child_ui.add(egui::Label::new(name_text).truncate());
                 if is_text {
                     let accent = child_ui.visuals().selection.stroke.color;
                     child_ui.add(egui::Label::new(
@@ -851,21 +858,21 @@ impl LayersPanel {
                 .clicked()
             {
                 context_action = Some(ContextAction::AddNew);
-                ui.close_menu();
+                ui.close();
             }
             if assets
                 .menu_item(ui, Icon::Rename, &t!("layer.add_text_layer"))
                 .clicked()
             {
                 context_action = Some(ContextAction::AddNewTextLayer);
-                ui.close_menu();
+                ui.close();
             }
             if assets
                 .menu_item(ui, Icon::LayerDuplicate, &t!("layer.duplicate_layer"))
                 .clicked()
             {
                 context_action = Some(ContextAction::Duplicate);
-                ui.close_menu();
+                ui.close();
             }
             if canvas_state.layers.len() > 1
                 && assets
@@ -873,7 +880,7 @@ impl LayersPanel {
                     .clicked()
             {
                 context_action = Some(ContextAction::Delete);
-                ui.close_menu();
+                ui.close();
             }
             ui.separator();
             if layer_idx > 0 {
@@ -882,14 +889,14 @@ impl LayersPanel {
                     .clicked()
                 {
                     context_action = Some(ContextAction::MergeDown);
-                    ui.close_menu();
+                    ui.close();
                 }
                 if assets
                     .menu_item(ui, Icon::MergeDownAsMask, &t!("layer.merge_down_as_mask"))
                     .clicked()
                 {
                     context_action = Some(ContextAction::MergeDownAsMask);
-                    ui.close_menu();
+                    ui.close();
                 }
             }
             if canvas_state.layers.len() > 1
@@ -898,7 +905,7 @@ impl LayersPanel {
                     .clicked()
             {
                 context_action = Some(ContextAction::FlattenImage);
-                ui.close_menu();
+                ui.close();
             }
             ui.separator();
             // Move submenu
@@ -910,28 +917,28 @@ impl LayersPanel {
                 .clicked()
             {
                 context_action = Some(ContextAction::MoveToTop);
-                ui.close_menu();
+                ui.close();
             }
             if assets
                 .menu_item_enabled(ui, Icon::MoveUp, &t!("layer.move_up"), can_up)
                 .clicked()
             {
                 context_action = Some(ContextAction::MoveUp);
-                ui.close_menu();
+                ui.close();
             }
             if assets
                 .menu_item_enabled(ui, Icon::MoveDown, &t!("layer.move_down"), can_down)
                 .clicked()
             {
                 context_action = Some(ContextAction::MoveDown);
-                ui.close_menu();
+                ui.close();
             }
             if assets
                 .menu_item_enabled(ui, Icon::MoveBottom, &t!("layer.move_to_bottom"), can_down)
                 .clicked()
             {
                 context_action = Some(ContextAction::MoveToBottom);
-                ui.close_menu();
+                ui.close();
             }
             ui.separator();
             if assets
@@ -939,7 +946,7 @@ impl LayersPanel {
                 .clicked()
             {
                 context_action = Some(ContextAction::ImportFromFile);
-                ui.close_menu();
+                ui.close();
             }
             ui.separator();
             ui.menu_button(t!("layer.transform"), |ui| {
@@ -948,14 +955,14 @@ impl LayersPanel {
                     .clicked()
                 {
                     context_action = Some(ContextAction::FlipHorizontal);
-                    ui.close_menu();
+                    ui.close();
                 }
                 if assets
                     .menu_item(ui, Icon::LayerFlipV, &t!("layer.transform.flip_vertical"))
                     .clicked()
                 {
                     context_action = Some(ContextAction::FlipVertical);
-                    ui.close_menu();
+                    ui.close();
                 }
                 ui.separator();
                 if assets
@@ -963,7 +970,7 @@ impl LayersPanel {
                     .clicked()
                 {
                     context_action = Some(ContextAction::RotateScale);
-                    ui.close_menu();
+                    ui.close();
                 }
             });
             ui.separator();
@@ -982,21 +989,21 @@ impl LayersPanel {
                     } else {
                         context_action = Some(ContextAction::SoloLayer);
                     }
-                    ui.close_menu();
+                    ui.close();
                 }
                 if assets
                     .menu_item(ui, Icon::HideAll, &t!("layer.hide_all"))
                     .clicked()
                 {
                     context_action = Some(ContextAction::HideAll);
-                    ui.close_menu();
+                    ui.close();
                 }
                 if assets
                     .menu_item(ui, Icon::ShowAll, &t!("layer.show_all"))
                     .clicked()
                 {
                     context_action = Some(ContextAction::ShowAll);
-                    ui.close_menu();
+                    ui.close();
                 }
             }
             ui.separator();
@@ -1005,14 +1012,14 @@ impl LayersPanel {
                 .clicked()
             {
                 context_action = Some(ContextAction::Rename);
-                ui.close_menu();
+                ui.close();
             }
             if assets
                 .menu_item(ui, Icon::LayerProperties, &t!("layer.layer_properties"))
                 .clicked()
             {
                 context_action = Some(ContextAction::OpenSettings);
-                ui.close_menu();
+                ui.close();
             }
             // Rasterize option for text layers + effects/warp
             if matches!(
@@ -1025,14 +1032,14 @@ impl LayersPanel {
                     .clicked()
                 {
                     context_action = Some(ContextAction::TextLayerEffects);
-                    ui.close_menu();
+                    ui.close();
                 }
                 if assets
                     .menu_item(ui, Icon::LayerProperties, &t!("layer.text_warp"))
                     .clicked()
                 {
                     context_action = Some(ContextAction::TextLayerWarp);
-                    ui.close_menu();
+                    ui.close();
                 }
                 ui.separator();
                 if ui
@@ -1040,7 +1047,7 @@ impl LayersPanel {
                     .clicked()
                 {
                     context_action = Some(ContextAction::RasterizeTextLayer);
-                    ui.close_menu();
+                    ui.close();
                 }
             }
         });
@@ -1100,7 +1107,12 @@ impl LayersPanel {
         } else {
             Color32::from_gray(180)
         };
-        painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.0, border_color));
+        painter.rect_stroke(
+            rect,
+            2.0,
+            egui::Stroke::new(1.0, border_color),
+            egui::StrokeKind::Middle,
+        );
 
         // Draw cached thumbnail texture
         if let Some(texture) = texture {
@@ -1442,12 +1454,12 @@ impl LayersPanel {
                     let painter = ui.painter();
                     painter.rect_filled(
                         header_rect,
-                        egui::Rounding::same(4.0),
+                        egui::CornerRadius::same(4),
                         colors.accent_faint,
                     );
                     painter.rect_filled(
                         Rect::from_min_size(header_rect.min, Vec2::new(3.0, header_height)),
-                        egui::Rounding::ZERO,
+                        egui::CornerRadius::ZERO,
                         colors.accent,
                     );
                     painter.text(
@@ -1470,7 +1482,7 @@ impl LayersPanel {
                         if hovered {
                             painter.rect_filled(
                                 close_rect,
-                                egui::Rounding::same(4.0),
+                                egui::CornerRadius::same(4),
                                 colors.accent_faint,
                             );
                         }
@@ -1482,7 +1494,11 @@ impl LayersPanel {
                         let font = egui::FontId::proportional(13.0);
                         let galley = painter.layout_no_wrap("\u{00D7}".to_string(), font, color);
                         let gpos = close_rect.center() - galley.size() / 2.0;
-                        painter.galley(Pos2::new(gpos.x, gpos.y), galley);
+                        painter.galley(
+                            Pos2::new(gpos.x, gpos.y),
+                            galley,
+                            egui::Color32::TRANSPARENT,
+                        );
                     }
                     if close_resp.clicked() {
                         open = false;
@@ -1514,11 +1530,11 @@ impl LayersPanel {
                                 } else {
                                     Color32::TRANSPARENT
                                 })
-                                .rounding(egui::Rounding {
-                                    nw: 4.0,
-                                    ne: 4.0,
-                                    sw: 0.0,
-                                    se: 0.0,
+                                .corner_radius(egui::CornerRadius {
+                                    nw: 4,
+                                    ne: 4,
+                                    sw: 0,
+                                    se: 0,
                                 })
                                 .min_size(Vec2::new(80.0, 24.0));
                                 if ui.add(btn).clicked() {
@@ -1615,7 +1631,7 @@ impl LayersPanel {
 
         ui.horizontal(|ui| {
             ui.label(t!("layer.blend"));
-            egui::ComboBox::from_id_source("blend_mode_combo_ls")
+            egui::ComboBox::from_id_salt("blend_mode_combo_ls")
                 .selected_text(self.settings_state.editing_blend_mode.display_name())
                 .width(120.0)
                 .show_ui(ui, |ui: &mut egui::Ui| {
@@ -1683,7 +1699,7 @@ impl LayersPanel {
                             .add(
                                 egui::DragValue::new(&mut outline.width)
                                     .speed(0.1)
-                                    .clamp_range(0.5..=50.0)
+                                    .range(0.5..=50.0)
                                     .suffix("px"),
                             )
                             .changed()
@@ -1761,7 +1777,7 @@ impl LayersPanel {
                             .add(
                                 egui::DragValue::new(&mut shadow.offset_x)
                                     .speed(0.5)
-                                    .clamp_range(-100.0..=100.0)
+                                    .range(-100.0..=100.0)
                                     .suffix("px"),
                             )
                             .changed()
@@ -1773,7 +1789,7 @@ impl LayersPanel {
                             .add(
                                 egui::DragValue::new(&mut shadow.offset_y)
                                     .speed(0.5)
-                                    .clamp_range(-100.0..=100.0)
+                                    .range(-100.0..=100.0)
                                     .suffix("px"),
                             )
                             .changed()
@@ -1783,15 +1799,12 @@ impl LayersPanel {
                     });
                     ui.horizontal(|ui| {
                         ui.label(t!("ctx.text.effects.shadow.blur"));
-                        if ui
-                            .add(
-                                egui::DragValue::new(&mut shadow.blur_radius)
-                                    .speed(0.2)
-                                    .clamp_range(0.0..=50.0)
-                                    .suffix("px"),
-                            )
-                            .changed()
-                        {
+                        let r = ui.add(
+                            egui::Slider::new(&mut shadow.blur_radius, 0.0..=50.0)
+                                .suffix(" px")
+                                .max_decimals(1),
+                        );
+                        if r.changed() {
                             changed = true;
                         }
                         ui.label(t!("ctx.text.effects.shadow.spread"));
@@ -1799,7 +1812,7 @@ impl LayersPanel {
                             .add(
                                 egui::DragValue::new(&mut shadow.spread)
                                     .speed(0.2)
-                                    .clamp_range(0.0..=30.0)
+                                    .range(0.0..=30.0)
                                     .suffix("px"),
                             )
                             .changed()
@@ -1851,7 +1864,7 @@ impl LayersPanel {
                             .add(
                                 egui::DragValue::new(&mut inner.offset_x)
                                     .speed(0.5)
-                                    .clamp_range(-100.0..=100.0)
+                                    .range(-100.0..=100.0)
                                     .suffix("px"),
                             )
                             .changed()
@@ -1863,7 +1876,7 @@ impl LayersPanel {
                             .add(
                                 egui::DragValue::new(&mut inner.offset_y)
                                     .speed(0.5)
-                                    .clamp_range(-100.0..=100.0)
+                                    .range(-100.0..=100.0)
                                     .suffix("px"),
                             )
                             .changed()
@@ -1877,7 +1890,7 @@ impl LayersPanel {
                             .add(
                                 egui::DragValue::new(&mut inner.blur_radius)
                                     .speed(0.2)
-                                    .clamp_range(0.0..=50.0)
+                                    .range(0.0..=50.0)
                                     .suffix("px"),
                             )
                             .changed()
@@ -1945,7 +1958,7 @@ impl LayersPanel {
                             .add(
                                 egui::DragValue::new(&mut gradient.angle_degrees)
                                     .speed(1.0)
-                                    .clamp_range(-360.0..=360.0)
+                                    .range(-360.0..=360.0)
                                     .suffix("deg"),
                             )
                             .changed()
@@ -1957,7 +1970,7 @@ impl LayersPanel {
                             .add(
                                 egui::DragValue::new(&mut gradient.scale)
                                     .speed(1.0)
-                                    .clamp_range(1.0..=5000.0)
+                                    .range(1.0..=5000.0)
                                     .suffix("px"),
                             )
                             .changed()
@@ -1971,7 +1984,7 @@ impl LayersPanel {
                             .add(
                                 egui::DragValue::new(&mut gradient.offset[0])
                                     .speed(0.5)
-                                    .clamp_range(-5000.0..=5000.0),
+                                    .range(-5000.0..=5000.0),
                             )
                             .changed()
                         {
@@ -1982,7 +1995,7 @@ impl LayersPanel {
                             .add(
                                 egui::DragValue::new(&mut gradient.offset[1])
                                     .speed(0.5)
-                                    .clamp_range(-5000.0..=5000.0),
+                                    .range(-5000.0..=5000.0),
                             )
                             .changed()
                         {
@@ -2054,7 +2067,7 @@ impl LayersPanel {
                                 .add(
                                     egui::DragValue::new(&mut tex.scale)
                                         .speed(0.01)
-                                        .clamp_range(0.1..=10.0),
+                                        .range(0.1..=10.0),
                                 )
                                 .changed()
                             {
@@ -2067,7 +2080,7 @@ impl LayersPanel {
                                 .add(
                                     egui::DragValue::new(&mut tex.offset[0])
                                         .speed(0.5)
-                                        .clamp_range(-1000.0..=1000.0),
+                                        .range(-1000.0..=1000.0),
                                 )
                                 .changed()
                             {
@@ -2078,7 +2091,7 @@ impl LayersPanel {
                                 .add(
                                     egui::DragValue::new(&mut tex.offset[1])
                                         .speed(0.5)
-                                        .clamp_range(-1000.0..=1000.0),
+                                        .range(-1000.0..=1000.0),
                                 )
                                 .changed()
                             {
@@ -2135,7 +2148,7 @@ impl LayersPanel {
         let current_name = self.settings_state.text_warp.name().to_string();
         ui.horizontal(|ui| {
             ui.label(t!("ctx.text.warp.type"));
-            egui::ComboBox::from_id_source("ls_text_warp_type")
+            egui::ComboBox::from_id_salt("ls_text_warp_type")
                 .selected_text(&current_name)
                 .width(130.0)
                 .show_ui(ui, |ui| {
@@ -2165,7 +2178,7 @@ impl LayersPanel {
                         .add(
                             egui::DragValue::new(&mut arc.bend)
                                 .speed(0.01)
-                                .clamp_range(-1.0..=1.0),
+                                .range(-1.0..=1.0),
                         )
                         .changed()
                     {
@@ -2178,7 +2191,7 @@ impl LayersPanel {
                         .add(
                             egui::DragValue::new(&mut arc.horizontal_distortion)
                                 .speed(0.01)
-                                .clamp_range(-1.0..=1.0),
+                                .range(-1.0..=1.0),
                         )
                         .changed()
                     {
@@ -2191,7 +2204,7 @@ impl LayersPanel {
                         .add(
                             egui::DragValue::new(&mut arc.vertical_distortion)
                                 .speed(0.01)
-                                .clamp_range(-1.0..=1.0),
+                                .range(-1.0..=1.0),
                         )
                         .changed()
                     {
@@ -2206,7 +2219,7 @@ impl LayersPanel {
                         .add(
                             egui::DragValue::new(&mut circ.radius)
                                 .speed(1.0)
-                                .clamp_range(20.0..=2000.0)
+                                .range(20.0..=2000.0)
                                 .suffix("px"),
                         )
                         .changed()
@@ -2221,7 +2234,7 @@ impl LayersPanel {
                         .add(
                             egui::DragValue::new(&mut degrees)
                                 .speed(1.0)
-                                .clamp_range(-360.0..=360.0)
+                                .range(-360.0..=360.0)
                                 .suffix("°"),
                         )
                         .changed()

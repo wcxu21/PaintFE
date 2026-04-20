@@ -1,4 +1,5 @@
 use crate::components::dialogs::TiffCompression;
+use image::ImageEncoder;
 use image::codecs::bmp::BmpEncoder;
 use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
@@ -856,22 +857,21 @@ pub fn encode_and_write(
     match format {
         SaveFormat::Png => {
             let encoder = PngEncoder::new(&mut writer);
-            #[allow(deprecated)]
-            encoder.encode(
+            encoder.write_image(
                 image.as_raw(),
                 image.width(),
                 image.height(),
-                image::ColorType::Rgba8,
+                image::ExtendedColorType::Rgba8,
             )?;
         }
         SaveFormat::Jpeg => {
             let rgb_image = DynamicImage::ImageRgba8(image.clone()).to_rgb8();
-            let mut encoder = JpegEncoder::new_with_quality(&mut writer, quality);
-            encoder.encode(
+            let encoder = JpegEncoder::new_with_quality(&mut writer, quality);
+            encoder.write_image(
                 rgb_image.as_raw(),
                 rgb_image.width(),
                 rgb_image.height(),
-                image::ColorType::Rgb8,
+                image::ExtendedColorType::Rgb8,
             )?;
         }
         SaveFormat::Webp => {
@@ -879,21 +879,21 @@ pub fn encode_and_write(
             dyn_img.save(path)?;
         }
         SaveFormat::Bmp => {
-            let mut encoder = BmpEncoder::new(&mut writer);
-            encoder.encode(
+            let encoder = BmpEncoder::new(&mut writer);
+            encoder.write_image(
                 image.as_raw(),
                 image.width(),
                 image.height(),
-                image::ColorType::Rgba8,
+                image::ExtendedColorType::Rgba8,
             )?;
         }
         SaveFormat::Tga => {
             let encoder = TgaEncoder::new(&mut writer);
-            encoder.encode(
+            encoder.write_image(
                 image.as_raw(),
                 image.width(),
                 image.height(),
-                image::ColorType::Rgba8,
+                image::ExtendedColorType::Rgba8,
             )?;
         }
         SaveFormat::Ico => {
@@ -912,7 +912,7 @@ pub fn encode_and_write(
             } else {
                 DynamicImage::ImageRgba8(image.clone())
             };
-            dyn_img.write_to(&mut writer, image::ImageOutputFormat::Ico)?;
+            dyn_img.write_to(&mut writer, image::ImageFormat::Ico)?;
         }
         SaveFormat::Tiff => {
             let err_map = |e: tiff::TiffError| {
@@ -1118,23 +1118,22 @@ impl FileHandler {
         match format {
             SaveFormat::Png => {
                 let encoder = PngEncoder::new(&mut writer);
-                #[allow(deprecated)]
-                encoder.encode(
+                encoder.write_image(
                     image.as_raw(),
                     image.width(),
                     image.height(),
-                    image::ColorType::Rgba8,
+                    image::ExtendedColorType::Rgba8,
                 )?;
             }
             SaveFormat::Jpeg => {
                 // JPEG doesn't support alpha, convert to RGB
                 let rgb_image = DynamicImage::ImageRgba8(image.clone()).to_rgb8();
-                let mut encoder = JpegEncoder::new_with_quality(&mut writer, quality);
-                encoder.encode(
+                let encoder = JpegEncoder::new_with_quality(&mut writer, quality);
+                encoder.write_image(
                     rgb_image.as_raw(),
                     rgb_image.width(),
                     rgb_image.height(),
-                    image::ColorType::Rgb8,
+                    image::ExtendedColorType::Rgb8,
                 )?;
             }
             SaveFormat::Webp => {
@@ -1142,21 +1141,21 @@ impl FileHandler {
                 dyn_img.save(path)?;
             }
             SaveFormat::Bmp => {
-                let mut encoder = BmpEncoder::new(&mut writer);
-                encoder.encode(
+                let encoder = BmpEncoder::new(&mut writer);
+                encoder.write_image(
                     image.as_raw(),
                     image.width(),
                     image.height(),
-                    image::ColorType::Rgba8,
+                    image::ExtendedColorType::Rgba8,
                 )?;
             }
             SaveFormat::Tga => {
                 let encoder = TgaEncoder::new(&mut writer);
-                encoder.encode(
+                encoder.write_image(
                     image.as_raw(),
                     image.width(),
                     image.height(),
-                    image::ColorType::Rgba8,
+                    image::ExtendedColorType::Rgba8,
                 )?;
             }
             SaveFormat::Ico => {
@@ -1175,7 +1174,7 @@ impl FileHandler {
                 } else {
                     DynamicImage::ImageRgba8(image.clone())
                 };
-                dyn_img.write_to(&mut writer, image::ImageOutputFormat::Ico)?;
+                dyn_img.write_to(&mut writer, image::ImageFormat::Ico)?;
             }
             SaveFormat::Tiff => {
                 let err_map = |e: tiff::TiffError| {

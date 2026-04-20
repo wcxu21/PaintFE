@@ -302,6 +302,31 @@ fn affine_scale_half_golden() {
     assert_golden("transform", "affine_scale_half", &result);
 }
 
+#[test]
+fn align_layer_to_bottom_right_anchor() {
+    let mut state = canvas_from_image(&create_transparent(10, 10));
+    // 2x2 opaque block initially at (1,1)..(2,2)
+    for y in 1..=2 {
+        for x in 1..=2 {
+            state.layers[0]
+                .pixels
+                .put_pixel(x, y, Rgba([255, 255, 255, 255]));
+        }
+    }
+
+    let flat = state.layers[0].pixels.to_rgba_image();
+    transform::align_layer_to_anchor_from_flat(&mut state, 0, (2, 2), &flat);
+
+    let out = state.layers[0].pixels.to_rgba_image();
+    // 2x2 block should end at bottom-right: (8,8)..(9,9)
+    for y in 8..=9 {
+        for x in 8..=9 {
+            assert_eq!(out.get_pixel(x, y)[3], 255, "expected opaque at ({},{})", x, y);
+        }
+    }
+    assert_eq!(out.get_pixel(1, 1)[3], 0, "expected source position to be empty");
+}
+
 // =============================================================================
 // Golden tests for displacement warp
 // =============================================================================

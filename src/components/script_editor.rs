@@ -4,7 +4,7 @@
 
 use egui::text::LayoutJob;
 use egui::{
-    self, Align, Color32, FontId, Layout, Margin, RichText, Rounding, Stroke, TextFormat, Vec2,
+    self, Align, Color32, CornerRadius, FontId, Layout, Margin, RichText, Stroke, TextFormat, Vec2,
 };
 use std::collections::HashSet;
 use std::sync::{Arc, atomic::AtomicBool};
@@ -265,7 +265,7 @@ impl ScriptEditorPanel {
                     .map(|s| s.name.clone())
                     .unwrap_or_else(|| crate::t!("script.scripts_dropdown"));
 
-                egui::ComboBox::from_id_source("script_dropdown")
+                egui::ComboBox::from_id_salt("script_dropdown")
                     .selected_text(RichText::new(selected_name).color(text_color))
                     .show_ui(ui, |ui: &mut egui::Ui| {
                         for (i, script) in self.saved_scripts.iter().enumerate() {
@@ -294,11 +294,11 @@ impl ScriptEditorPanel {
             } else {
                 Color32::from_rgb(238, 236, 248)
             };
-            egui::Frame::none()
+            egui::Frame::NONE
                 .fill(frame_bg)
-                .rounding(Rounding::same(4.0))
+                .corner_radius(CornerRadius::same(4))
                 .stroke(Stroke::new(1.0, accent.linear_multiply(0.5)))
-                .inner_margin(Margin::same(6.0))
+                .inner_margin(Margin::same(6))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("Effect name:").color(text_color).size(12.0));
@@ -309,7 +309,7 @@ impl ScriptEditorPanel {
                                 .font(FontId::proportional(12.0)),
                         );
                         // Auto-focus
-                        if resp.gained_focus() || ui.memory(|m| m.focus().is_none()) {
+                        if resp.gained_focus() || ui.memory(|m| m.focused().is_none()) {
                             resp.request_focus();
                         }
                         let enter_pressed =
@@ -394,17 +394,17 @@ impl ScriptEditorPanel {
                 Color32::from_rgb(150, 155, 170),
             )
         };
-        let code_frame = egui::Frame::none()
+        let code_frame = egui::Frame::NONE
             .fill(code_bg)
-            .rounding(Rounding::same(4.0))
+            .corner_radius(CornerRadius::same(4))
             .stroke(Stroke::new(1.0, code_border))
-            .inner_margin(Margin::same(0.0));
+            .inner_margin(Margin::same(0));
 
         code_frame.show(ui, |ui| {
             ui.set_max_height(code_h);
 
             egui::ScrollArea::vertical()
-                .id_source("script_code_scroll")
+                .id_salt("script_code_scroll")
                 .max_height(code_h)
                 .show(ui, |ui: &mut egui::Ui| {
                     ui.horizontal_top(|ui: &mut egui::Ui| {
@@ -453,11 +453,16 @@ impl ScriptEditorPanel {
                         // -- Code text editor with syntax highlighting --
                         let highlighter = &self.highlighter;
                         let dark_mode = is_dark;
-                        let mut layouter = |ui: &egui::Ui, text: &str, wrap_width: f32| {
-                            let layout_job =
-                                highlighter.highlight(text, wrap_width, error_line, dark_mode);
-                            ui.fonts(|f| f.layout_job(layout_job))
-                        };
+                        let mut layouter =
+                            |ui: &egui::Ui, text: &dyn egui::TextBuffer, wrap_width: f32| {
+                                let layout_job = highlighter.highlight(
+                                    text.as_str(),
+                                    wrap_width,
+                                    error_line,
+                                    dark_mode,
+                                );
+                                ui.ctx().fonts_mut(|f| f.layout_job(layout_job))
+                            };
 
                         let _output = egui::TextEdit::multiline(&mut self.code)
                             .font(FontId::monospace(13.0))
@@ -511,16 +516,16 @@ impl ScriptEditorPanel {
         });
 
         if self.console_expanded {
-            egui::Frame::none()
+            egui::Frame::NONE
                 .fill(console_bg)
-                .rounding(Rounding {
-                    nw: 0.0,
-                    ne: 0.0,
-                    sw: 4.0,
-                    se: 4.0,
+                .corner_radius(CornerRadius {
+                    nw: 0,
+                    ne: 0,
+                    sw: 4,
+                    se: 4,
                 })
                 .stroke(Stroke::new(1.0, console_border))
-                .inner_margin(Margin::same(6.0))
+                .inner_margin(Margin::same(6))
                 .show(ui, |ui| {
                     ui.set_max_height(console_h - 24.0);
 
@@ -544,7 +549,9 @@ impl ScriptEditorPanel {
                     // Build a colored layout job for the console
                     let console_lines_ref = &self.console_output;
                     let dark_mode = is_dark;
-                    let mut layouter = |_ui: &egui::Ui, _text: &str, wrap_width: f32| {
+                    let mut layouter = |_ui: &egui::Ui,
+                                        _text: &dyn egui::TextBuffer,
+                                        wrap_width: f32| {
                         let mut job = LayoutJob::default();
                         job.wrap.max_width = wrap_width;
                         let font = FontId::monospace(11.0);
@@ -649,11 +656,11 @@ impl ScriptEditorPanel {
                                 );
                             }
                         }
-                        _ui.fonts(|f| f.layout_job(job))
+                        _ui.ctx().fonts_mut(|f| f.layout_job(job))
                     };
 
                     egui::ScrollArea::vertical()
-                        .id_source("script_console_scroll")
+                        .id_salt("script_console_scroll")
                         .stick_to_bottom(true)
                         .max_height(console_h - 24.0)
                         .show(ui, |ui: &mut egui::Ui| {
@@ -661,7 +668,7 @@ impl ScriptEditorPanel {
                             egui::TextEdit::multiline(&mut console_text.as_str())
                                 .font(FontId::monospace(11.0))
                                 .desired_width(ui.available_width())
-                                .frame(false)
+                                .frame(egui::Frame::NONE)
                                 .layouter(&mut layouter)
                                 .show(ui);
                         });

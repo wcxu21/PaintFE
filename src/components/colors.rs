@@ -86,6 +86,10 @@ impl ColorsPanel {
         self.expanded
     }
 
+    pub fn set_expanded(&mut self, expanded: bool) {
+        self.expanded = expanded;
+    }
+
     /// (r, g, b, a) as 0.0–1.0 f32, un-multiplied.  RGB reconstructed from
     /// stored HSV for maximum precision.
     pub fn get_primary_color_f32(&self) -> [f32; 4] {
@@ -221,7 +225,7 @@ impl ColorsPanel {
                 } else {
                     Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color)
                 };
-                p.rect_stroke(pri_rect, 3.0, border);
+                p.rect_stroke(pri_rect, 3.0, border, egui::StrokeKind::Middle);
             }
             if pri_resp.clicked() {
                 self.editing_primary = true;
@@ -241,7 +245,7 @@ impl ColorsPanel {
                 } else {
                     Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color)
                 };
-                p.rect_stroke(sec_rect, 3.0, border);
+                p.rect_stroke(sec_rect, 3.0, border, egui::StrokeKind::Middle);
             }
             if sec_resp.clicked() {
                 self.editing_primary = false;
@@ -253,7 +257,7 @@ impl ColorsPanel {
             let swap_cy = (pri_rect.center().y + sec_rect.center().y) / 2.0;
             let swap_rect =
                 egui::Rect::from_center_size(Pos2::new(swap_cx, swap_cy), Vec2::splat(swap_size));
-            let swap_resp = ui.allocate_ui_at_rect(swap_rect, |ui| {
+            let swap_resp = ui.scope_builder(egui::UiBuilder::new().max_rect(swap_rect), |ui| {
                 assets.small_icon_button_frameless(ui, Icon::SwapColors)
             });
             if swap_resp.inner.clicked() {
@@ -592,30 +596,26 @@ impl ColorsPanel {
                 // checkerboard behind slider
                 draw_checkerboard(p, bar, 4.0);
 
-                // alpha gradient
+                // alpha gradient (single quad mesh to avoid striping/banding seams)
                 let base = hsv_to_color(h, s, v, 255);
-                let steps = 48;
-                for i in 0..steps {
-                    let t = i as f32 / steps as f32;
-                    let x0 = bar.min.x + t * bar.width();
-                    let x1 = bar.min.x + (i + 1) as f32 / steps as f32 * bar.width() + 0.5;
-                    p.rect_filled(
-                        egui::Rect::from_min_max(
-                            Pos2::new(x0, bar.min.y),
-                            Pos2::new(x1, bar.max.y),
-                        ),
-                        0.0,
-                        Color32::from_rgba_unmultiplied(
-                            base.r(),
-                            base.g(),
-                            base.b(),
-                            (t * 255.0) as u8,
-                        ),
-                    );
-                }
+                let left = Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), 0);
+                let right = Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), 255);
+                let mut mesh = egui::Mesh::default();
+                mesh.colored_vertex(bar.left_top(), left);
+                mesh.colored_vertex(bar.right_top(), right);
+                mesh.colored_vertex(bar.left_bottom(), left);
+                mesh.colored_vertex(bar.right_bottom(), right);
+                mesh.add_triangle(0, 1, 2);
+                mesh.add_triangle(2, 1, 3);
+                p.add(egui::Shape::mesh(mesh));
 
                 // border
-                p.rect_stroke(bar, 2.0, Stroke::new(1.0, Color32::from_black_alpha(45)));
+                p.rect_stroke(
+                    bar,
+                    2.0,
+                    Stroke::new(1.0, Color32::from_black_alpha(45)),
+                    egui::StrokeKind::Middle,
+                );
 
                 // arrow thumb — small dark triangle, white outline (Paint.NET style)
                 let tx = bar.min.x + a * bar.width();
@@ -650,7 +650,10 @@ impl ColorsPanel {
             let mut alpha_val = (a * 255.0).round() as u32;
             let av_before = alpha_val;
             color_step_field(ui, &mut alpha_val, 0, 255);
-            if alpha_val != av_before { a = alpha_val as f32 / 255.0; changed = true; }
+            if alpha_val != av_before {
+                a = alpha_val as f32 / 255.0;
+                changed = true;
+            }
         });
 
         if changed {
@@ -726,7 +729,7 @@ impl ColorsPanel {
                 ui.add(egui::Button::new("📋").frame(false))
             };
             if copy_resp.clicked() {
-                ui.output_mut(|o| o.copied_text = format!("{:02X}{:02X}{:02X}", r, g, b));
+                ui.ctx().copy_text(format!("{:02X}{:02X}{:02X}", r, g, b));
             }
         });
     }
@@ -742,13 +745,32 @@ impl ColorsPanel {
         } else {
             self.secondary_color.a()
         };
-        // Derive un-premultiplied RGB from HSV (Color32 stores premultiplied)
-        let hsv_cur = if editing {
-            self.primary_hsv
+        // For fully-opaque colors, read RGB directly from the current color so
+        // dragging one channel doesn't introduce HSV round-trip drift in others.
+        // For translucent colors, keep HSV as the source to avoid premultiplied
+        // channel ambiguity.
+        let opaque = if a == 255 {
+            if editing {
+                Color32::from_rgb(
+                    self.primary_color.r(),
+                    self.primary_color.g(),
+                    self.primary_color.b(),
+                )
+            } else {
+                Color32::from_rgb(
+                    self.secondary_color.r(),
+                    self.secondary_color.g(),
+                    self.secondary_color.b(),
+                )
+            }
         } else {
-            self.secondary_hsv
+            let hsv_cur = if editing {
+                self.primary_hsv
+            } else {
+                self.secondary_hsv
+            };
+            hsv_to_color(hsv_cur[0], hsv_cur[1], hsv_cur[2], 255)
         };
-        let opaque = hsv_to_color(hsv_cur[0], hsv_cur[1], hsv_cur[2], 255);
         let mut r = opaque.r() as f32 / 255.0;
         let mut g = opaque.g() as f32 / 255.0;
         let mut b = opaque.b() as f32 / 255.0;
@@ -783,8 +805,16 @@ impl ColorsPanel {
             }
             let mut ri = (r * 255.0).round() as u32;
             let ri_before = ri;
-            ui.vertical(|ui| { ui.add_space(10.0); ui.horizontal(|ui| { color_step_field(ui, &mut ri, 0, 255); }); });
-            if ri != ri_before { r = ri as f32 / 255.0; changed = true; }
+            ui.vertical(|ui| {
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    color_step_field(ui, &mut ri, 0, 255);
+                });
+            });
+            if ri != ri_before {
+                r = ri as f32 / 255.0;
+                changed = true;
+            }
         });
 
         // -- G --
@@ -810,8 +840,16 @@ impl ColorsPanel {
             }
             let mut gi = (g * 255.0).round() as u32;
             let gi_before = gi;
-            ui.vertical(|ui| { ui.add_space(10.0); ui.horizontal(|ui| { color_step_field(ui, &mut gi, 0, 255); }); });
-            if gi != gi_before { g = gi as f32 / 255.0; changed = true; }
+            ui.vertical(|ui| {
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    color_step_field(ui, &mut gi, 0, 255);
+                });
+            });
+            if gi != gi_before {
+                g = gi as f32 / 255.0;
+                changed = true;
+            }
         });
 
         // -- B --
@@ -837,8 +875,16 @@ impl ColorsPanel {
             }
             let mut bi = (b * 255.0).round() as u32;
             let bi_before = bi;
-            ui.vertical(|ui| { ui.add_space(10.0); ui.horizontal(|ui| { color_step_field(ui, &mut bi, 0, 255); }); });
-            if bi != bi_before { b = bi as f32 / 255.0; changed = true; }
+            ui.vertical(|ui| {
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    color_step_field(ui, &mut bi, 0, 255);
+                });
+            });
+            if bi != bi_before {
+                b = bi as f32 / 255.0;
+                changed = true;
+            }
         });
 
         if changed {
@@ -902,8 +948,16 @@ impl ColorsPanel {
             }
             let mut hi = (h * 360.0).round() as u32;
             let hi_before = hi;
-            ui.vertical(|ui| { ui.add_space(10.0); ui.horizontal(|ui| { color_step_field(ui, &mut hi, 0, 360); }); });
-            if hi != hi_before { h = hi as f32 / 360.0; changed = true; }
+            ui.vertical(|ui| {
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    color_step_field(ui, &mut hi, 0, 360);
+                });
+            });
+            if hi != hi_before {
+                h = hi as f32 / 360.0;
+                changed = true;
+            }
         });
 
         // -- S --
@@ -919,8 +973,16 @@ impl ColorsPanel {
             }
             let mut si = (s * 100.0).round() as u32;
             let si_before = si;
-            ui.vertical(|ui| { ui.add_space(10.0); ui.horizontal(|ui| { color_step_field(ui, &mut si, 0, 100); }); });
-            if si != si_before { s = si as f32 / 100.0; changed = true; }
+            ui.vertical(|ui| {
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    color_step_field(ui, &mut si, 0, 100);
+                });
+            });
+            if si != si_before {
+                s = si as f32 / 100.0;
+                changed = true;
+            }
         });
 
         // -- V --
@@ -936,8 +998,16 @@ impl ColorsPanel {
             }
             let mut vi = (v * 100.0).round() as u32;
             let vi_before = vi;
-            ui.vertical(|ui| { ui.add_space(10.0); ui.horizontal(|ui| { color_step_field(ui, &mut vi, 0, 100); }); });
-            if vi != vi_before { v = vi as f32 / 100.0; changed = true; }
+            ui.vertical(|ui| {
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    color_step_field(ui, &mut vi, 0, 100);
+                });
+            });
+            if vi != vi_before {
+                v = vi as f32 / 100.0;
+                changed = true;
+            }
         });
 
         if changed {
@@ -990,7 +1060,12 @@ impl ColorsPanel {
             }
 
             // border
-            p.rect_stroke(bar, 2.0, Stroke::new(1.0, Color32::from_black_alpha(50)));
+            p.rect_stroke(
+                bar,
+                2.0,
+                Stroke::new(1.0, Color32::from_black_alpha(50)),
+                egui::StrokeKind::Middle,
+            );
 
             // arrow thumb — small dark triangle, white outline (Paint.NET style)
             let tx = bar.min.x + *value * bar.width();
@@ -1054,12 +1129,12 @@ fn draw_checkerboard(painter: &egui::Painter, rect: egui::Rect, cell: f32) {
 /// Mutates `val` in place; the caller is responsible for detecting change.
 fn color_step_field(ui: &mut egui::Ui, val: &mut u32, min: u32, max: u32) {
     ui.spacing_mut().item_spacing.x = 1.0;
-    if ui.small_button("\u{2212}").clicked() && *val > min {
+    if ui.small_button("-").clicked() && *val > min {
         *val -= 1;
     }
     ui.add_sized(
         [30.0, 16.0],
-        egui::DragValue::new(val).clamp_range(min..=max).speed(1),
+        egui::DragValue::new(val).range(min..=max).speed(1),
     );
     if ui.small_button("+").clicked() && *val < max {
         *val += 1;

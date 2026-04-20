@@ -131,7 +131,7 @@ impl AsyncReadback {
             return None;
         }
 
-        device.poll(wgpu::Maintain::Poll);
+        let _ = device.poll(wgpu::PollType::Poll);
 
         let ready = self
             .read_rx
@@ -756,15 +756,15 @@ impl GpuRenderer {
             wgpu::Origin3d { x: rx, y: ry, z: 0 }
         };
         encoder.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: result_tex,
                 mip_level: 0,
                 origin,
                 aspect: wgpu::TextureAspect::All,
             },
-            wgpu::ImageCopyBuffer {
+            wgpu::TexelCopyBufferInfo {
                 buffer: self.async_readback.write_buffer(),
-                layout: wgpu::ImageDataLayout {
+                layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(padded_bytes_per_row),
                     rows_per_image: Some(rh),

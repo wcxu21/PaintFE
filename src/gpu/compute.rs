@@ -6,6 +6,7 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use super::context::GpuContext;
+use crate::components::tools::{FloodConnectivity, WandDistanceMode};
 
 // ============================================================================
 // SHARED HELPERS
@@ -53,14 +54,14 @@ fn upload_rgba(
         view_formats: &[],
     });
     queue.write_texture(
-        wgpu::ImageCopyTexture {
+        wgpu::TexelCopyTextureInfo {
             texture: &tex,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
         data,
-        wgpu::ImageDataLayout {
+        wgpu::TexelCopyBufferLayout {
             offset: 0,
             bytes_per_row: Some(4 * w),
             rows_per_image: Some(h),
@@ -97,14 +98,14 @@ fn upload_r8(
         view_formats: &[],
     });
     queue.write_texture(
-        wgpu::ImageCopyTexture {
+        wgpu::TexelCopyTextureInfo {
             texture: &tex,
             mip_level: 0,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
         data,
-        wgpu::ImageDataLayout {
+        wgpu::TexelCopyBufferLayout {
             offset: 0,
             bytes_per_row: Some(w),
             rows_per_image: Some(h),
@@ -291,16 +292,17 @@ impl GpuBlurPipeline {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("blur_pipeline_layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
         });
 
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("blur_pipeline"),
             layout: Some(&pipeline_layout),
             module: &shader,
-            entry_point: "cs_blur",
+            entry_point: Some("cs_blur"),
             compilation_options: Default::default(),
+            cache: None,
         });
 
         Self {
@@ -543,15 +545,16 @@ impl GpuBrightnessContrastPipeline {
         let bgl = filter_bgl(device, "bc_bgl");
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("bc_pl"),
-            bind_group_layouts: &[&bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("bc_pipeline"),
             layout: Some(&layout),
             module: &shader,
-            entry_point: "cs_brightness_contrast",
+            entry_point: Some("cs_brightness_contrast"),
             compilation_options: Default::default(),
+            cache: None,
         });
         Self { pipeline, bgl }
     }
@@ -615,15 +618,16 @@ impl GpuHslPipeline {
         let bgl = filter_bgl(device, "hsl_bgl");
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("hsl_pl"),
-            bind_group_layouts: &[&bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("hsl_pipeline"),
             layout: Some(&layout),
             module: &shader,
-            entry_point: "cs_hsl_adjust",
+            entry_point: Some("cs_hsl_adjust"),
             compilation_options: Default::default(),
+            cache: None,
         });
         Self { pipeline, bgl }
     }
@@ -689,15 +693,16 @@ impl GpuInvertPipeline {
         let bgl = filter_bgl(device, "invert_bgl");
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("invert_pl"),
-            bind_group_layouts: &[&bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("invert_pipeline"),
             layout: Some(&layout),
             module: &shader,
-            entry_point: "cs_invert",
+            entry_point: Some("cs_invert"),
             compilation_options: Default::default(),
+            cache: None,
         });
         Self { pipeline, bgl }
     }
@@ -749,15 +754,16 @@ impl GpuMedianPipeline {
         let bgl = filter_bgl(device, "median_bgl");
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("median_pl"),
-            bind_group_layouts: &[&bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
         });
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("median_pipeline"),
             layout: Some(&layout),
             module: &shader,
-            entry_point: "cs_median",
+            entry_point: Some("cs_median"),
             compilation_options: Default::default(),
+            cache: None,
         });
         Self { pipeline, bgl }
     }
@@ -910,16 +916,17 @@ impl GpuMagicWandPipeline {
 
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("magic_wand_mask_pl"),
-            bind_group_layouts: &[&bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
         });
 
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("magic_wand_mask_pipeline"),
             layout: Some(&layout),
             module: &shader,
-            entry_point: "cs_magic_wand_mask",
+            entry_point: Some("cs_magic_wand_mask"),
             compilation_options: Default::default(),
+            cache: None,
         });
 
         Self {
@@ -1099,15 +1106,15 @@ impl GpuMagicWandPipeline {
         }
 
         encoder.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: out_tex,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            wgpu::ImageCopyBuffer {
+            wgpu::TexelCopyBufferInfo {
                 buffer: staging,
-                layout: wgpu::ImageDataLayout {
+                layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(bytes_per_row),
                     rows_per_image: Some(h),
@@ -1127,7 +1134,10 @@ impl GpuMagicWandPipeline {
         slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
-        device.poll(wgpu::Maintain::Wait);
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
         match rx.recv() {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
@@ -1258,16 +1268,17 @@ impl GpuFillPreviewPipeline {
 
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("fill_preview_pl"),
-            bind_group_layouts: &[&bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
         });
 
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("fill_preview_pipeline"),
             layout: Some(&layout),
             module: &shader,
-            entry_point: "cs_fill_preview",
+            entry_point: Some("cs_fill_preview"),
             compilation_options: Default::default(),
+            cache: None,
         });
 
         Self {
@@ -1510,15 +1521,15 @@ impl GpuFillPreviewPipeline {
         }
 
         encoder.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: out_tex,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            wgpu::ImageCopyBuffer {
+            wgpu::TexelCopyBufferInfo {
                 buffer: staging,
-                layout: wgpu::ImageDataLayout {
+                layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(bytes_per_row),
                     rows_per_image: Some(region_h),
@@ -1538,7 +1549,10 @@ impl GpuFillPreviewPipeline {
         slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
-        device.poll(wgpu::Maintain::Wait);
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
         match rx.recv() {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
@@ -1581,10 +1595,10 @@ struct FloodColorDistGpuParams {
     target_g: u32,
     target_b: u32,
     target_a: u32,
+    distance_mode: u32,
     width: u32,
     height: u32,
     _pad0: u32,
-    _pad1: u32,
 }
 
 #[repr(C)]
@@ -1603,6 +1617,7 @@ struct FloodStepGpuParams {
     height: u32,
     step_size: u32,
     direction: u32,
+    connectivity: u32,
 }
 
 pub struct GpuFloodFillPipeline {
@@ -1618,6 +1633,8 @@ pub struct GpuFloodFillPipeline {
     cached_flood_a_buf: Option<wgpu::Buffer>,
     cached_flood_b_buf: Option<wgpu::Buffer>,
     cached_staging_buf: Option<wgpu::Buffer>,
+    cached_changed_buf: Option<wgpu::Buffer>,
+    cached_changed_staging_buf: Option<wgpu::Buffer>,
     cached_params_buf_cd: Option<wgpu::Buffer>,
     cached_params_buf_init: Option<wgpu::Buffer>,
     cached_w: u32,
@@ -1674,8 +1691,8 @@ impl GpuFloodFillPipeline {
 
         let cd_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("flood_color_dist_pl"),
-            bind_group_layouts: &[&color_dist_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&color_dist_bgl)],
+            immediate_size: 0,
         });
 
         let color_dist_pipeline =
@@ -1683,8 +1700,9 @@ impl GpuFloodFillPipeline {
                 label: Some("flood_color_dist_pipeline"),
                 layout: Some(&cd_layout),
                 module: &cd_shader,
-                entry_point: "cs_color_distance",
+                entry_point: Some("cs_color_distance"),
                 compilation_options: Default::default(),
+                cache: None,
             });
 
         // --- Flood Init pipeline ---
@@ -1734,8 +1752,8 @@ impl GpuFloodFillPipeline {
 
         let init_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("flood_init_pl"),
-            bind_group_layouts: &[&flood_init_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&flood_init_bgl)],
+            immediate_size: 0,
         });
 
         let flood_init_pipeline =
@@ -1743,8 +1761,9 @@ impl GpuFloodFillPipeline {
                 label: Some("flood_init_pipeline"),
                 layout: Some(&init_layout),
                 module: &init_shader,
-                entry_point: "cs_flood_init",
+                entry_point: Some("cs_flood_init"),
                 compilation_options: Default::default(),
+                cache: None,
             });
 
         // --- Flood Step pipeline ---
@@ -1800,13 +1819,24 @@ impl GpuFloodFillPipeline {
                     },
                     count: None,
                 },
+                // binding 4: changed flag (read_write)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
         let step_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("flood_step_pl"),
-            bind_group_layouts: &[&flood_step_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&flood_step_bgl)],
+            immediate_size: 0,
         });
 
         let flood_step_pipeline =
@@ -1814,8 +1844,9 @@ impl GpuFloodFillPipeline {
                 label: Some("flood_step_pipeline"),
                 layout: Some(&step_layout),
                 module: &step_shader,
-                entry_point: "cs_flood_step",
+                entry_point: Some("cs_flood_step"),
                 compilation_options: Default::default(),
+                cache: None,
             });
 
         Self {
@@ -1830,6 +1861,8 @@ impl GpuFloodFillPipeline {
             cached_flood_a_buf: None,
             cached_flood_b_buf: None,
             cached_staging_buf: None,
+            cached_changed_buf: None,
+            cached_changed_staging_buf: None,
             cached_params_buf_cd: None,
             cached_params_buf_init: None,
             cached_w: 0,
@@ -1869,6 +1902,20 @@ impl GpuFloodFillPipeline {
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         }));
+        self.cached_changed_buf = Some(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("flood_changed_buf"),
+            size: 4,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        self.cached_changed_staging_buf = Some(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("flood_changed_staging_buf"),
+            size: 4,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
 
         self.cached_input_tex = None;
         self.cached_input_key = 0;
@@ -1889,6 +1936,8 @@ impl GpuFloodFillPipeline {
         seed_y: u32,
         w: u32,
         h: u32,
+        distance_mode: WandDistanceMode,
+        connectivity: FloodConnectivity,
         out: &mut Vec<u8>,
     ) -> bool {
         let device = &ctx.device;
@@ -1918,10 +1967,14 @@ impl GpuFloodFillPipeline {
             target_g: target_color[1] as u32,
             target_b: target_color[2] as u32,
             target_a: target_color[3] as u32,
+            distance_mode: if distance_mode == WandDistanceMode::Perceptual {
+                1
+            } else {
+                0
+            },
             width: w,
             height: h,
             _pad0: 0,
-            _pad1: 0,
         };
         let cd_params_bytes = bytemuck::bytes_of(&cd_params);
         let cd_params_buf = self.cached_params_buf_cd.get_or_insert_with(|| {
@@ -1941,6 +1994,7 @@ impl GpuFloodFillPipeline {
         let color_dist_buf = self.cached_color_dist_buf.as_ref().unwrap();
         let flood_a_buf = self.cached_flood_a_buf.as_ref().unwrap();
         let flood_b_buf = self.cached_flood_b_buf.as_ref().unwrap();
+        let changed_buf = self.cached_changed_buf.as_ref().unwrap();
 
         let cd_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("flood_cd_bg"),
@@ -2041,6 +2095,11 @@ impl GpuFloodFillPipeline {
                 height: h,
                 step_size: 1,
                 direction: 0,
+                connectivity: if connectivity == FloodConnectivity::Eight {
+                    8
+                } else {
+                    4
+                },
             }),
             usage: wgpu::BufferUsages::UNIFORM,
         });
@@ -2051,6 +2110,11 @@ impl GpuFloodFillPipeline {
                 height: h,
                 step_size: 1,
                 direction: 1,
+                connectivity: if connectivity == FloodConnectivity::Eight {
+                    8
+                } else {
+                    4
+                },
             }),
             usage: wgpu::BufferUsages::UNIFORM,
         });
@@ -2076,6 +2140,10 @@ impl GpuFloodFillPipeline {
                     binding: 3,
                     resource: params_buf_fwd.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: changed_buf.as_entire_binding(),
+                },
             ],
         });
         let bg_bwd = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -2098,6 +2166,10 @@ impl GpuFloodFillPipeline {
                     binding: 3,
                     resource: params_buf_bwd.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: changed_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -2105,10 +2177,15 @@ impl GpuFloodFillPipeline {
         // Multiple compute passes per encoder are correct here — wgpu inserts
         // implicit storage-buffer barriers at compute pass boundaries, and we
         // use pre-built bind groups (no write_buffer between passes).
-        let batch_size = 1000;
+        let batch_size = 64;
         let mut direction = 0u32;
-        for chunk_start in (0..num_passes).step_by(batch_size) {
+        let mut chunk_start = 0usize;
+        while chunk_start < num_passes {
             let chunk_end = num_passes.min(chunk_start + batch_size);
+
+            // Reset convergence flag for this batch.
+            queue.write_buffer(changed_buf, 0, bytemuck::bytes_of(&0u32));
+
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("flood_step_batch"),
             });
@@ -2129,6 +2206,42 @@ impl GpuFloodFillPipeline {
                 direction ^= 1;
             }
             queue.submit(std::iter::once(encoder.finish()));
+
+            // If nothing changed in this batch, flood distances converged.
+            let changed_staging = self.cached_changed_staging_buf.as_ref().unwrap();
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("flood_changed_readback_encoder"),
+            });
+            encoder.copy_buffer_to_buffer(changed_buf, 0, changed_staging, 0, 4);
+            queue.submit(std::iter::once(encoder.finish()));
+
+            let changed_slice = changed_staging.slice(..);
+            let (tx_changed, rx_changed) = std::sync::mpsc::channel();
+            changed_slice.map_async(wgpu::MapMode::Read, move |result| {
+                let _ = tx_changed.send(result);
+            });
+            let _ = device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            });
+
+            let changed_value = match rx_changed.recv() {
+                Ok(Ok(())) => {
+                    let mapped = changed_slice.get_mapped_range();
+                    let vals: &[u32] = bytemuck::cast_slice(&mapped);
+                    let changed = vals.first().copied().unwrap_or(1);
+                    drop(mapped);
+                    changed_staging.unmap();
+                    changed
+                }
+                Ok(Err(_)) | Err(_) => 1,
+            };
+
+            if changed_value == 0 {
+                break;
+            }
+
+            chunk_start = chunk_end;
         }
 
         // === Phase 4: Read back result ===
@@ -2153,7 +2266,10 @@ impl GpuFloodFillPipeline {
         slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
-        device.poll(wgpu::Maintain::Wait);
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
 
         match rx.recv() {
             Ok(Ok(())) => {}
@@ -2194,6 +2310,7 @@ impl GpuFloodFillPipeline {
         target_color: [u8; 4],
         w: u32,
         h: u32,
+        distance_mode: WandDistanceMode,
         out: &mut Vec<u8>,
     ) -> bool {
         let device = &ctx.device;
@@ -2218,10 +2335,14 @@ impl GpuFloodFillPipeline {
             target_g: target_color[1] as u32,
             target_b: target_color[2] as u32,
             target_a: target_color[3] as u32,
+            distance_mode: if distance_mode == WandDistanceMode::Perceptual {
+                1
+            } else {
+                0
+            },
             width: w,
             height: h,
             _pad0: 0,
-            _pad1: 0,
         };
         let cd_params_bytes = bytemuck::bytes_of(&cd_params);
         let cd_params_buf = self.cached_params_buf_cd.get_or_insert_with(|| {
@@ -2283,7 +2404,10 @@ impl GpuFloodFillPipeline {
         slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
-        device.poll(wgpu::Maintain::Wait);
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
 
         match rx.recv() {
             Ok(Ok(())) => {}
@@ -2369,16 +2493,17 @@ impl GpuGradientPipeline {
 
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("gradient_pl"),
-            bind_group_layouts: &[&bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
         });
 
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("gradient_pipeline"),
             layout: Some(&layout),
             module: &shader,
-            entry_point: "cs_gradient",
+            entry_point: Some("cs_gradient"),
             compilation_options: Default::default(),
+            cache: None,
         });
 
         Self {
@@ -2501,15 +2626,15 @@ impl GpuGradientPipeline {
 
         // Copy output texture → cached staging buffer
         encoder.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: dst_tex,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            wgpu::ImageCopyBuffer {
+            wgpu::TexelCopyBufferInfo {
                 buffer: staging,
-                layout: wgpu::ImageDataLayout {
+                layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(bytes_per_row),
                     rows_per_image: Some(h),
@@ -2530,7 +2655,10 @@ impl GpuGradientPipeline {
         slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
-        device.poll(wgpu::Maintain::Wait);
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
         match rx.recv() {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
@@ -2648,16 +2776,17 @@ impl GpuLiquifyPipeline {
 
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("liquify_pl"),
-            bind_group_layouts: &[&bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
         });
 
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("liquify_pipeline"),
             layout: Some(&layout),
             module: &shader,
-            entry_point: "cs_liquify_warp",
+            entry_point: Some("cs_liquify_warp"),
             compilation_options: Default::default(),
+            cache: None,
         });
 
         Self {
@@ -2783,14 +2912,14 @@ impl GpuLiquifyPipeline {
         // Upload source image (only when dirty — stays constant during a stroke)
         if self.source_dirty {
             queue.write_texture(
-                wgpu::ImageCopyTexture {
+                wgpu::TexelCopyTextureInfo {
                     texture: src_tex,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
                 source_rgba,
-                wgpu::ImageDataLayout {
+                wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(4 * w),
                     rows_per_image: Some(h),
@@ -2866,15 +2995,15 @@ impl GpuLiquifyPipeline {
 
         // Copy output texture → staging buffer
         encoder.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: dst_tex,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            wgpu::ImageCopyBuffer {
+            wgpu::TexelCopyBufferInfo {
                 buffer: staging,
-                layout: wgpu::ImageDataLayout {
+                layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(bytes_per_row),
                     rows_per_image: Some(h),
@@ -2895,7 +3024,10 @@ impl GpuLiquifyPipeline {
         slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
-        device.poll(wgpu::Maintain::Wait);
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
         match rx.recv() {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
@@ -2995,16 +3127,17 @@ impl GpuMeshWarpDisplacementPipeline {
 
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("mesh_warp_disp_pl"),
-            bind_group_layouts: &[&bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bgl)],
+            immediate_size: 0,
         });
 
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("mesh_warp_disp_pipeline"),
             layout: Some(&layout),
             module: &shader,
-            entry_point: "cs_mesh_warp_displacement",
+            entry_point: Some("cs_mesh_warp_displacement"),
             compilation_options: Default::default(),
+            cache: None,
         });
 
         Self {
@@ -3158,7 +3291,10 @@ impl GpuMeshWarpDisplacementPipeline {
         slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
-        device.poll(wgpu::Maintain::Wait);
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
         match rx.recv() {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {

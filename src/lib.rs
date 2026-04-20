@@ -24,3 +24,4 @@ pub mod project;
 pub mod signal_draw;
 pub mod signal_widgets;
 pub mod theme;
+pub mod windows_key_probe;

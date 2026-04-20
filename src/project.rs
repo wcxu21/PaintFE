@@ -1,3 +1,4 @@
+use eframe::egui::Vec2;
 use std::path::PathBuf;
 use uuid::Uuid;
 
@@ -23,6 +24,10 @@ pub struct Project {
 
     /// Animation FPS preserved from import (default 10.0)
     pub animation_fps: f32,
+
+    /// Per-project canvas camera state.
+    pub view_zoom: f32,
+    pub view_pan_offset: Vec2,
 }
 
 impl Project {
@@ -39,6 +44,8 @@ impl Project {
             name,
             was_animated: false,
             animation_fps: 10.0,
+            view_zoom: 1.0,
+            view_pan_offset: Vec2::ZERO,
         }
     }
 
@@ -58,6 +65,8 @@ impl Project {
             name,
             was_animated: false,
             animation_fps: 10.0,
+            view_zoom: 1.0,
+            view_pan_offset: Vec2::ZERO,
         }
     }
 

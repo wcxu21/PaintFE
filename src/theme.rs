@@ -1,4 +1,4 @@
-use eframe::egui::{self, Color32, Rounding, Stroke, Visuals};
+use eframe::egui::{self, Color32, CornerRadius, Stroke, Visuals};
 use eframe::epaint::Shadow;
 
 /// Theme mode for the application
@@ -656,6 +656,11 @@ impl Theme {
     }
 
     pub fn apply(&self, ctx: &egui::Context) {
+        ctx.set_theme(match self.mode {
+            ThemeMode::Dark => egui::Theme::Dark,
+            ThemeMode::Light => egui::Theme::Light,
+        });
+
         let mut visuals = match self.mode {
             ThemeMode::Dark => Visuals::dark(),
             ThemeMode::Light => Visuals::light(),
@@ -670,7 +675,8 @@ impl Theme {
         visuals.widgets.noninteractive.bg_fill = self.panel_bg;
         visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, self.text_muted);
         visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, self.border_color);
-        visuals.widgets.noninteractive.rounding = Rounding::same(self.widget_rounding);
+        visuals.widgets.noninteractive.corner_radius =
+            CornerRadius::same(self.widget_rounding as u8);
 
         // Inactive widgets: slider rails, checkbox bg, combo-box bg.
         // Must contrast clearly against panel_bg / window_bg (which equal button_bg in our palette).
@@ -682,20 +688,50 @@ impl Theme {
         visuals.widgets.inactive.weak_bg_fill = inactive_fill;
         visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, self.text_color);
         visuals.widgets.inactive.bg_stroke = Stroke::NONE;
-        visuals.widgets.inactive.rounding = Rounding::same(self.widget_rounding);
+        visuals.widgets.inactive.corner_radius = CornerRadius::same(self.widget_rounding as u8);
 
-        // Hover: use accent_normal for border stroke + subtle expansion for micro-interaction feel
-        visuals.widgets.hovered.bg_fill = self.button_hover;
+        // Theme-consistent interactive fills so selected/highlighted controls follow preset accent.
+        let hover_fill = match self.mode {
+            ThemeMode::Dark => Color32::from_rgba_unmultiplied(
+                self.accent.r(),
+                self.accent.g(),
+                self.accent.b(),
+                32,
+            ),
+            ThemeMode::Light => Color32::from_rgba_unmultiplied(
+                self.accent.r(),
+                self.accent.g(),
+                self.accent.b(),
+                26,
+            ),
+        };
+        let selection_fill = match self.mode {
+            ThemeMode::Dark => Color32::from_rgba_unmultiplied(
+                self.accent.r(),
+                self.accent.g(),
+                self.accent.b(),
+                72,
+            ),
+            ThemeMode::Light => Color32::from_rgba_unmultiplied(
+                self.accent.r(),
+                self.accent.g(),
+                self.accent.b(),
+                56,
+            ),
+        };
+
+        // Hover: accent-tinted fill + accent border for clear feedback.
+        visuals.widgets.hovered.bg_fill = hover_fill;
         visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, self.text_color);
         visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, self.accent);
-        visuals.widgets.hovered.rounding = Rounding::same(self.widget_rounding);
+        visuals.widgets.hovered.corner_radius = CornerRadius::same(self.widget_rounding as u8);
         visuals.widgets.hovered.expansion = 1.0; // subtle grow on hover (Phase 9)
 
-        // Active: accent_strong for border
-        visuals.widgets.active.bg_fill = self.button_active;
+        // Active/selected: stronger accent-tinted fill
+        visuals.widgets.active.bg_fill = selection_fill;
         visuals.widgets.active.fg_stroke = Stroke::new(1.0, self.text_color);
         visuals.widgets.active.bg_stroke = Stroke::new(1.0, self.accent_strong);
-        visuals.widgets.active.rounding = Rounding::same(self.widget_rounding);
+        visuals.widgets.active.corner_radius = CornerRadius::same(self.widget_rounding as u8);
 
         // Open menus: accent3 (green) text, accent3 alpha-20 bg — matches website nav active style
         let accent3_bg = Color32::from_rgba_unmultiplied(
@@ -707,26 +743,28 @@ impl Theme {
         visuals.widgets.open.bg_fill = accent3_bg;
         visuals.widgets.open.fg_stroke = Stroke::new(1.0, self.accent3);
         visuals.widgets.open.bg_stroke = Stroke::new(1.0, self.accent3);
-        visuals.widgets.open.rounding = Rounding::same(self.widget_rounding);
+        visuals.widgets.open.corner_radius = CornerRadius::same(self.widget_rounding as u8);
 
-        // Selection: accent_faint background, accent_strong stroke
-        visuals.selection.bg_fill = self.accent_faint;
+        // Selection: explicit accent fill/stroke to avoid default-blue fallbacks.
+        visuals.selection.bg_fill = selection_fill;
         visuals.selection.stroke = Stroke::new(1.0, self.accent_strong);
 
         // Window styling
-        visuals.window_rounding = Rounding::same(self.window_rounding);
+        visuals.window_corner_radius = CornerRadius::same(self.window_rounding as u8);
         let shadow_alpha = match self.mode {
             ThemeMode::Dark => 54, // 50% stronger in dark mode (36 * 1.5)
             ThemeMode::Light => 36,
         };
         visuals.window_shadow = Shadow {
-            extrusion: 10.0,
+            offset: [0, 0],
+            blur: 10,
+            spread: 0,
             color: Color32::from_black_alpha(shadow_alpha),
         };
         visuals.window_stroke = Stroke::new(1.0, self.border_color);
 
         // Menu styling
-        visuals.menu_rounding = Rounding::same(self.menu_rounding);
+        visuals.menu_corner_radius = CornerRadius::same(self.menu_rounding as u8);
 
         // Popup styling — minimal extrusion keeps dropdowns snug against trigger
         let popup_alpha = match self.mode {
@@ -734,7 +772,9 @@ impl Theme {
             ThemeMode::Light => 18,
         };
         visuals.popup_shadow = Shadow {
-            extrusion: 1.0,
+            offset: [0, 0],
+            blur: 1,
+            spread: 0,
             color: Color32::from_black_alpha(popup_alpha),
         };
 
@@ -760,20 +800,20 @@ impl Theme {
 
         ctx.set_visuals(visuals);
 
-        // Smooth transitions — slightly longer animation time for polished feel
-        let mut style = (*ctx.style()).clone();
-        style.animation_time = 0.15; // 150ms (default ~83ms)
+        // Smooth transitions — slightly longer animation time for polished feel.
+        // Mutate the active style in-place so we don't overwrite the visuals we just set.
+        ctx.global_style_mut(|style| {
+            style.animation_time = 0.15; // 150ms (default ~83ms)
 
-        // Scrollbar: solid style with foreground_color=true for high-contrast handles.
-        // Handle uses fg_stroke (text color) instead of bg_fill (button bg) which was
-        // near-invisible against the track in our blue-tinted Signal Grid palette.
-        let mut scroll = egui::style::ScrollStyle::solid();
-        scroll.foreground_color = true; // handle = fg_stroke (visible text color)
-        scroll.bar_width = 8.0;
-        scroll.bar_inner_margin = 2.0;
-        style.spacing.scroll = scroll;
-
-        ctx.set_style(style);
+            // Scrollbar: solid style with foreground_color=true for high-contrast handles.
+            // Handle uses fg_stroke (text color) instead of bg_fill (button bg) which was
+            // near-invisible against the track in our blue-tinted Signal Grid palette.
+            let mut scroll = egui::style::ScrollStyle::solid();
+            scroll.foreground_color = true; // handle = fg_stroke (visible text color)
+            scroll.bar_width = 8.0;
+            scroll.bar_inner_margin = 2.0;
+            style.spacing.scroll = scroll;
+        });
 
         // Update native window title bar to match theme (Windows 10+)
         #[cfg(target_os = "windows")]
@@ -803,15 +843,17 @@ impl Theme {
             ThemeMode::Dark => 50,
             ThemeMode::Light => 32,
         };
-        egui::Frame::none()
+        egui::Frame::NONE
             .fill(self.panel_bg)
-            .rounding(Rounding::same(10.0))
+            .corner_radius(CornerRadius::same(10))
             .stroke(Stroke::new(1.0, self.border_color))
             .shadow(Shadow {
-                extrusion: 10.0,
+                offset: [0, 0],
+                blur: 10,
+                spread: 0,
                 color: Color32::from_black_alpha(shadow_alpha),
             })
-            .inner_margin(egui::Margin::same(10.0))
+            .inner_margin(egui::Margin::same(10))
     }
 
     /// Floating window frame with animated border — call with hover_t from
@@ -819,26 +861,30 @@ impl Theme {
     pub fn floating_window_frame_animated(&self, hover_t: f32) -> egui::Frame {
         let border = Self::lerp_color(self.border_color, self.border_lit, hover_t);
         match self.mode {
-            ThemeMode::Dark => egui::Frame::none()
+            ThemeMode::Dark => egui::Frame::NONE
                 .fill(self.panel_bg)
-                .rounding(Rounding::same(10.0))
+                .corner_radius(CornerRadius::same(10))
                 .stroke(Stroke::new(1.0, border))
                 .shadow(Shadow {
-                    extrusion: 10.0,
+                    offset: [0, 0],
+                    blur: 10,
+                    spread: 0,
                     color: Color32::from_black_alpha(50),
                 })
-                .inner_margin(egui::Margin::same(10.0)),
+                .inner_margin(egui::Margin::same(10)),
             ThemeMode::Light => {
                 // Light mode: clean white fill, very subtle shadow, defined border
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(self.panel_bg)
-                    .rounding(Rounding::same(10.0))
+                    .corner_radius(CornerRadius::same(10))
                     .stroke(Stroke::new(1.0, Color32::from_rgb(190, 190, 205)))
                     .shadow(Shadow {
-                        extrusion: 6.0,
+                        offset: [0, 0],
+                        blur: 6,
+                        spread: 0,
                         color: Color32::from_black_alpha(18),
                     })
-                    .inner_margin(egui::Margin::same(10.0))
+                    .inner_margin(egui::Margin::same(10))
             }
         }
     }
@@ -861,45 +907,47 @@ impl Theme {
             ThemeMode::Dark => 60,
             ThemeMode::Light => 36,
         };
-        egui::Frame::none()
+        egui::Frame::NONE
             .fill(self.panel_bg)
-            .rounding(Rounding::same(12.0))
+            .corner_radius(CornerRadius::same(12))
             .stroke(Stroke::new(1.0, self.border_color))
             .shadow(Shadow {
-                extrusion: 16.0,
+                offset: [0, 0],
+                blur: 16,
+                spread: 0,
                 color: Color32::from_black_alpha(shadow_alpha),
             })
-            .inner_margin(egui::Margin::same(16.0))
+            .inner_margin(egui::Margin::same(16))
     }
 
     /// Context bar frame — deepest bg with bottom border line.
     pub fn context_bar_frame(&self) -> egui::Frame {
-        egui::Frame::none()
+        egui::Frame::NONE
             .fill(self.bg_color)
             .stroke(Stroke::new(1.0, self.border_color))
-            .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+            .inner_margin(egui::Margin::symmetric(8, 6))
     }
 
     pub fn toolbar_frame(&self) -> egui::Frame {
-        egui::Frame::none()
+        egui::Frame::NONE
             .fill(self.toolbar_bg)
-            .inner_margin(egui::Margin::symmetric(8.0, 5.5))
+            .inner_margin(egui::Margin::symmetric(8, 5))
     }
 
     pub fn menu_frame(&self) -> egui::Frame {
         // No stroke — the accent bottom line is painted separately in app.rs
         // to avoid a 4-sided border from egui's Frame::stroke
-        egui::Frame::none()
+        egui::Frame::NONE
             .fill(self.bg_color)
-            .inner_margin(egui::Margin::symmetric(8.0, 2.0))
+            .inner_margin(egui::Margin::symmetric(8, 2))
     }
 
     pub fn tab_frame(&self) -> egui::Frame {
-        egui::Frame::none()
+        egui::Frame::NONE
             .fill(self.bg2)
-            .rounding(Rounding::same(8.0))
+            .corner_radius(CornerRadius::same(8))
             .stroke(Stroke::new(1.0, self.border_color))
-            .inner_margin(egui::Margin::symmetric(4.0, 2.0))
+            .inner_margin(egui::Margin::symmetric(4, 2))
     }
 
     /// Active tab fill — accent-tinted bg3 for contrast
@@ -927,25 +975,29 @@ impl Theme {
     pub fn tool_shelf_frame(&self) -> egui::Frame {
         match self.mode {
             ThemeMode::Dark => {
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(Color32::from_rgb(17, 17, 22)) // slightly warmer than panel_bg
-                    .rounding(Rounding::same(8.0))
+                    .corner_radius(CornerRadius::same(8))
                     .stroke(Stroke::new(1.0, self.border_color))
                     .shadow(Shadow {
-                        extrusion: 6.0,
+                        offset: [0, 0],
+                        blur: 6,
+                        spread: 0,
                         color: Color32::from_black_alpha(40),
                     })
-                    .inner_margin(egui::Margin::symmetric(10.0, 5.0))
+                    .inner_margin(egui::Margin::symmetric(10, 5))
             }
-            ThemeMode::Light => egui::Frame::none()
+            ThemeMode::Light => egui::Frame::NONE
                 .fill(Color32::WHITE)
-                .rounding(Rounding::same(8.0))
+                .corner_radius(CornerRadius::same(8))
                 .stroke(Stroke::new(1.0, Color32::from_rgb(208, 208, 222)))
                 .shadow(Shadow {
-                    extrusion: 4.0,
+                    offset: [0, 0],
+                    blur: 4,
+                    spread: 0,
                     color: Color32::from_black_alpha(14),
                 })
-                .inner_margin(egui::Margin::symmetric(10.0, 5.0)),
+                .inner_margin(egui::Margin::symmetric(10, 5)),
         }
     }
 }
@@ -957,6 +1009,7 @@ pub struct WindowVisibility {
     pub layers: bool,
     pub history: bool,
     pub colors: bool,
+    pub palette: bool,
     pub script_editor: bool,
 }
 
@@ -967,6 +1020,7 @@ impl WindowVisibility {
             layers: true,         // Layers visible by default
             history: false,       // History hidden by default
             colors: false,        // Colors hidden by default (toggle from swatch)
+            palette: false,       // Palette hidden by default
             script_editor: false, // Script editor hidden by default
         }
     }

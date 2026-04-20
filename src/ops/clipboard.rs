@@ -10,16 +10,42 @@ use image::{Rgba, RgbaImage, imageops};
 use rayon::prelude::*;
 use std::sync::Mutex;
 
+#[cfg(target_os = "linux")]
+use image::ImageFormat;
+
 // ---------------------------------------------------------------------------
 //  Internal clipboard (application-level, supports transparency)
 // ---------------------------------------------------------------------------
 
 /// In-app clipboard storing an RGBA image with full transparency support.
-static APP_CLIPBOARD: Mutex<Option<RgbaImage>> = Mutex::new(None);
+static APP_CLIPBOARD: Mutex<Option<ClipboardPayload>> = Mutex::new(None);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipboardImageSource {
+    Internal,
+    External,
+}
+
+#[derive(Clone)]
+struct ClipboardPayload {
+    image: RgbaImage,
+    source: ClipboardImageSource,
+    origin_center: Option<Pos2>,
+}
+
+pub struct ClipboardImageForPaste {
+    pub image: RgbaImage,
+    pub source: ClipboardImageSource,
+    pub origin_center: Option<Pos2>,
+}
 
 /// Store an image in the app clipboard.
-fn set_clipboard_image(img: RgbaImage) {
-    *APP_CLIPBOARD.lock().unwrap_or_else(|e| e.into_inner()) = Some(img);
+fn set_clipboard_image(img: RgbaImage, origin_center: Option<Pos2>) {
+    *APP_CLIPBOARD.lock().unwrap_or_else(|e| e.into_inner()) = Some(ClipboardPayload {
+        image: img,
+        source: ClipboardImageSource::Internal,
+        origin_center,
+    });
 }
 
 /// Retrieve a clone from the app clipboard.
@@ -27,14 +53,62 @@ fn get_clipboard_image() -> Option<RgbaImage> {
     APP_CLIPBOARD
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .clone()
+        .as_ref()
+        .map(|p| p.image.clone())
 }
 
-pub fn has_clipboard_image() -> bool {
+fn get_clipboard_payload() -> Option<ClipboardPayload> {
     APP_CLIPBOARD
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .is_some()
+        .clone()
+}
+
+fn images_match(a: &RgbaImage, b: &RgbaImage) -> bool {
+    a.dimensions() == b.dimensions() && a.as_raw() == b.as_raw()
+}
+
+/// Unified paste source selection.
+///
+/// Priority:
+/// 1) If system clipboard contains an image that byte-matches the internal clipboard image,
+///    treat it as an in-app copy/cut and preserve origin metadata.
+/// 2) If system clipboard contains a different image, treat it as external.
+/// 3) Otherwise fall back to internal clipboard payload.
+pub fn get_clipboard_image_for_paste() -> Option<ClipboardImageForPaste> {
+    let internal = get_clipboard_payload();
+    let system = get_from_system_clipboard();
+
+    if let Some(system_img) = system {
+        if let Some(internal_payload) = &internal
+            && images_match(&system_img, &internal_payload.image)
+        {
+            return Some(ClipboardImageForPaste {
+                image: internal_payload.image.clone(),
+                source: internal_payload.source,
+                origin_center: internal_payload.origin_center,
+            });
+        }
+        return Some(ClipboardImageForPaste {
+            image: system_img,
+            source: ClipboardImageSource::External,
+            origin_center: None,
+        });
+    }
+
+    internal.map(|payload| ClipboardImageForPaste {
+        image: payload.image,
+        source: payload.source,
+        origin_center: payload.origin_center,
+    })
+}
+
+pub fn has_clipboard_image() -> bool {
+    let has_internal = APP_CLIPBOARD
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some();
+    has_internal || get_from_system_clipboard().is_some()
 }
 
 /// Public accessor so app.rs can use the internal clipboard as a fallback.
@@ -48,13 +122,24 @@ pub fn get_clipboard_image_pub() -> Option<RgbaImage> {
 pub fn get_clipboard_image_dimensions() -> Option<(u32, u32)> {
     // A13: Fast path — lock the mutex and read dimensions without cloning.
     if let Ok(guard) = APP_CLIPBOARD.lock()
-        && let Some(ref img) = *guard
+        && let Some(ref payload) = *guard
     {
-        return Some((img.width(), img.height()));
+        return Some((payload.image.width(), payload.image.height()));
     }
     // Slow path: check system clipboard.
     if let Some(img) = get_from_system_clipboard() {
         return Some((img.width(), img.height()));
+    }
+    None
+}
+
+/// Get clipboard image dimensions from the in-app clipboard only.
+/// Useful for UI paths where system clipboard probing could cause latency.
+pub fn get_internal_clipboard_image_dimensions() -> Option<(u32, u32)> {
+    if let Ok(guard) = APP_CLIPBOARD.lock()
+        && let Some(ref payload) = *guard
+    {
+        return Some((payload.image.width(), payload.image.height()));
     }
     None
 }
@@ -66,13 +151,29 @@ pub fn get_clipboard_image_dimensions() -> Option<(u32, u32)> {
 /// Write an RGBA image to the system clipboard.
 pub fn copy_to_system_clipboard(img: &RgbaImage) {
     // arboard wants ImageData { width, height, bytes: Cow<[u8]> } in RGBA order.
+    #[cfg(target_os = "linux")]
+    let mut copied = false;
     if let Ok(mut clip) = arboard::Clipboard::new() {
         let data = arboard::ImageData {
             width: img.width() as usize,
             height: img.height() as usize,
             bytes: std::borrow::Cow::Borrowed(img.as_raw()),
         };
-        let _ = clip.set_image(data);
+        #[cfg(target_os = "linux")]
+        {
+            copied = clip.set_image(data).is_ok();
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = clip.set_image(data);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if !copied {
+            let _ = copy_to_wayland_clipboard(img);
+        }
     }
 }
 
@@ -92,6 +193,13 @@ pub fn get_from_system_clipboard() -> Option<RgbaImage> {
         )
     {
         return Some(img);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(img) = get_from_wayland_clipboard() {
+            return Some(img);
+        }
     }
 
     // 2. On Windows, try the CF_HDROP file list that Explorer puts on the
@@ -116,6 +224,93 @@ pub fn get_from_system_clipboard() -> Option<RgbaImage> {
     }
 
     None
+}
+
+#[cfg(target_os = "linux")]
+fn is_wayland_session() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some()
+        || std::env::var("XDG_SESSION_TYPE")
+            .map(|v| v.eq_ignore_ascii_case("wayland"))
+            .unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn copy_to_wayland_clipboard(img: &RgbaImage) -> bool {
+    if !is_wayland_session() {
+        return false;
+    }
+
+    let mut cursor = Cursor::new(Vec::<u8>::new());
+    if image::DynamicImage::ImageRgba8(img.clone())
+        .write_to(&mut cursor, ImageFormat::Png)
+        .is_err()
+    {
+        return false;
+    }
+
+    let bytes = cursor.into_inner();
+    let mut child = match std::process::Command::new("wl-copy")
+        .arg("--type")
+        .arg("image/png")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return false,
+    };
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        if stdin.write_all(&bytes).is_err() {
+            let _ = child.kill();
+            return false;
+        }
+    } else {
+        let _ = child.kill();
+        return false;
+    }
+
+    child.wait().map(|s| s.success()).unwrap_or(false)
+}
+
+#[cfg(target_os = "linux")]
+fn get_from_wayland_clipboard() -> Option<RgbaImage> {
+    if !is_wayland_session() {
+        return None;
+    }
+
+    let list = std::process::Command::new("wl-paste")
+        .arg("--list-types")
+        .output()
+        .ok()?;
+    if !list.status.success() {
+        return None;
+    }
+
+    let mime_list = String::from_utf8_lossy(&list.stdout);
+    let preferred = [
+        "image/png",
+        "image/webp",
+        "image/jpeg",
+        "image/bmp",
+        "image/tiff",
+    ];
+    let chosen = preferred
+        .iter()
+        .find(|m| mime_list.lines().any(|line| line.trim() == **m))?;
+
+    let output = std::process::Command::new("wl-paste")
+        .arg("--no-newline")
+        .arg("--type")
+        .arg(chosen)
+        .output()
+        .ok()?;
+    if !output.status.success() || output.stdout.is_empty() {
+        return None;
+    }
+
+    image::load_from_memory(&output.stdout)
+        .ok()
+        .map(|img| img.to_rgba8())
 }
 
 /// On Windows, read the CF_HDROP file list from the clipboard and try to
@@ -226,7 +421,9 @@ pub fn copy_selection(state: &CanvasState) -> bool {
         }
     }
 
-    set_clipboard_image(clip.clone());
+    let center_x = min_x as f32 + w as f32 / 2.0;
+    let center_y = min_y as f32 + h as f32 / 2.0;
+    set_clipboard_image(clip.clone(), Some(Pos2::new(center_x, center_y)));
     // Also write to the OS clipboard so other apps can paste.
     copy_to_system_clipboard(&clip);
     true
@@ -425,7 +622,7 @@ impl PasteOverlay {
 
     /// Start a paste from the app clipboard. Returns None if clipboard is empty.
     pub fn from_clipboard(canvas_w: u32, canvas_h: u32) -> Option<Self> {
-        let img = get_clipboard_image()?;
+        let img = get_clipboard_image_for_paste()?.image;
         Some(Self::new(img, canvas_w, canvas_h))
     }
 
@@ -469,10 +666,7 @@ impl PasteOverlay {
         let sh = self.scaled_half();
         let top_left_x = self.center.x - sh.x;
         let top_left_y = self.center.y - sh.y;
-        self.center = Pos2::new(
-            top_left_x.round() + sh.x,
-            top_left_y.round() + sh.y,
-        );
+        self.center = Pos2::new(top_left_x.round() + sh.x, top_left_y.round() + sh.y);
     }
 
     /// Rotation origin in canvas coords.
@@ -610,6 +804,7 @@ impl PasteOverlay {
             .collect();
         let color_image = egui::ColorImage {
             size: [upload_w as usize, upload_h as usize],
+            source_size: egui::Vec2::new(upload_w as f32, upload_h as f32),
             pixels,
         };
 
@@ -624,6 +819,7 @@ impl PasteOverlay {
         let tex_options = egui::TextureOptions {
             magnification: tex_filter,
             minification: tex_filter,
+            ..Default::default()
         };
         let image_data = egui::ImageData::Color(std::sync::Arc::new(color_image));
         if let Some(ref mut tex) = self.gpu_texture {
@@ -742,7 +938,12 @@ impl PasteOverlay {
             painter.rect_filled(shadow_r, 3.0, Color32::from_black_alpha(60));
             // Fill.
             painter.rect_filled(r, 3.0, accent_fill);
-            painter.rect_stroke(r, 3.0, Stroke::new(1.5, handle_border));
+            painter.rect_stroke(
+                r,
+                3.0,
+                Stroke::new(1.5, handle_border),
+                egui::StrokeKind::Middle,
+            );
         }
 
         // --- Edge midpoint handles (smaller rounded rectangles) ---
@@ -757,7 +958,12 @@ impl PasteOverlay {
             let shadow_r = r.translate(Vec2::new(1.0, 1.0));
             painter.rect_filled(shadow_r, 2.0, Color32::from_black_alpha(50));
             painter.rect_filled(r, 2.0, accent_fill);
-            painter.rect_stroke(r, 2.0, Stroke::new(1.0, handle_border));
+            painter.rect_stroke(
+                r,
+                2.0,
+                Stroke::new(1.0, handle_border),
+                egui::StrokeKind::Middle,
+            );
         }
 
         // --- Rotation handle: accent stem + glowing circle ---
@@ -1127,21 +1333,21 @@ impl PasteOverlay {
                 self.scale_x = 1.0;
                 self.scale_y = 1.0;
                 self.anchor_offset = Vec2::ZERO;
-                ui.close_menu();
+                ui.close();
             }
             if ui.button("Center Anchor").clicked() {
                 self.anchor_offset = Vec2::ZERO;
-                ui.close_menu();
+                ui.close();
             }
 
             ui.separator();
             if ui.button("✓ Commit (Enter)").clicked() {
                 result = Some(true);
-                ui.close_menu();
+                ui.close();
             }
             if ui.button("✗ Cancel (Esc)").clicked() {
                 result = Some(false);
-                ui.close_menu();
+                ui.close();
             }
         });
         result

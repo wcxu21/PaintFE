@@ -1859,6 +1859,86 @@ pub fn grid_core(
     })
 }
 
+pub fn canvas_border(
+    state: &mut CanvasState,
+    layer_idx: usize,
+    width: u32,
+    color: [u8; 4],
+) {
+    if layer_idx >= state.layers.len() {
+        return;
+    }
+    let flat = state.layers[layer_idx].pixels.to_rgba_image();
+    let result = canvas_border_core(&flat, width, color, state.selection_mask.as_ref());
+    commit_to_layer(state, layer_idx, &result);
+}
+
+pub fn canvas_border_from_flat(
+    state: &mut CanvasState,
+    layer_idx: usize,
+    width: u32,
+    color: [u8; 4],
+    original_flat: &RgbaImage,
+) {
+    let result = canvas_border_core(original_flat, width, color, state.selection_mask.as_ref());
+    commit_to_layer(state, layer_idx, &result);
+}
+
+pub fn canvas_border_core(
+    flat: &RgbaImage,
+    width: u32,
+    color: [u8; 4],
+    mask: Option<&GrayImage>,
+) -> RgbaImage {
+    let w = flat.width();
+    let h = flat.height();
+    if w == 0 || h == 0 {
+        return flat.clone();
+    }
+
+    let border_w = width.max(1).min(w.min(h));
+    let src_raw = flat.as_raw();
+    let mut dst_raw = src_raw.clone();
+
+    let mask_raw = mask.map(|m| m.as_raw().as_slice());
+    let mask_w = mask.map_or(0, |m| m.width() as usize);
+    let mask_h = mask.map_or(0, |m| m.height() as usize);
+    let stride = w as usize * 4;
+
+    dst_raw
+        .par_chunks_mut(stride)
+        .enumerate()
+        .for_each(|(y, row_out)| {
+            for x in 0..w as usize {
+                if let Some(mr) = mask_raw
+                    && x < mask_w
+                    && y < mask_h
+                    && mr[y * mask_w + x] == 0
+                {
+                    continue;
+                }
+
+                let x_u = x as u32;
+                let y_u = y as u32;
+                let is_border = x_u < border_w
+                    || y_u < border_w
+                    || x_u >= w - border_w
+                    || y_u >= h - border_w;
+                if !is_border {
+                    continue;
+                }
+
+                let pi = x * 4;
+                row_out[pi] = color[0];
+                row_out[pi + 1] = color[1];
+                row_out[pi + 2] = color[2];
+                row_out[pi + 3] = color[3];
+            }
+        });
+
+    RgbaImage::from_raw(w, h, dst_raw).unwrap()
+}
+
 // --- Drop Shadow ---
 
 pub fn drop_shadow(
@@ -1867,6 +1947,7 @@ pub fn drop_shadow(
     offset_x: i32,
     offset_y: i32,
     blur_radius: f32,
+    widen_radius: bool,
     color: [u8; 4],
     opacity: f32,
 ) {
@@ -1879,6 +1960,7 @@ pub fn drop_shadow(
         offset_x,
         offset_y,
         blur_radius,
+        widen_radius,
         color,
         opacity,
         state.selection_mask.as_ref(),
@@ -1892,6 +1974,7 @@ pub fn drop_shadow_from_flat(
     offset_x: i32,
     offset_y: i32,
     blur_radius: f32,
+    widen_radius: bool,
     color: [u8; 4],
     opacity: f32,
     original_flat: &RgbaImage,
@@ -1901,6 +1984,7 @@ pub fn drop_shadow_from_flat(
         offset_x,
         offset_y,
         blur_radius,
+        widen_radius,
         color,
         opacity,
         state.selection_mask.as_ref(),
@@ -1913,6 +1997,7 @@ pub fn shadow_core(
     offset_x: i32,
     offset_y: i32,
     blur_radius: f32,
+    widen_radius: bool,
     color: [u8; 4],
     opacity: f32,
     mask: Option<&GrayImage>,
@@ -1936,7 +2021,35 @@ pub fn shadow_core(
         }
     }
 
-    // 2. Blur the alpha mask.
+    // 2. Optional widening/spread pass before blur.
+    if widen_radius {
+        let spread = blur_radius.max(1.0).round() as i32;
+        if spread > 0 {
+            let src = shadow_alpha.clone();
+            for y in 0..h as i32 {
+                for x in 0..w as i32 {
+                    let mut max_a = 0u8;
+                    for oy in -spread..=spread {
+                        let sy = y + oy;
+                        if sy < 0 || sy >= h as i32 {
+                            continue;
+                        }
+                        for ox in -spread..=spread {
+                            let sx = x + ox;
+                            if sx < 0 || sx >= w as i32 {
+                                continue;
+                            }
+                            let idx = sy as usize * w as usize + sx as usize;
+                            max_a = max_a.max(src[idx]);
+                        }
+                    }
+                    shadow_alpha[y as usize * w as usize + x as usize] = max_a;
+                }
+            }
+        }
+    }
+
+    // 3. Blur the alpha mask.
     let alpha_img = GrayImage::from_raw(w, h, shadow_alpha).unwrap();
     let alpha_rgba = RgbaImage::from_fn(w, h, |x, y| {
         let a = alpha_img.get_pixel(x, y)[0];
@@ -1948,7 +2061,7 @@ pub fn shadow_core(
         alpha_rgba
     };
 
-    // 3. Composite: shadow underneath, original on top.
+    // 4. Composite: shadow underneath, original on top.
     let mask_raw_sel = mask.map(|m| m.as_raw().as_slice());
     let mask_w = mask.map_or(0, |m| m.width() as usize);
     let mask_h = mask.map_or(0, |m| m.height() as usize);

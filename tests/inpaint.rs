@@ -84,7 +84,7 @@ fn inpaint_instant_brush_blends_over_hole() {
     for y in 28..36 {
         for x in 28..36 {
             mask.put_pixel(x, y, Luma([255]));
-            let orig = img.get_pixel(x, y).clone();
+            let orig = *img.get_pixel(x, y);
             img.put_pixel(
                 x,
                 y,

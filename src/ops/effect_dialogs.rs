@@ -14,8 +14,10 @@ use egui::Color32;
 use image::RgbaImage;
 
 use super::dialogs::{
-    DialogColors, DialogResult, accent_separator, dialog_footer, numeric_field_with_buttons,
-    paint_dialog_header, preview_controls, section_label,
+    DialogColors, DialogResult, accent_separator, contrast_text_color, dialog_footer,
+    dialog_footer_with_reset,
+    dialog_slider, numeric_field_with_buttons, paint_dialog_header, preview_controls,
+    section_label,
 };
 use super::effects::{ColorFilterMode, GridStyle, HalftoneShape, NoiseType, OutlineMode};
 use crate::canvas::{CanvasState, TiledImage};
@@ -114,7 +116,7 @@ pub fn track_slider(response: &egui::Response, dragging: &mut bool) -> bool {
     if response.dragged() || response.changed() {
         *dragging = true;
     }
-    if response.drag_released() {
+    if response.drag_stopped() {
         *dragging = false;
         return true; // "apply now"
     }
@@ -139,7 +141,7 @@ impl BokehBlurDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
                 paint_dialog_header(ui, &colors, "\u{2B55}", &t!("dialog.bokeh_blur"));
@@ -161,7 +163,7 @@ impl BokehBlurDialog {
                                 let r = ui.add(
                                     egui::DragValue::new(&mut self.radius)
                                         .speed(0.2)
-                                        .clamp_range(1.0..=100.0)
+                                        .range(1.0..=100.0)
                                         .max_decimals(1),
                                 );
                                 if track_slider(&r, &mut self.dragging) {
@@ -269,7 +271,7 @@ impl MotionBlurDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
                 paint_dialog_header(ui, &colors, "\u{27A1}", &t!("dialog.motion_blur"));
@@ -359,7 +361,7 @@ impl BoxBlurDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
                 paint_dialog_header(ui, &colors, "\u{25A3}", &t!("dialog.box_blur"));
@@ -444,7 +446,7 @@ impl ZoomBlurDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 190.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 190.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(380.0);
                 paint_dialog_header(ui, &colors, "\u{25CE}", &t!("dialog.zoom_blur"));
@@ -553,7 +555,7 @@ impl ZoomBlurDialog {
                         ui.end_row();
 
                         ui.label("Quality");
-                        egui::ComboBox::from_id_source("zoom_quality")
+                        egui::ComboBox::from_id_salt("zoom_quality")
                             .selected_text(match self.quality {
                                 0 => "Fast",
                                 1 => "Normal",
@@ -726,7 +728,7 @@ impl CrystallizeDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
                 paint_dialog_header(ui, &colors, "\u{1F48E}", &t!("dialog.crystallize"));
@@ -758,7 +760,7 @@ impl CrystallizeDialog {
                                 .add(
                                     egui::DragValue::new(&mut seed_f)
                                         .speed(1.0)
-                                        .clamp_range(0.0..=9999.0),
+                                        .range(0.0..=9999.0),
                                 )
                                 .changed()
                             {
@@ -843,7 +845,7 @@ impl DentsDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(370.0);
                 paint_dialog_header(ui, &colors, "\u{1F30A}", &t!("dialog.dents"));
@@ -878,7 +880,7 @@ impl DentsDialog {
                                 .add(
                                     egui::DragValue::new(&mut seed_f)
                                         .speed(1.0)
-                                        .clamp_range(0.0..=9999.0),
+                                        .range(0.0..=9999.0),
                                 )
                                 .changed()
                             {
@@ -984,7 +986,7 @@ impl PixelateDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
                 paint_dialog_header(ui, &colors, "\u{1F9E9}", &t!("dialog.pixelate"));
@@ -1069,7 +1071,7 @@ impl BulgeDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
                 paint_dialog_header(ui, &colors, "\u{1F534}", &t!("dialog.bulge_pinch"));
@@ -1131,7 +1133,7 @@ impl TwistDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
                 paint_dialog_header(ui, &colors, "\u{1F300}", &t!("dialog.twist"));
@@ -1232,7 +1234,7 @@ impl AddNoiseDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 185.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 185.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(380.0);
                 paint_dialog_header(ui, &colors, "\u{1F4A5}", &t!("dialog.add_noise"));
@@ -1289,7 +1291,7 @@ impl AddNoiseDialog {
                                 .add(
                                     egui::DragValue::new(&mut seed_f)
                                         .speed(1.0)
-                                        .clamp_range(0.0..=9999.0),
+                                        .range(0.0..=9999.0),
                                 )
                                 .changed()
                             {
@@ -1319,7 +1321,7 @@ impl AddNoiseDialog {
                                 .suffix(" px")
                                 .max_decimals(1)
                                 .logarithmic(true)
-                                .clamp_to_range(false),
+                                .clamping(egui::SliderClamping::Never),
                         );
                         if track_slider(&r, &mut self.dragging) {
                             changed = true;
@@ -1397,7 +1399,7 @@ impl ReduceNoiseDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
                 paint_dialog_header(ui, &colors, "\u{1F50A}", &t!("dialog.reduce_noise"));
@@ -1463,7 +1465,7 @@ impl MedianDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
                 paint_dialog_header(ui, &colors, "\u{1F4CA}", &t!("dialog.median_filter"));
@@ -1527,7 +1529,7 @@ impl GlowDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
                 paint_dialog_header(ui, &colors, "\u{2728}", &t!("dialog.glow"));
@@ -1591,7 +1593,7 @@ impl SharpenDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
                 paint_dialog_header(ui, &colors, "\u{1F4CC}", &t!("dialog.sharpen"));
@@ -1655,7 +1657,7 @@ impl VignetteDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
                 paint_dialog_header(ui, &colors, "\u{1F311}", &t!("dialog.vignette"));
@@ -1729,7 +1731,7 @@ impl HalftoneDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(370.0);
                 paint_dialog_header(ui, &colors, "\u{25CF}", &t!("dialog.halftone"));
@@ -1842,7 +1844,7 @@ impl GridDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(370.0);
                 paint_dialog_header(ui, &colors, "\u{1F4D0}", &t!("dialog.grid"));
@@ -1900,9 +1902,7 @@ impl GridDialog {
                         ui.end_row();
 
                         ui.label("Opacity");
-                        let r =
-                            ui.add(egui::Slider::new(&mut self.opacity, 0.0..=1.0).max_decimals(2));
-                        if track_slider(&r, &mut self.dragging) {
+                        if dialog_slider(ui, &mut self.opacity, 0.0..=1.0, 0.01, "", 2) {
                             changed = true;
                         }
                         ui.end_row();
@@ -1965,13 +1965,17 @@ effect_dialog_base!(DropShadowDialog {
     offset_x: f32 = 0.0,
     offset_y: f32 = 0.0,
     blur_radius: f32 = 0.0,
+    widen_radius: bool = false,
     color: [f32; 3] = [0.0, 0.0, 0.0],
     opacity: f32 = 0.0,
     first_open: bool = true
 });
 
 impl DropShadowDialog {
-    pub fn show(&mut self, ctx: &egui::Context) -> DialogResult<(i32, i32, f32, [u8; 4], f32)> {
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+    ) -> DialogResult<(i32, i32, f32, bool, [u8; 4], f32)> {
         let mut result = DialogResult::Open;
         let colors = DialogColors::from_ctx(ctx);
 
@@ -1979,7 +1983,7 @@ impl DropShadowDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(380.0);
                 paint_dialog_header(ui, &colors, "\u{1F4A4}", &t!("dialog.drop_shadow"));
@@ -1992,32 +1996,28 @@ impl DropShadowDialog {
                     .spacing([8.0, 6.0])
                     .show(ui, |ui| {
                         ui.label("Offset X");
-                        let r = ui.add(
-                            egui::Slider::new(&mut self.offset_x, -50.0..=50.0)
-                                .suffix(" px")
-                                .max_decimals(0),
-                        );
-                        if track_slider(&r, &mut self.dragging) {
+                        if dialog_slider(ui, &mut self.offset_x, -50.0..=50.0, 1.0, " px", 0) {
                             changed = true;
                         }
                         ui.end_row();
 
                         ui.label("Offset Y");
-                        let r = ui.add(
-                            egui::Slider::new(&mut self.offset_y, -50.0..=50.0)
-                                .suffix(" px")
-                                .max_decimals(0),
-                        );
-                        if track_slider(&r, &mut self.dragging) {
+                        if dialog_slider(ui, &mut self.offset_y, -50.0..=50.0, 1.0, " px", 0) {
                             changed = true;
                         }
                         ui.end_row();
 
-                        ui.label("Blur");
-                        let r = ui.add(
-                            egui::Slider::new(&mut self.blur_radius, 0.0..=30.0).max_decimals(1),
-                        );
-                        if track_slider(&r, &mut self.dragging) {
+                        ui.label("Radius");
+                        if dialog_slider(ui, &mut self.blur_radius, 0.0..=30.0, 0.1, " px", 1) {
+                            changed = true;
+                        }
+                        ui.end_row();
+
+                        ui.label("Widen Radius");
+                        if ui
+                            .checkbox(&mut self.widen_radius, "Expand spread before blur")
+                            .changed()
+                        {
                             changed = true;
                         }
                         ui.end_row();
@@ -2029,9 +2029,7 @@ impl DropShadowDialog {
                         ui.end_row();
 
                         ui.label("Opacity");
-                        let r =
-                            ui.add(egui::Slider::new(&mut self.opacity, 0.0..=1.0).max_decimals(2));
-                        if track_slider(&r, &mut self.dragging) {
+                        if dialog_slider(ui, &mut self.opacity, 0.0..=1.0, 0.01, "", 2) {
                             changed = true;
                         }
                         ui.end_row();
@@ -2055,6 +2053,7 @@ impl DropShadowDialog {
                         self.offset_x as i32,
                         self.offset_y as i32,
                         self.blur_radius,
+                        self.widen_radius,
                         c,
                         self.opacity,
                     ));
@@ -2093,7 +2092,7 @@ impl OutlineDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(360.0);
                 paint_dialog_header(ui, &colors, "\u{1F58A}", &t!("dialog.outline"));
@@ -2169,6 +2168,77 @@ impl OutlineDialog {
     }
 }
 
+// -------
+
+effect_dialog_base!(CanvasBorderDialog {
+    width: f32 = 8.0,
+    first_open: bool = true
+});
+
+impl CanvasBorderDialog {
+    pub fn show(&mut self, ctx: &egui::Context) -> DialogResult<u32> {
+        let mut result = DialogResult::Open;
+        let colors = DialogColors::from_ctx(ctx);
+
+        egui::Window::new("dialog_canvas_border")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 70.0))
+            .show(ctx, |ui| {
+                ui.set_min_width(360.0);
+                paint_dialog_header(ui, &colors, "\u{25A3}", &t!("dialog.canvas_border"));
+                ui.add_space(4.0);
+                section_label(ui, &colors, "BORDER SETTINGS");
+
+                let mut changed = false;
+                egui::Grid::new("canvas_border_params")
+                    .num_columns(2)
+                    .spacing([8.0, 6.0])
+                    .show(ui, |ui| {
+                        ui.label("Width");
+                        if numeric_field_with_buttons(
+                            ui,
+                            &mut self.width,
+                            1.0,
+                            1.0..=512.0,
+                            " px",
+                            8.0,
+                        ) {
+                            changed = true;
+                        }
+                        ui.end_row();
+
+                        ui.label("Color");
+                        ui.label("Uses Primary Color");
+                        ui.end_row();
+                    });
+
+                accent_separator(ui, &colors);
+                let manual = preview_controls(ui, &colors, &mut self.live_preview);
+                if (changed && self.live_preview) || manual {
+                    result = DialogResult::Changed;
+                }
+
+                let (ok, cancel, reset) = dialog_footer_with_reset(ui, &colors);
+                if ok {
+                    result = DialogResult::Ok(self.width as u32);
+                }
+                if cancel {
+                    result = DialogResult::Cancel;
+                }
+                if reset {
+                    self.width = 8.0;
+                    if self.live_preview {
+                        result = DialogResult::Changed;
+                    }
+                }
+            });
+
+        result
+    }
+}
+
 // ============================================================================
 // GLITCH DIALOGS
 // ============================================================================
@@ -2190,7 +2260,7 @@ impl PixelDragDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(370.0);
                 paint_dialog_header(ui, &colors, "\u{1F4A2}", &t!("dialog.pixel_drag"));
@@ -2242,7 +2312,7 @@ impl PixelDragDialog {
                                 .add(
                                     egui::DragValue::new(&mut seed_f)
                                         .speed(1.0)
-                                        .clamp_range(0.0..=9999.0),
+                                        .range(0.0..=9999.0),
                                 )
                                 .changed()
                             {
@@ -2306,7 +2376,7 @@ impl RgbDisplaceDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 200.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 200.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(420.0);
                 paint_dialog_header(ui, &colors, "\u{1F308}", &t!("dialog.rgb_displace"));
@@ -2510,7 +2580,7 @@ impl InkDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
                 paint_dialog_header(ui, &colors, "\u{1F58B}", &t!("dialog.ink"));
@@ -2577,7 +2647,7 @@ impl OilPaintingDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(360.0);
                 paint_dialog_header(ui, &colors, "\u{1F3A8}", &t!("dialog.oil_painting"));
@@ -2656,7 +2726,7 @@ impl ColorFilterDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(380.0);
                 paint_dialog_header(ui, &colors, "\u{1F3AD}", &t!("dialog.color_filter"));
@@ -2791,7 +2861,7 @@ impl ContoursDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 190.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 190.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(400.0);
                 paint_dialog_header(ui, &colors, "\u{1F5FA}", &t!("dialog.contours"));
@@ -2804,14 +2874,7 @@ impl ContoursDialog {
                     .spacing([8.0, 6.0])
                     .show(ui, |ui| {
                         ui.label("Scale");
-                        let r = ui.add(
-                            egui::Slider::new(&mut self.scale, 5.0..=400.0)
-                                .suffix(" px")
-                                .max_decimals(0)
-                                .logarithmic(true)
-                                .clamp_to_range(false),
-                        );
-                        if track_slider(&r, &mut self.dragging) {
+                        if dialog_slider(ui, &mut self.scale, 5.0..=400.0, 1.0, " px", 0) {
                             changed = true;
                         }
                         ui.end_row();
@@ -2824,10 +2887,7 @@ impl ContoursDialog {
                         ui.end_row();
 
                         ui.label("Frequency");
-                        let r = ui.add(
-                            egui::Slider::new(&mut self.frequency, 1.0..=30.0).max_decimals(1),
-                        );
-                        if track_slider(&r, &mut self.dragging) {
+                        if dialog_slider(ui, &mut self.frequency, 1.0..=30.0, 0.1, "", 1) {
                             changed = true;
                         }
                         ui.end_row();
@@ -2840,12 +2900,7 @@ impl ContoursDialog {
                         ui.end_row();
 
                         ui.label("Line Width");
-                        let r = ui.add(
-                            egui::Slider::new(&mut self.line_width, 0.5..=8.0)
-                                .suffix(" px")
-                                .max_decimals(1),
-                        );
-                        if track_slider(&r, &mut self.dragging) {
+                        if dialog_slider(ui, &mut self.line_width, 0.5..=8.0, 0.1, " px", 1) {
                             changed = true;
                         }
                         ui.end_row();
@@ -2886,9 +2941,7 @@ impl ContoursDialog {
                         ui.end_row();
 
                         ui.label("Blend");
-                        let r =
-                            ui.add(egui::Slider::new(&mut self.blend, 0.0..=1.0).max_decimals(2));
-                        if track_slider(&r, &mut self.dragging) {
+                        if dialog_slider(ui, &mut self.blend, 0.0..=1.0, 0.01, "", 2) {
                             changed = true;
                         }
                         ui.end_row();
@@ -2902,12 +2955,8 @@ impl ContoursDialog {
                     .spacing([8.0, 6.0])
                     .show(ui, |ui| {
                         ui.label("Octaves");
-                        let r = ui.add(
-                            egui::Slider::new(&mut self.octaves, 1.0..=6.0)
-                                .max_decimals(0)
-                                .integer(),
-                        );
-                        if track_slider(&r, &mut self.dragging) {
+                        if dialog_slider(ui, &mut self.octaves, 1.0..=6.0, 1.0, "", 0) {
+                            self.octaves = self.octaves.round().clamp(1.0, 6.0);
                             changed = true;
                         }
                         ui.end_row();
@@ -2919,7 +2968,7 @@ impl ContoursDialog {
                                 .add(
                                     egui::DragValue::new(&mut seed_f)
                                         .speed(1.0)
-                                        .clamp_range(0.0..=9999.0),
+                                        .range(0.0..=9999.0),
                                 )
                                 .changed()
                             {
@@ -3052,7 +3101,7 @@ impl RemoveBackgroundDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 190.0, 80.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 190.0, 80.0))
             .show(ctx, |ui| {
                 ui.set_min_width(380.0);
                 paint_dialog_header(ui, &colors, "\u{2728}", &t!("dialog.remove_background"));
@@ -3222,11 +3271,11 @@ impl RemoveBackgroundDialog {
                             egui::Button::new(
                                 egui::RichText::new("\u{25B6} Run")
                                     .size(12.0)
-                                    .color(Color32::WHITE),
+                                    .color(contrast_text_color(colors.accent)),
                             )
                             .fill(colors.accent)
                             .min_size(egui::vec2(80.0, 24.0))
-                            .rounding(4.0),
+                            .corner_radius(4.0),
                         );
                         if run_btn.clicked() {
                             result = DialogResult::Ok(crate::ops::ai::RemoveBgSettings {
@@ -3244,7 +3293,7 @@ impl RemoveBackgroundDialog {
                                     egui::RichText::new(t!("common.cancel")).size(12.0),
                                 )
                                 .min_size(egui::vec2(80.0, 24.0))
-                                .rounding(4.0),
+                                .corner_radius(4.0),
                             )
                             .clicked()
                         {

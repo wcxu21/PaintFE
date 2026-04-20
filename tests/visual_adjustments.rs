@@ -300,9 +300,9 @@ fn gradient_map() {
     let img = test_image();
     // Simple warm gradient map: black → dark red → orange → yellow → white
     let mut lut = [[0u8; 4]; 256];
-    for i in 0..256 {
+    for (i, slot) in lut.iter_mut().enumerate() {
         let t = i as f32 / 255.0;
-        lut[i] = [
+        *slot = [
             (t * 255.0) as u8,
             (t * t * 200.0) as u8,
             (t * t * t * 150.0) as u8,

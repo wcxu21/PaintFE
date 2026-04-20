@@ -199,8 +199,11 @@ impl Compositor {
 
         let legacy_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("composite_pipeline_layout"),
-            bind_group_layouts: &[&view_bind_group_layout, &texture_bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[
+                Some(&view_bind_group_layout),
+                Some(&texture_bind_group_layout),
+            ],
+            immediate_size: 0,
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -208,7 +211,7 @@ impl Compositor {
             layout: Some(&legacy_layout),
             vertex: wgpu::VertexState {
                 module: &legacy_shader,
-                entry_point: "vs_main",
+                entry_point: Some("vs_main"),
                 buffers: &[],
                 compilation_options: Default::default(),
             },
@@ -220,7 +223,7 @@ impl Compositor {
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &legacy_shader,
-                entry_point: "fs_main",
+                entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: output_format,
                     blend: Some(wgpu::BlendState {
@@ -239,7 +242,8 @@ impl Compositor {
                 })],
                 compilation_options: Default::default(),
             }),
-            multiview: None,
+            cache: None,
+            multiview_mask: None,
         });
 
         // ================================================================
@@ -290,8 +294,12 @@ impl Compositor {
 
         let uber_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("uber_composite_pipeline_layout"),
-            bind_group_layouts: &[&blend_uniform_bgl, &tex_sampler_bgl, &tex_sampler_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[
+                Some(&blend_uniform_bgl),
+                Some(&tex_sampler_bgl),
+                Some(&tex_sampler_bgl),
+            ],
+            immediate_size: 0,
         });
 
         // NO hardware blending — the fragment shader does all blend math.
@@ -300,7 +308,7 @@ impl Compositor {
             layout: Some(&uber_layout),
             vertex: wgpu::VertexState {
                 module: &uber_shader,
-                entry_point: "vs_blend",
+                entry_point: Some("vs_blend"),
                 buffers: &[],
                 compilation_options: Default::default(),
             },
@@ -312,7 +320,7 @@ impl Compositor {
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &uber_shader,
-                entry_point: "fs_blend",
+                entry_point: Some("fs_blend"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: output_format,
                     blend: None, // DISABLED — shader handles blending
@@ -320,7 +328,8 @@ impl Compositor {
                 })],
                 compilation_options: Default::default(),
             }),
-            multiview: None,
+            cache: None,
+            multiview_mask: None,
         });
 
         // ---- Samplers ----
@@ -328,7 +337,7 @@ impl Compositor {
             label: Some("sampler_linear"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
 
@@ -336,7 +345,7 @@ impl Compositor {
             label: Some("sampler_nearest"),
             mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
 
@@ -387,8 +396,8 @@ impl Compositor {
 
         let display_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("display_pipeline_layout"),
-            bind_group_layouts: &[&display_uniform_bgl, &display_tex_bgl],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&display_uniform_bgl), Some(&display_tex_bgl)],
+            immediate_size: 0,
         });
 
         let display_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -396,7 +405,7 @@ impl Compositor {
             layout: Some(&display_layout),
             vertex: wgpu::VertexState {
                 module: &display_shader,
-                entry_point: "vs_display",
+                entry_point: Some("vs_display"),
                 buffers: &[],
                 compilation_options: Default::default(),
             },
@@ -408,7 +417,7 @@ impl Compositor {
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &display_shader,
-                entry_point: "fs_display",
+                entry_point: Some("fs_display"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: output_format,
                     // Use premultiplied alpha blending to match the compositor shader
@@ -419,7 +428,8 @@ impl Compositor {
                 })],
                 compilation_options: Default::default(),
             }),
-            multiview: None,
+            cache: None,
+            multiview_mask: None,
         });
 
         Self {
@@ -488,6 +498,7 @@ impl Compositor {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: ping_pong[0],
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
@@ -496,6 +507,7 @@ impl Compositor {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
         }
 
@@ -570,6 +582,7 @@ impl Compositor {
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: ping_pong[write_idx],
                         resolve_target: None,
+                        depth_slice: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                             store: wgpu::StoreOp::Store,
@@ -578,6 +591,7 @@ impl Compositor {
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
+                    multiview_mask: None,
                 });
 
                 pass.set_pipeline(&self.uber_pipeline);
@@ -645,6 +659,7 @@ impl Compositor {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: output_view,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
@@ -653,6 +668,7 @@ impl Compositor {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
         }
 
@@ -665,6 +681,7 @@ impl Compositor {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: output_view,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
@@ -673,6 +690,7 @@ impl Compositor {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
 
             pass.set_pipeline(&self.pipeline);
@@ -716,15 +734,15 @@ impl Compositor {
         });
 
         encoder.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            wgpu::ImageCopyBuffer {
+            wgpu::TexelCopyBufferInfo {
                 buffer: staging,
-                layout: wgpu::ImageDataLayout {
+                layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(bytes_per_row),
                     rows_per_image: Some(height),
@@ -744,7 +762,10 @@ impl Compositor {
         slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
-        device.poll(wgpu::Maintain::Wait);
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
         match rx.recv() {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
@@ -815,7 +836,7 @@ impl Compositor {
         });
 
         encoder.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d {
@@ -825,9 +846,9 @@ impl Compositor {
                 },
                 aspect: wgpu::TextureAspect::All,
             },
-            wgpu::ImageCopyBuffer {
+            wgpu::TexelCopyBufferInfo {
                 buffer: staging,
-                layout: wgpu::ImageDataLayout {
+                layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(bytes_per_row),
                     rows_per_image: Some(region_h),
@@ -847,7 +868,10 @@ impl Compositor {
         slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = tx.send(result);
         });
-        device.poll(wgpu::Maintain::Wait);
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
         match rx.recv() {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {

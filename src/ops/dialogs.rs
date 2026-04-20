@@ -12,7 +12,7 @@
 // ============================================================================
 
 use eframe::egui;
-use egui::{Color32, Pos2, Rect, Rounding, Sense, Stroke, Vec2};
+use egui::{Color32, CornerRadius, Pos2, Rect, Sense, Stroke, Vec2};
 use image::Rgba;
 
 use super::transform::Interpolation;
@@ -30,6 +30,7 @@ pub enum ActiveDialog {
     None,
     ResizeImage(ResizeImageDialog),
     ResizeCanvas(ResizeCanvasDialog),
+    AlignLayer(AlignLayerDialog),
     GaussianBlur(GaussianBlurDialog),
     LayerTransform(LayerTransformDialog),
     BrightnessContrast(BrightnessContrastDialog),
@@ -70,6 +71,7 @@ pub enum ActiveDialog {
     Ink(InkDialog),
     OilPainting(OilPaintingDialog),
     ColorFilter(ColorFilterDialog),
+    CanvasBorder(CanvasBorderDialog),
     // Render effects (additional)
     Contours(ContoursDialog),
     // AI
@@ -123,7 +125,7 @@ pub(crate) struct DialogColors {
 
 impl DialogColors {
     pub(crate) fn from_ctx(ctx: &egui::Context) -> Self {
-        let v = ctx.style().visuals.clone();
+        let v = ctx.global_style().visuals.clone();
         let accent = v.selection.stroke.color;
         let is_dark = v.dark_mode;
         let accent_faint = if is_dark {
@@ -150,6 +152,31 @@ impl DialogColors {
     }
 }
 
+fn srgb_to_linear_component(c: u8) -> f32 {
+    let s = c as f32 / 255.0;
+    if s <= 0.04045 {
+        s / 12.92
+    } else {
+        ((s + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// Returns either black or white text based on contrast against `fill`.
+pub(crate) fn contrast_text_color(fill: Color32) -> Color32 {
+    let r = srgb_to_linear_component(fill.r());
+    let g = srgb_to_linear_component(fill.g());
+    let b = srgb_to_linear_component(fill.b());
+    let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+
+    let contrast_with_black = (luminance + 0.05) / 0.05;
+    let contrast_with_white = 1.05 / (luminance + 0.05);
+    if contrast_with_black >= contrast_with_white {
+        Color32::BLACK
+    } else {
+        Color32::WHITE
+    }
+}
+
 /// Paint the accent header bar with icon + title (Signal Grid style).
 pub(crate) fn paint_dialog_header(
     ui: &mut egui::Ui,
@@ -164,11 +191,11 @@ pub(crate) fn paint_dialog_header(
 
     let painter = ui.painter();
     // Gradient-like header: accent faint fill with rounded top corners
-    painter.rect_filled(rect, Rounding::same(4.0), colors.accent_faint);
+    painter.rect_filled(rect, CornerRadius::same(4), colors.accent_faint);
     // Left accent bar (3px, full accent color)
     painter.rect_filled(
         Rect::from_min_size(rect.min, Vec2::new(3.0, header_height)),
-        Rounding::ZERO,
+        CornerRadius::ZERO,
         colors.accent,
     );
 
@@ -235,11 +262,11 @@ pub(crate) fn numeric_field_with_buttons_focus(
     let range_end = *range.end();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
-        if ui.small_button("\u{2212}").clicked() {
+        if ui.small_button("-").clicked() {
             *value = (*value - step).max(range_start);
             changed = true;
         }
-        let dv = egui::DragValue::new(value).speed(speed).clamp_range(range);
+        let dv = egui::DragValue::new(value).speed(speed).range(range);
         let dv = if !suffix.is_empty() {
             dv.suffix(suffix)
         } else {
@@ -274,16 +301,15 @@ pub(crate) fn dialog_slider(
 ) -> bool {
     let range_start = *range.start();
     let range_end = *range.end();
+    let default_value = if range_start <= 0.0 && range_end >= 0.0 {
+        0.0
+    } else {
+        range_start
+    };
     let mut changed = false;
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
-
-        // Minus button
-        if ui.small_button("\u{2212}").clicked() {
-            *value = (*value - step).max(range_start);
-            changed = true;
-        }
 
         // Custom painted slider track + arrow thumb
         let bar_h = 6.0_f32;
@@ -312,7 +338,7 @@ pub(crate) fn dialog_slider(
             if fill_x > bar.min.x {
                 p.rect_filled(
                     egui::Rect::from_min_max(bar.min, egui::Pos2::new(fill_x, bar.max.y)),
-                    egui::Rounding::same(2.0),
+                    egui::CornerRadius::same(2),
                     filled_col.linear_multiply(0.6),
                 );
             }
@@ -320,14 +346,15 @@ pub(crate) fn dialog_slider(
             if fill_x < bar.max.x {
                 p.rect_filled(
                     egui::Rect::from_min_max(egui::Pos2::new(fill_x, bar.min.y), bar.max),
-                    egui::Rounding::same(2.0),
+                    egui::CornerRadius::same(2),
                     track_col,
                 );
             }
             p.rect_stroke(
                 bar,
-                egui::Rounding::same(2.0),
+                egui::CornerRadius::same(2),
                 egui::Stroke::new(1.0, egui::Color32::from_black_alpha(40)),
+                egui::StrokeKind::Middle,
             );
 
             // Arrow thumb — small dark triangle, white outline (Paint.NET style)
@@ -362,21 +389,42 @@ pub(crate) fn dialog_slider(
             changed = true;
         }
 
-        // Numeric display (DragValue for direct editing)
-        let dv = egui::DragValue::new(value)
-            .speed(step * 0.5)
-            .clamp_range(range)
-            .max_decimals(decimals);
-        let dv = if !suffix.is_empty() { dv.suffix(suffix) } else { dv };
-        if ui.add_sized([48.0, 16.0], dv).changed() {
-            changed = true;
-        }
+        // Stepper + manual input cluster (buttons flank the numeric field).
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
 
-        // Plus button
-        if ui.small_button("+").clicked() {
-            *value = (*value + step).min(range_end);
-            changed = true;
-        }
+            if ui.small_button("-").clicked() {
+                *value = (*value - step).max(range_start);
+                changed = true;
+            }
+
+            let dv = egui::DragValue::new(value)
+                .speed(step * 0.5)
+                .range(range)
+                .max_decimals(decimals);
+            let dv = if !suffix.is_empty() {
+                dv.suffix(suffix)
+            } else {
+                dv
+            };
+            if ui.add_sized([56.0, 16.0], dv).changed() {
+                changed = true;
+            }
+
+            if ui.small_button("+").clicked() {
+                *value = (*value + step).min(range_end);
+                changed = true;
+            }
+
+            let is_default = (*value - default_value).abs() <= step.abs().max(0.0001) * 0.5;
+            let reset_resp = ui
+                .add_enabled(!is_default, egui::Button::new("Reset"))
+                .on_hover_text("Reset to default");
+            if reset_resp.clicked() {
+                *value = default_value;
+                changed = true;
+            }
+        });
     });
     changed
 }
@@ -524,6 +572,15 @@ fn evaluate_dimension_expression(input: &str) -> Option<f32> {
 pub(crate) fn dialog_footer(ui: &mut egui::Ui, colors: &DialogColors) -> (bool, bool) {
     let mut ok = false;
     let mut cancel = false;
+
+    // Global footer keyboard behavior for all dialogs that use this helper.
+    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        ok = true;
+    }
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        cancel = true;
+    }
+
     ui.add_space(4.0);
     accent_separator(ui, colors);
     ui.add_space(6.0);
@@ -535,9 +592,12 @@ pub(crate) fn dialog_footer(ui: &mut egui::Ui, colors: &DialogColors) -> (bool, 
             }
             // Styled accent OK button
             let ok_label = format!("  {}  ", t!("common.ok"));
-            let ok_btn =
-                egui::Button::new(egui::RichText::new(ok_label).color(Color32::WHITE).strong())
-                    .fill(colors.accent);
+            let ok_btn = egui::Button::new(
+                egui::RichText::new(ok_label)
+                    .color(contrast_text_color(colors.accent))
+                    .strong(),
+            )
+            .fill(colors.accent);
             if ui.add(ok_btn).clicked() {
                 ok = true;
             }
@@ -554,6 +614,15 @@ pub(crate) fn dialog_footer_with_reset(
     let mut ok = false;
     let mut cancel = false;
     let mut reset = false;
+
+    // Global footer keyboard behavior for all dialogs that use this helper.
+    if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        ok = true;
+    }
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        cancel = true;
+    }
+
     ui.add_space(4.0);
     accent_separator(ui, colors);
     ui.add_space(6.0);
@@ -568,9 +637,12 @@ pub(crate) fn dialog_footer_with_reset(
                 cancel = true;
             }
             let ok_label = format!("  {}  ", t!("common.ok"));
-            let ok_btn =
-                egui::Button::new(egui::RichText::new(ok_label).color(Color32::WHITE).strong())
-                    .fill(colors.accent);
+            let ok_btn = egui::Button::new(
+                egui::RichText::new(ok_label)
+                    .color(contrast_text_color(colors.accent))
+                    .strong(),
+            )
+            .fill(colors.accent);
             if ui.add(ok_btn).clicked() {
                 ok = true;
             }
@@ -734,8 +806,8 @@ impl ResizeImageDialog {
             .collapsible(false)
             .resizable(false)
             .default_pos(egui::pos2(
-                ctx.screen_rect().center().x - 175.0,
-                ctx.screen_rect().center().y - 160.0,
+                ctx.content_rect().center().x - 175.0,
+                ctx.content_rect().center().y - 160.0,
             ))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
@@ -752,7 +824,7 @@ impl ResizeImageDialog {
                     .spacing([8.0, 4.0])
                     .show(ui, |ui| {
                         ui.label(t!("dialog.resize_image.preset"));
-                        egui::ComboBox::from_id_source("resize_preset")
+                        egui::ComboBox::from_id_salt("resize_preset")
                             .width(210.0)
                             .selected_text(self.preset.label())
                             .show_ui(ui, |ui| {
@@ -881,7 +953,7 @@ impl ResizeImageDialog {
                     .spacing([8.0, 4.0])
                     .show(ui, |ui| {
                         ui.label(t!("dialog.resize_image.interpolation"));
-                        egui::ComboBox::from_id_source("resize_interp")
+                        egui::ComboBox::from_id_salt("resize_interp")
                             .width(160.0)
                             .selected_text(self.interpolation.label())
                             .show_ui(ui, |ui| {
@@ -921,11 +993,11 @@ impl ResizeImageDialog {
 
         // Keyboard shortcuts
         if matches!(result, DialogResult::Open) {
-            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
+            if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
                 self.commit_inputs();
                 ok_pressed = true;
             }
-            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
                 result = DialogResult::Cancel;
             }
         }
@@ -1039,8 +1111,8 @@ impl ResizeCanvasDialog {
             .collapsible(false)
             .resizable(false)
             .default_pos(egui::pos2(
-                ctx.screen_rect().center().x - 170.0,
-                ctx.screen_rect().center().y - 180.0,
+                ctx.content_rect().center().x - 170.0,
+                ctx.content_rect().center().y - 180.0,
             ))
             .show(ctx, |ui| {
                 ui.set_min_width(340.0);
@@ -1205,11 +1277,11 @@ impl ResizeCanvasDialog {
 
         // Keyboard shortcuts
         if matches!(result, DialogResult::Open) {
-            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
+            if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
                 self.commit_inputs();
                 ok_pressed = true;
             }
-            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
                 result = DialogResult::Cancel;
             }
         }
@@ -1260,7 +1332,12 @@ impl ResizeCanvasDialog {
                 Color32::from_gray(245)
             };
             painter.rect_filled(grid_rect, 4.0, grid_bg);
-            painter.rect_stroke(grid_rect, 4.0, Stroke::new(1.0, colors.separator));
+            painter.rect_stroke(
+                grid_rect,
+                4.0,
+                Stroke::new(1.0, colors.separator),
+                egui::StrokeKind::Middle,
+            );
 
             // Compute canvas preview rect (showing where the original sits in the new canvas)
             let max_dim = (new_w as f32).max(new_h as f32).max(1.0);
@@ -1302,7 +1379,12 @@ impl ResizeCanvasDialog {
             // Draw original canvas position (accent colored)
             let orig_rect = Rect::from_min_size(Pos2::new(cx, cy), Vec2::new(canvas_w, canvas_h));
             painter.rect_filled(orig_rect, 1.0, colors.accent_faint);
-            painter.rect_stroke(orig_rect, 1.0, Stroke::new(1.5, colors.accent));
+            painter.rect_stroke(
+                orig_rect,
+                1.0,
+                Stroke::new(1.5, colors.accent),
+                egui::StrokeKind::Middle,
+            );
 
             // Handle click on the grid to set anchor
             if response.clicked()
@@ -1402,7 +1484,7 @@ impl GaussianBlurDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
 
@@ -1428,7 +1510,7 @@ impl GaussianBlurDialog {
                                 let r = ui.add(
                                     egui::DragValue::new(&mut self.sigma)
                                         .speed(0.2)
-                                        .clamp_range(0.1..=100.0)
+                                        .range(0.1..=100.0)
                                         .max_decimals(1),
                                 );
                                 if track_slider(&r, &mut self.dragging) {
@@ -1436,7 +1518,8 @@ impl GaussianBlurDialog {
                                 }
                             } else {
                                 // Normal: slider capped at 10
-                                if dialog_slider(ui, &mut self.sigma, 0.1..=slider_max, 0.1, "", 1) {
+                                if dialog_slider(ui, &mut self.sigma, 0.1..=slider_max, 0.1, "", 1)
+                                {
                                     sigma_changed = true;
                                 }
                             }
@@ -1592,7 +1675,7 @@ impl LayerTransformDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 185.0, 50.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 185.0, 50.0))
             .show(ctx, |ui| {
                 ui.set_min_width(370.0);
 
@@ -1955,13 +2038,116 @@ impl LayerTransformDialog {
                 }
             }
 
-            if response.drag_released() {
+            if response.drag_stopped() {
                 self.gizmo_drag_axis = None;
                 self.gizmo_drag_start = None;
             }
         });
 
         changed
+    }
+}
+
+// ============================================================================
+// ALIGN LAYER DIALOG
+// ============================================================================
+
+pub struct AlignLayerDialog {
+    pub anchor_x: u32,
+    pub anchor_y: u32,
+    pub original_pixels: Option<TiledImage>,
+    pub original_flat: Option<image::RgbaImage>,
+    pub layer_idx: usize,
+    pub live_preview: bool,
+}
+
+impl AlignLayerDialog {
+    pub fn new(state: &CanvasState) -> Self {
+        let idx = state.active_layer_index;
+        let original = state.layers.get(idx).map(|l| l.pixels.clone());
+        let flat = state.layers.get(idx).map(|l| l.pixels.to_rgba_image());
+        Self {
+            anchor_x: 1,
+            anchor_y: 1,
+            original_pixels: original,
+            original_flat: flat,
+            layer_idx: idx,
+            live_preview: true,
+        }
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> DialogResult<(u32, u32)> {
+        let mut result = DialogResult::Open;
+        let mut changed = false;
+        let colors = DialogColors::from_ctx(ctx);
+
+        egui::Window::new("dialog_align_layer")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 170.0, 70.0))
+            .show(ctx, |ui| {
+                ui.set_min_width(340.0);
+                paint_dialog_header(ui, &colors, "\u{2B1A}", &t!("dialog.align_layer"));
+                ui.add_space(4.0);
+                section_label(ui, &colors, "ALIGN TO CANVAS");
+                ui.label("Moves the active raster layer using its non-transparent bounds.");
+                ui.add_space(4.0);
+
+                let labels = [
+                    ["\u{2196}", "\u{2191}", "\u{2197}"],
+                    ["\u{2190}", "\u{2299}", "\u{2192}"],
+                    ["\u{2199}", "\u{2193}", "\u{2198}"],
+                ];
+
+                egui::Grid::new("align_anchor_grid")
+                    .num_columns(3)
+                    .spacing([6.0, 6.0])
+                    .show(ui, |ui| {
+                        for (y, row) in labels.iter().enumerate() {
+                            for (x, label) in row.iter().enumerate() {
+                                let selected = self.anchor_x == x as u32 && self.anchor_y == y as u32;
+                                let mut btn = egui::Button::new(
+                                    egui::RichText::new(*label).size(18.0).strong(),
+                                )
+                                .min_size(egui::vec2(42.0, 34.0));
+                                if selected {
+                                    btn = btn.fill(colors.accent_faint);
+                                }
+
+                                if ui.add(btn).clicked() {
+                                    self.anchor_x = x as u32;
+                                    self.anchor_y = y as u32;
+                                    changed = true;
+                                }
+                            }
+                            ui.end_row();
+                        }
+                    });
+
+                accent_separator(ui, &colors);
+                let manual_preview = preview_controls(ui, &colors, &mut self.live_preview);
+                if (changed && self.live_preview) || manual_preview {
+                    result = DialogResult::Changed;
+                }
+
+                let (ok, cancel, reset) = dialog_footer_with_reset(ui, &colors);
+                if ok {
+                    result = DialogResult::Ok((self.anchor_x, self.anchor_y));
+                }
+                if cancel {
+                    result = DialogResult::Cancel;
+                }
+                if reset {
+                    self.anchor_x = 1;
+                    self.anchor_y = 1;
+                    if self.live_preview {
+                        result = DialogResult::Changed;
+                    }
+                }
+            });
+
+        result
     }
 }
 
@@ -2001,7 +2187,7 @@ impl BrightnessContrastDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
                 paint_dialog_header(ui, &colors, "☀", &t!("dialog.brightness_contrast"));
@@ -2049,8 +2235,9 @@ impl BrightnessContrastDialog {
                 }
                 painter.rect_stroke(
                     bar_rect,
-                    Rounding::same(2.0),
+                    CornerRadius::same(2),
                     Stroke::new(1.0, colors.separator),
+                    egui::StrokeKind::Middle,
                 );
 
                 accent_separator(ui, &colors);
@@ -2122,7 +2309,7 @@ impl HueSaturationDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(380.0);
                 paint_dialog_header(ui, &colors, "🎨", &t!("dialog.hue_saturation"));
@@ -2174,8 +2361,9 @@ impl HueSaturationDialog {
                 }
                 painter.rect_stroke(
                     bar_rect,
-                    Rounding::same(2.0),
+                    CornerRadius::same(2),
                     Stroke::new(1.0, colors.separator),
+                    egui::StrokeKind::Middle,
                 );
 
                 // Per-band toggle
@@ -2342,7 +2530,7 @@ impl ExposureDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 160.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 160.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(320.0);
                 paint_dialog_header(ui, &colors, "📷", &t!("dialog.exposure"));
@@ -2407,8 +2595,9 @@ impl ExposureDialog {
                 }
                 painter.rect_stroke(
                     bar_rect,
-                    Rounding::same(2.0),
+                    CornerRadius::same(2),
                     Stroke::new(1.0, colors.separator),
+                    egui::StrokeKind::Middle,
                 );
 
                 accent_separator(ui, &colors);
@@ -2470,7 +2659,7 @@ impl HighlightsShadowsDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
                 paint_dialog_header(ui, &colors, "◑", &t!("dialog.highlights_shadows"));
@@ -2510,7 +2699,7 @@ impl HighlightsShadowsDialog {
                 );
                 painter.rect_filled(
                     Rect::from_min_size(bar_rect.min, Vec2::new(half, 12.0)),
-                    Rounding::ZERO,
+                    CornerRadius::ZERO,
                     shadow_color,
                 );
                 // Right half: highlights (mid → bright)
@@ -2525,13 +2714,14 @@ impl HighlightsShadowsDialog {
                         Pos2::new(bar_rect.min.x + half, bar_rect.min.y),
                         Vec2::new(half, 12.0),
                     ),
-                    Rounding::ZERO,
+                    CornerRadius::ZERO,
                     highlight_color,
                 );
                 painter.rect_stroke(
                     bar_rect,
-                    Rounding::same(2.0),
+                    CornerRadius::same(2),
                     Stroke::new(1.0, colors.separator),
+                    egui::StrokeKind::Middle,
                 );
                 // Labels
                 painter.text(
@@ -2681,7 +2871,7 @@ impl LevelsDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 200.0, 40.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 200.0, 40.0))
             .show(ctx, |ui| {
                 ui.set_min_width(400.0);
                 paint_dialog_header(ui, &colors, "📊", &t!("dialog.levels"));
@@ -2729,7 +2919,7 @@ impl LevelsDialog {
                 // Background
                 painter.rect_filled(
                     hist_rect,
-                    Rounding::same(3.0),
+                    CornerRadius::same(3),
                     if colors.is_dark {
                         Color32::from_gray(30)
                     } else {
@@ -2759,8 +2949,9 @@ impl LevelsDialog {
                 painter.vline(iw_x, hist_rect.y_range(), Stroke::new(2.0, Color32::WHITE));
                 painter.rect_stroke(
                     hist_rect,
-                    Rounding::same(3.0),
+                    CornerRadius::same(3),
                     Stroke::new(1.0, colors.separator),
+                    egui::StrokeKind::Middle,
                 );
 
                 ui.add_space(4.0);
@@ -2865,8 +3056,9 @@ impl LevelsDialog {
                 }
                 painter.rect_stroke(
                     bar_rect,
-                    Rounding::same(2.0),
+                    CornerRadius::same(2),
                     Stroke::new(1.0, colors.separator),
+                    egui::StrokeKind::Middle,
                 );
 
                 accent_separator(ui, &colors);
@@ -2993,7 +3185,7 @@ impl CurvesDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 195.0, 40.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 195.0, 40.0))
             .show(ctx, |ui| {
                 ui.set_min_width(390.0);
                 paint_dialog_header(ui, &colors, "📈", &t!("dialog.curves"));
@@ -3095,7 +3287,7 @@ impl CurvesDialog {
                 // Background
                 painter.rect_filled(
                     canvas_rect,
-                    Rounding::same(2.0),
+                    CornerRadius::same(2),
                     if colors.is_dark {
                         Color32::from_gray(25)
                     } else {
@@ -3251,7 +3443,7 @@ impl CurvesDialog {
                     }
                 }
 
-                if response.drag_released() {
+                if response.drag_stopped() {
                     self.dragging_point = None;
                 }
 
@@ -3287,8 +3479,9 @@ impl CurvesDialog {
 
                 painter.rect_stroke(
                     canvas_rect,
-                    Rounding::same(2.0),
+                    CornerRadius::same(2),
                     Stroke::new(1.0, colors.separator),
+                    egui::StrokeKind::Middle,
                 );
 
                 // Channel info
@@ -3413,7 +3606,7 @@ impl TemperatureTintDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(360.0);
                 paint_dialog_header(ui, &colors, "☀", &t!("dialog.temperature_tint"));
@@ -3482,7 +3675,7 @@ impl TemperatureTintDialog {
                             Pos2::new(ix, bar_rect.center().y),
                             Vec2::new(4.0, bar_rect.height() + 4.0),
                         ),
-                        Rounding::same(2.0),
+                        CornerRadius::same(2),
                         Color32::WHITE,
                     );
                     painter.rect_stroke(
@@ -3490,13 +3683,15 @@ impl TemperatureTintDialog {
                             Pos2::new(ix, bar_rect.center().y),
                             Vec2::new(4.0, bar_rect.height() + 4.0),
                         ),
-                        Rounding::same(2.0),
+                        CornerRadius::same(2),
                         Stroke::new(1.0, Color32::BLACK),
+                        egui::StrokeKind::Middle,
                     );
                     painter.rect_stroke(
                         bar_rect,
-                        Rounding::same(2.0),
+                        CornerRadius::same(2),
                         Stroke::new(1.0, colors.separator),
+                        egui::StrokeKind::Middle,
                     );
                 }
 
@@ -3538,7 +3733,7 @@ impl TemperatureTintDialog {
                             Pos2::new(tx, bar_rect2.center().y),
                             Vec2::new(4.0, bar_rect2.height() + 4.0),
                         ),
-                        Rounding::same(2.0),
+                        CornerRadius::same(2),
                         Color32::WHITE,
                     );
                     painter.rect_stroke(
@@ -3546,13 +3741,15 @@ impl TemperatureTintDialog {
                             Pos2::new(tx, bar_rect2.center().y),
                             Vec2::new(4.0, bar_rect2.height() + 4.0),
                         ),
-                        Rounding::same(2.0),
+                        CornerRadius::same(2),
                         Stroke::new(1.0, Color32::BLACK),
+                        egui::StrokeKind::Middle,
                     );
                     painter.rect_stroke(
                         bar_rect2,
-                        Rounding::same(2.0),
+                        CornerRadius::same(2),
                         Stroke::new(1.0, colors.separator),
+                        egui::StrokeKind::Middle,
                     );
                 }
 
@@ -3614,7 +3811,7 @@ impl ThresholdDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 160.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 160.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(320.0);
                 paint_dialog_header(ui, &colors, "◑", &t!("dialog.threshold"));
@@ -3644,7 +3841,7 @@ impl ThresholdDialog {
                         bar_rect.min,
                         Vec2::new(bar_rect.width() * split + 0.5, 8.0),
                     ),
-                    Rounding::ZERO,
+                    CornerRadius::ZERO,
                     Color32::BLACK,
                 );
                 painter.rect_filled(
@@ -3652,13 +3849,14 @@ impl ThresholdDialog {
                         Pos2::new(bar_rect.min.x + bar_rect.width() * split, bar_rect.min.y),
                         Vec2::new(bar_rect.width() * (1.0 - split), 8.0),
                     ),
-                    Rounding::ZERO,
+                    CornerRadius::ZERO,
                     Color32::WHITE,
                 );
                 painter.rect_stroke(
                     bar_rect,
-                    Rounding::same(2.0),
+                    CornerRadius::same(2),
                     Stroke::new(1.0, colors.separator),
+                    egui::StrokeKind::Middle,
                 );
 
                 accent_separator(ui, &colors);
@@ -3718,7 +3916,7 @@ impl PosterizeDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 160.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 160.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(320.0);
                 paint_dialog_header(ui, &colors, "🎨", &t!("dialog.posterize"));
@@ -3760,8 +3958,9 @@ impl PosterizeDialog {
                 }
                 painter.rect_stroke(
                     bar_rect,
-                    Rounding::same(2.0),
+                    CornerRadius::same(2),
                     Stroke::new(1.0, colors.separator),
+                    egui::StrokeKind::Middle,
                 );
 
                 accent_separator(ui, &colors);
@@ -3827,7 +4026,7 @@ impl ColorBalanceDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 185.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 185.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(370.0);
                 paint_dialog_header(ui, &colors, "⚖", &t!("dialog.color_balance"));
@@ -4007,7 +4206,7 @@ impl GradientMapDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 185.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 185.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(370.0);
                 paint_dialog_header(ui, &colors, "🌈", &t!("dialog.gradient_map"));
@@ -4059,8 +4258,9 @@ impl GradientMapDialog {
                 }
                 painter.rect_stroke(
                     bar_rect,
-                    Rounding::same(2.0),
+                    CornerRadius::same(2),
                     Stroke::new(1.0, colors.separator),
+                    egui::StrokeKind::Middle,
                 );
 
                 // Shadow / Highlight color pickers
@@ -4159,7 +4359,7 @@ impl BlackAndWhiteDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 185.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 185.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(370.0);
                 paint_dialog_header(ui, &colors, "🎨", &t!("dialog.black_and_white"));
@@ -4258,8 +4458,9 @@ impl BlackAndWhiteDialog {
                 }
                 painter.rect_stroke(
                     bar_rect,
-                    Rounding::same(2.0),
+                    CornerRadius::same(2),
                     Stroke::new(1.0, colors.separator),
+                    egui::StrokeKind::Middle,
                 );
 
                 accent_separator(ui, &colors);
@@ -4321,7 +4522,7 @@ impl VibranceDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 175.0, 60.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
                 paint_dialog_header(ui, &colors, "✨", &t!("dialog.vibrance"));
@@ -4363,8 +4564,9 @@ impl VibranceDialog {
                 }
                 painter.rect_stroke(
                     bar_rect,
-                    Rounding::same(2.0),
+                    CornerRadius::same(2),
                     Stroke::new(1.0, colors.separator),
+                    egui::StrokeKind::Middle,
                 );
 
                 accent_separator(ui, &colors);
@@ -4440,7 +4642,7 @@ impl ColorRangeDialog {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .default_pos(egui::pos2(ctx.screen_rect().center().x - 170.0, 40.0))
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 170.0, 40.0))
             .show(ctx, |ui| {
                 ui.set_min_width(340.0);
                 paint_dialog_header(ui, &colors, "🎨", "Select Color Range");
@@ -4532,8 +4734,9 @@ impl ColorRangeDialog {
                 );
                 painter.rect_stroke(
                     bar_rect,
-                    Rounding::same(2.0),
+                    CornerRadius::same(2),
                     Stroke::new(1.0, colors.separator),
+                    egui::StrokeKind::Middle,
                 );
 
                 if changed {
