@@ -60,30 +60,20 @@ mod imp {
                     VK_CONTROL | VK_LCONTROL | VK_RCONTROL => {
                         CTRL_DOWN.store(true, Ordering::Relaxed);
                     }
-                    VK_C => {
-                        if !C_DOWN.swap(true, Ordering::Relaxed) {
-                            C_PRESS_COUNT.fetch_add(1, Ordering::Relaxed);
-                        }
+                    VK_C if !C_DOWN.swap(true, Ordering::Relaxed) => {
+                        C_PRESS_COUNT.fetch_add(1, Ordering::Relaxed);
                     }
-                    VK_X => {
-                        if !X_DOWN.swap(true, Ordering::Relaxed) {
-                            X_PRESS_COUNT.fetch_add(1, Ordering::Relaxed);
-                        }
+                    VK_X if !X_DOWN.swap(true, Ordering::Relaxed) => {
+                        X_PRESS_COUNT.fetch_add(1, Ordering::Relaxed);
                     }
-                    VK_V => {
-                        if !V_DOWN.swap(true, Ordering::Relaxed) {
-                            V_PRESS_COUNT.fetch_add(1, Ordering::Relaxed);
-                        }
+                    VK_V if !V_DOWN.swap(true, Ordering::Relaxed) => {
+                        V_PRESS_COUNT.fetch_add(1, Ordering::Relaxed);
                     }
-                    VK_RETURN => {
-                        if !ENTER_DOWN.swap(true, Ordering::Relaxed) {
-                            ENTER_PRESS_COUNT.fetch_add(1, Ordering::Relaxed);
-                        }
+                    VK_RETURN if !ENTER_DOWN.swap(true, Ordering::Relaxed) => {
+                        ENTER_PRESS_COUNT.fetch_add(1, Ordering::Relaxed);
                     }
-                    VK_ESCAPE => {
-                        if !ESCAPE_DOWN.swap(true, Ordering::Relaxed) {
-                            ESCAPE_PRESS_COUNT.fetch_add(1, Ordering::Relaxed);
-                        }
+                    VK_ESCAPE if !ESCAPE_DOWN.swap(true, Ordering::Relaxed) => {
+                        ESCAPE_PRESS_COUNT.fetch_add(1, Ordering::Relaxed);
                     }
                     _ => {}
                 }
