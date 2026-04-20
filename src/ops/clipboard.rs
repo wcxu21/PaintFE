@@ -12,6 +12,8 @@ use std::sync::Mutex;
 
 #[cfg(target_os = "linux")]
 use image::ImageFormat;
+#[cfg(target_os = "linux")]
+use std::io::{Cursor, Write};
 
 // ---------------------------------------------------------------------------
 //  Internal clipboard (application-level, supports transparency)
