@@ -154,27 +154,36 @@ pub fn get_internal_clipboard_image_dimensions() -> Option<(u32, u32)> {
 pub fn copy_to_system_clipboard(img: &RgbaImage) {
     // arboard wants ImageData { width, height, bytes: Cow<[u8]> } in RGBA order.
     #[cfg(target_os = "linux")]
-    let mut copied = false;
-    if let Ok(mut clip) = arboard::Clipboard::new() {
-        let data = arboard::ImageData {
-            width: img.width() as usize,
-            height: img.height() as usize,
-            bytes: std::borrow::Cow::Borrowed(img.as_raw()),
-        };
-        #[cfg(target_os = "linux")]
-        {
-            copied = clip.set_image(data).is_ok();
+    {
+        let mut copied = false;
+
+        // Wayland sessions should prefer wl-copy first so other native Wayland
+        // apps can paste immediately from the same clipboard backend.
+        if is_wayland_session() {
+            copied = copy_to_wayland_clipboard(img);
         }
-        #[cfg(not(target_os = "linux"))]
+
+        if !copied
+            && let Ok(mut clip) = arboard::Clipboard::new()
         {
-            let _ = clip.set_image(data);
+            let data = arboard::ImageData {
+                width: img.width() as usize,
+                height: img.height() as usize,
+                bytes: std::borrow::Cow::Borrowed(img.as_raw()),
+            };
+            copied = clip.set_image(data).is_ok();
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(not(target_os = "linux"))]
     {
-        if !copied {
-            let _ = copy_to_wayland_clipboard(img);
+        if let Ok(mut clip) = arboard::Clipboard::new() {
+            let data = arboard::ImageData {
+                width: img.width() as usize,
+                height: img.height() as usize,
+                bytes: std::borrow::Cow::Borrowed(img.as_raw()),
+            };
+            let _ = clip.set_image(data);
         }
     }
 }
@@ -185,6 +194,17 @@ pub fn copy_to_system_clipboard(img: &RgbaImage) {
 ///   2. Text on clipboard that happens to be a valid image file path.
 ///   3. A file copied in Explorer (CF_HDROP file list) — Windows-specific.
 pub fn get_from_system_clipboard() -> Option<RgbaImage> {
+    #[cfg(target_os = "linux")]
+    {
+        // On Wayland, prefer wl-paste to avoid reading stale X11 clipboard
+        // contents when running under XWayland.
+        if is_wayland_session()
+            && let Some(img) = get_from_wayland_clipboard()
+        {
+            return Some(img);
+        }
+    }
+
     // 1. Try raw image data via arboard.
     if let Ok(mut clip) = arboard::Clipboard::new()
         && let Ok(img_data) = clip.get_image()
@@ -199,6 +219,7 @@ pub fn get_from_system_clipboard() -> Option<RgbaImage> {
 
     #[cfg(target_os = "linux")]
     {
+        // Fallback for sessions where wl-paste is unavailable or empty.
         if let Some(img) = get_from_wayland_clipboard() {
             return Some(img);
         }

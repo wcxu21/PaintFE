@@ -1717,10 +1717,20 @@ impl eframe::App for PaintFEApp {
         {
             let dropped: Vec<egui::DroppedFile> = ctx.input(|i| i.raw.dropped_files.clone());
             for file in dropped {
-                if let Some(path) = file.path
+                if let Some(path) = file.path.clone()
                     && path.is_file()
                 {
                     self.open_file_by_path(path, ctx.input(|i| i.time));
+                    continue;
+                }
+
+                if let Some(bytes) = file.bytes.as_ref() {
+                    let name_hint = if file.name.is_empty() {
+                        None
+                    } else {
+                        Some(file.name.clone())
+                    };
+                    self.open_image_from_bytes(bytes.as_ref(), name_hint);
                 }
             }
         }
@@ -6325,6 +6335,39 @@ impl eframe::App for PaintFEApp {
 }
 
 impl PaintFEApp {
+    fn open_image_from_bytes(&mut self, bytes: &[u8], name_hint: Option<String>) {
+        let Ok(decoded) = image::load_from_memory(bytes) else {
+            return;
+        };
+
+        let image = decoded.to_rgba8();
+        let width = image.width();
+        let height = image.height();
+
+        self.persist_active_project_view();
+        self.untitled_counter += 1;
+
+        let mut project = Project::new_untitled(self.untitled_counter, width, height);
+        if let Some(layer) = project.canvas_state.layers.first_mut() {
+            layer.pixels = TiledImage::from_rgba_image(&image);
+        }
+        project.canvas_state.composite_cache = None;
+        project.canvas_state.mark_dirty(None);
+
+        if let Some(name) = name_hint {
+            let trimmed = name.trim();
+            if !trimmed.is_empty() {
+                project.name = trimmed.to_string();
+            }
+        }
+
+        self.projects.push(project);
+        self.active_project_index = self.projects.len() - 1;
+        self.restore_active_project_view();
+        self.canvas.gpu_clear_layers();
+        self.maybe_close_initial_blank();
+    }
+
     /// Handle opening a file - creates a new project tab
     fn handle_open_file(&mut self, current_time: f64) {
         if let Some(path) = self.file_handler.pick_file_path() {
