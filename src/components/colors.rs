@@ -1128,15 +1128,30 @@ fn draw_checkerboard(painter: &egui::Painter, rect: egui::Rect, cell: f32) {
 /// Displays a small "−" button, a DragValue, and a "+" button.
 /// Mutates `val` in place; the caller is responsible for detecting change.
 fn color_step_field(ui: &mut egui::Ui, val: &mut u32, min: u32, max: u32) {
+    let stepper_bg = crate::theme::Theme::stepper_button_bg_for(ui);
     ui.spacing_mut().item_spacing.x = 1.0;
-    if ui.small_button("-").clicked() && *val > min {
+    let minus = ui
+        .scope(|ui| {
+            ui.visuals_mut().widgets.inactive.bg_fill = stepper_bg;
+            ui.visuals_mut().widgets.inactive.weak_bg_fill = stepper_bg;
+            ui.small_button("-")
+        })
+        .inner;
+    if minus.clicked() && *val > min {
         *val -= 1;
     }
     ui.add_sized(
         [30.0, 16.0],
         egui::DragValue::new(val).range(min..=max).speed(1),
     );
-    if ui.small_button("+").clicked() && *val < max {
+    let plus = ui
+        .scope(|ui| {
+            ui.visuals_mut().widgets.inactive.bg_fill = stepper_bg;
+            ui.visuals_mut().widgets.inactive.weak_bg_fill = stepper_bg;
+            ui.small_button("+")
+        })
+        .inner;
+    if plus.clicked() && *val < max {
         *val += 1;
     }
 }

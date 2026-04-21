@@ -91,6 +91,13 @@ pub enum LayerAppAction {
     RotateScale,
     /// Merge the layer at `layer_idx` down as an alpha mask onto the layer below it.
     MergeDownAsMask(usize),
+    AddLayerMaskRevealAll(usize),
+    AddLayerMaskFromSelection(usize),
+    ToggleLayerMaskEdit(usize),
+    ToggleLayerMask(usize),
+    InvertLayerMask(usize),
+    ApplyLayerMask(usize),
+    DeleteLayerMask(usize),
     /// Rasterize the text layer at `layer_idx`, closing the settings dialog.
     RasterizeTextLayer(usize),
 }
@@ -464,6 +471,34 @@ impl LayersPanel {
                                 self.pending_app_action =
                                     Some(LayerAppAction::MergeDownAsMask(layer_idx));
                             }
+                            ContextAction::AddLayerMaskRevealAll => {
+                                self.pending_app_action =
+                                    Some(LayerAppAction::AddLayerMaskRevealAll(layer_idx));
+                            }
+                            ContextAction::AddLayerMaskFromSelection => {
+                                self.pending_app_action =
+                                    Some(LayerAppAction::AddLayerMaskFromSelection(layer_idx));
+                            }
+                            ContextAction::ToggleLayerMaskEdit => {
+                                self.pending_app_action =
+                                    Some(LayerAppAction::ToggleLayerMaskEdit(layer_idx));
+                            }
+                            ContextAction::ToggleLayerMask => {
+                                self.pending_app_action =
+                                    Some(LayerAppAction::ToggleLayerMask(layer_idx));
+                            }
+                            ContextAction::InvertLayerMask => {
+                                self.pending_app_action =
+                                    Some(LayerAppAction::InvertLayerMask(layer_idx));
+                            }
+                            ContextAction::ApplyLayerMask => {
+                                self.pending_app_action =
+                                    Some(LayerAppAction::ApplyLayerMask(layer_idx));
+                            }
+                            ContextAction::DeleteLayerMask => {
+                                self.pending_app_action =
+                                    Some(LayerAppAction::DeleteLayerMask(layer_idx));
+                            }
                             ContextAction::FlattenImage => layer_to_flatten = true,
                             ContextAction::Duplicate => layer_to_duplicate = Some(layer_idx),
                             ContextAction::Delete => layer_to_delete = Some(layer_idx),
@@ -567,6 +602,9 @@ impl LayersPanel {
                 // Process deferred actions
                 if let Some(idx) = new_active {
                     canvas_state.active_layer_index = idx;
+                    if !canvas_state.layers[idx].has_live_mask() {
+                        canvas_state.edit_layer_mask = false;
+                    }
                 }
                 if let Some(merge_idx) = layer_to_merge {
                     self.merge_down(merge_idx, canvas_state, history);
@@ -716,6 +754,9 @@ impl LayersPanel {
                 );
                 let gear_resp =
                     ui.interact(gear_rect, Id::new(("text_gear", layer_idx)), Sense::click());
+                if gear_resp.hovered() {
+                    ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+                }
                 if gear_resp.clicked() {
                     context_action = Some(ContextAction::TextLayerEffects);
                 }
@@ -898,6 +939,86 @@ impl LayersPanel {
                     context_action = Some(ContextAction::MergeDownAsMask);
                     ui.close();
                 }
+            }
+            ui.separator();
+            let has_mask = canvas_state.layers[layer_idx].has_live_mask();
+            if !has_mask
+                && assets
+                    .menu_item(ui, Icon::AddLayerMaskRevealAll, "Add Layer Mask (Reveal All)")
+                    .clicked()
+            {
+                context_action = Some(ContextAction::AddLayerMaskRevealAll);
+                ui.close();
+            }
+            if !has_mask
+                && assets
+                    .menu_item(
+                        ui,
+                        Icon::AddLayerMaskFromSelection,
+                        "Add Layer Mask (From Selection)",
+                    )
+                    .clicked()
+            {
+                context_action = Some(ContextAction::AddLayerMaskFromSelection);
+                ui.close();
+            }
+            if has_mask
+                && assets
+                    .menu_item(
+                        ui,
+                        Icon::LayerProperties,
+                        if canvas_state.edit_layer_mask
+                            && canvas_state.active_layer_index == layer_idx
+                        {
+                            "Edit Layer Pixels"
+                        } else {
+                            "Edit Layer Mask"
+                        },
+                    )
+                    .clicked()
+            {
+                context_action = Some(ContextAction::ToggleLayerMaskEdit);
+                ui.close();
+            }
+            if has_mask
+                && assets
+                    .menu_item(
+                        ui,
+                        Icon::ToggleLayerMask,
+                        if canvas_state.layers[layer_idx].mask_enabled {
+                            "Disable Layer Mask"
+                        } else {
+                            "Enable Layer Mask"
+                        },
+                    )
+                    .clicked()
+            {
+                context_action = Some(ContextAction::ToggleLayerMask);
+                ui.close();
+            }
+            if has_mask
+                && assets
+                    .menu_item(ui, Icon::InvertLayerMask, "Invert Layer Mask")
+                    .clicked()
+            {
+                context_action = Some(ContextAction::InvertLayerMask);
+                ui.close();
+            }
+            if has_mask
+                && assets
+                    .menu_item(ui, Icon::ApplyLayerMask, "Apply Layer Mask")
+                    .clicked()
+            {
+                context_action = Some(ContextAction::ApplyLayerMask);
+                ui.close();
+            }
+            if has_mask
+                && assets
+                    .menu_item(ui, Icon::DeleteLayerMask, "Delete Layer Mask")
+                    .clicked()
+            {
+                context_action = Some(ContextAction::DeleteLayerMask);
+                ui.close();
             }
             if canvas_state.layers.len() > 1
                 && assets
@@ -2426,6 +2547,15 @@ impl LayersPanel {
         self.rasterize_text_layer(layer_idx, canvas_state, history);
     }
 
+    /// Public entry point for deleting the current active layer from app-level code.
+    pub fn delete_active_layer_from_app(
+        &mut self,
+        canvas_state: &mut CanvasState,
+        history: &mut HistoryManager,
+    ) {
+        self.delete_active_layer(canvas_state, history);
+    }
+
     fn delete_active_layer(
         &mut self,
         canvas_state: &mut CanvasState,
@@ -2447,6 +2577,8 @@ impl LayersPanel {
         // Capture layer data before deletion for undo
         let layer = &canvas_state.layers[layer_idx];
         let pixels = layer.pixels.clone();
+        let mask = layer.mask.clone();
+        let mask_enabled = layer.mask_enabled;
         let name = layer.name.clone();
         let visible = layer.visible;
         let opacity = layer.opacity;
@@ -2467,6 +2599,8 @@ impl LayersPanel {
         history.push(Box::new(LayerOpCommand::new(LayerOperation::Delete {
             index: layer_idx,
             pixels,
+            mask,
+            mask_enabled,
             name,
             visible,
             opacity,
@@ -2500,11 +2634,15 @@ impl LayersPanel {
         new_layer.opacity = source.opacity;
         new_layer.blend_mode = source.blend_mode;
         new_layer.content = source.content.clone();
+        new_layer.mask = source.mask.clone();
+        new_layer.mask_enabled = source.mask_enabled;
 
         let new_index = layer_idx + 1;
 
         // Capture data for history before inserting
         let pixels = new_layer.pixels.clone();
+        let mask = new_layer.mask.clone();
+        let mask_enabled = new_layer.mask_enabled;
         let visible = new_layer.visible;
         let opacity = new_layer.opacity;
         let content = new_layer.content.clone();
@@ -2518,6 +2656,8 @@ impl LayersPanel {
             source_index: layer_idx,
             new_index,
             pixels,
+            mask,
+            mask_enabled,
             name: new_name,
             visible,
             opacity,
@@ -2811,6 +2951,13 @@ enum ContextAction {
     AddNewTextLayer,
     MergeDown,
     MergeDownAsMask,
+    AddLayerMaskRevealAll,
+    AddLayerMaskFromSelection,
+    ToggleLayerMaskEdit,
+    ToggleLayerMask,
+    InvertLayerMask,
+    ApplyLayerMask,
+    DeleteLayerMask,
     FlattenImage,
     Duplicate,
     Delete,

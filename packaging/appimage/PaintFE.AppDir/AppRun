@@ -7,6 +7,12 @@ export PATH="$HERE/usr/bin:$PATH"
 export XDG_DATA_DIRS="$HERE/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 export LD_LIBRARY_PATH="$HERE/usr/lib:${LD_LIBRARY_PATH}"
 
+# Suppress known non-fatal xkbcommon Compose parse noise on some X11 distros
+# (e.g. Fedora dead_hamza warnings). Respect user override if already set.
+if [ "${WINIT_UNIX_BACKEND:-}" = "x11" ] && [ -z "${XKB_LOG_LEVEL:-}" ]; then
+    export XKB_LOG_LEVEL=critical
+fi
+
 # wgpu: prefer Vulkan via host ICD — do NOT bundle libvulkan.so.1
 # If the host has no Vulkan, wgpu falls back to GLES/OpenGL automatically.
 

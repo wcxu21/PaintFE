@@ -80,8 +80,16 @@ pub struct ThemeOverrides {
 
     // Panels & windows
     pub floating_window_bg: Option<Color32>,
+    pub tool_shelf_bg: Option<Color32>,
     pub toolbar_bg: Option<Color32>,
     pub menu_bg: Option<Color32>,
+
+    // Control-specific backgrounds
+    pub icon_button_bg: Option<Color32>,
+    pub icon_button_active: Option<Color32>,
+    pub icon_button_disabled: Option<Color32>,
+    pub text_input_bg: Option<Color32>,
+    pub stepper_button_bg: Option<Color32>,
 
     // Canvas
     pub canvas_bg_top: Option<Color32>,
@@ -127,8 +135,14 @@ impl ThemeOverrides {
             && self.button_hover.is_none()
             && self.button_active.is_none()
             && self.floating_window_bg.is_none()
+            && self.tool_shelf_bg.is_none()
             && self.toolbar_bg.is_none()
             && self.menu_bg.is_none()
+            && self.icon_button_bg.is_none()
+            && self.icon_button_active.is_none()
+            && self.icon_button_disabled.is_none()
+            && self.text_input_bg.is_none()
+            && self.stepper_button_bg.is_none()
             && self.canvas_bg_top.is_none()
             && self.canvas_bg_bottom.is_none()
             && self.glow_accent.is_none()
@@ -384,8 +398,16 @@ pub struct Theme {
 
     // Panel-specific
     pub floating_window_bg: Color32,
+    pub tool_shelf_bg: Color32,
     pub toolbar_bg: Color32,
     pub menu_bg: Color32,
+
+    // Control-specific backgrounds
+    pub icon_button_bg: Color32,
+    pub icon_button_active: Color32,
+    pub icon_button_disabled: Color32,
+    pub text_input_bg: Color32,
+    pub stepper_button_bg: Color32,
 
     // Canvas background gradient
     pub canvas_bg_top: Color32,
@@ -454,8 +476,16 @@ impl Theme {
 
             // Floating elements — subtle transparency
             floating_window_bg: Color32::from_rgba_unmultiplied(17, 17, 20, 240),
+            tool_shelf_bg: Color32::from_rgb(17, 17, 22),
             toolbar_bg: Color32::from_rgb(17, 17, 20), // #111114 matches panel_bg for visibility
             menu_bg: Color32::from_rgb(17, 17, 20),    // #111114
+
+            // Control-specific backgrounds
+            icon_button_bg: Color32::from_gray(18),
+            icon_button_active: Color32::from_rgb(42, 42, 53),
+            icon_button_disabled: Color32::from_rgb(24, 24, 28),
+            text_input_bg: Color32::from_rgb(8, 8, 10),
+            stepper_button_bg: Color32::from_rgb(36, 36, 44),
 
             // Canvas background — dark blue-tinted
             canvas_bg_top: Color32::from_rgb(10, 10, 14),
@@ -518,8 +548,16 @@ impl Theme {
 
             // Floating elements
             floating_window_bg: Color32::from_rgba_unmultiplied(255, 255, 255, 248),
+            tool_shelf_bg: Color32::from_rgb(255, 255, 255),
             toolbar_bg: Color32::from_rgb(244, 244, 247), // #f4f4f7
             menu_bg: Color32::from_rgb(255, 255, 255),
+
+            // Control-specific backgrounds
+            icon_button_bg: Color32::from_gray(238),
+            icon_button_active: Color32::from_rgb(208, 208, 222),
+            icon_button_disabled: Color32::from_rgb(228, 228, 236),
+            text_input_bg: Color32::from_gray(218),
+            stepper_button_bg: Color32::from_rgb(228, 228, 236),
 
             // Canvas background — light blue-tinted gradient
             canvas_bg_top: Color32::from_rgb(234, 234, 240),
@@ -611,11 +649,29 @@ impl Theme {
         if let Some(c) = ov.floating_window_bg {
             self.floating_window_bg = c;
         }
+        if let Some(c) = ov.tool_shelf_bg {
+            self.tool_shelf_bg = c;
+        }
         if let Some(c) = ov.toolbar_bg {
             self.toolbar_bg = c;
         }
         if let Some(c) = ov.menu_bg {
             self.menu_bg = c;
+        }
+        if let Some(c) = ov.icon_button_bg {
+            self.icon_button_bg = c;
+        }
+        if let Some(c) = ov.icon_button_active {
+            self.icon_button_active = c;
+        }
+        if let Some(c) = ov.icon_button_disabled {
+            self.icon_button_disabled = c;
+        }
+        if let Some(c) = ov.text_input_bg {
+            self.text_input_bg = c;
+        }
+        if let Some(c) = ov.stepper_button_bg {
+            self.stepper_button_bg = c;
         }
         if let Some(c) = ov.canvas_bg_top {
             self.canvas_bg_top = c;
@@ -781,15 +837,8 @@ impl Theme {
         // Separator
         visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, self.separator_color);
 
-        // Scrollbar: track background distinct from panel bg
-        match self.mode {
-            ThemeMode::Dark => {
-                visuals.extreme_bg_color = Color32::from_rgb(8, 8, 10); // darker than panel_bg for visible track groove
-            }
-            ThemeMode::Light => {
-                visuals.extreme_bg_color = Color32::from_gray(218); // input fields slightly darker than buttons
-            }
-        }
+        // Input fields (TextEdit/DragValue) and scrollbar track background.
+        visuals.extreme_bg_color = self.text_input_bg;
 
         // Hyperlinks
         visuals.hyperlink_color = self.accent;
@@ -799,6 +848,20 @@ impl Theme {
         visuals.error_fg_color = Color32::from_rgb(255, 100, 100);
 
         ctx.set_visuals(visuals);
+
+        // Expose extra paint-time theme colors for custom widgets/helpers.
+        ctx.data_mut(|d| {
+            d.insert_persisted(egui::Id::new("paintfe_icon_button_bg"), self.icon_button_bg);
+            d.insert_persisted(
+                egui::Id::new("paintfe_icon_button_active"),
+                self.icon_button_active,
+            );
+            d.insert_persisted(
+                egui::Id::new("paintfe_icon_button_disabled"),
+                self.icon_button_disabled,
+            );
+            d.insert_persisted(egui::Id::new("paintfe_stepper_button_bg"), self.stepper_button_bg);
+        });
 
         // Smooth transitions — slightly longer animation time for polished feel.
         // Mutate the active style in-place so we don't overwrite the visuals we just set.
@@ -976,7 +1039,7 @@ impl Theme {
         match self.mode {
             ThemeMode::Dark => {
                 egui::Frame::NONE
-                    .fill(Color32::from_rgb(17, 17, 22)) // slightly warmer than panel_bg
+                    .fill(self.tool_shelf_bg)
                     .corner_radius(CornerRadius::same(8))
                     .stroke(Stroke::new(1.0, self.border_color))
                     .shadow(Shadow {
@@ -988,7 +1051,7 @@ impl Theme {
                     .inner_margin(egui::Margin::symmetric(10, 5))
             }
             ThemeMode::Light => egui::Frame::NONE
-                .fill(Color32::WHITE)
+                .fill(self.tool_shelf_bg)
                 .corner_radius(CornerRadius::same(8))
                 .stroke(Stroke::new(1.0, Color32::from_rgb(208, 208, 222)))
                 .shadow(Shadow {
@@ -999,6 +1062,34 @@ impl Theme {
                 })
                 .inner_margin(egui::Margin::symmetric(10, 5)),
         }
+    }
+
+    pub fn icon_button_bg_for(ui: &egui::Ui) -> Color32 {
+        ui.ctx().data_mut(|d| {
+            d.get_persisted::<Color32>(egui::Id::new("paintfe_icon_button_bg"))
+                .unwrap_or(ui.visuals().widgets.inactive.bg_fill)
+        })
+    }
+
+    pub fn icon_button_active_for(ui: &egui::Ui) -> Color32 {
+        ui.ctx().data_mut(|d| {
+            d.get_persisted::<Color32>(egui::Id::new("paintfe_icon_button_active"))
+                .unwrap_or(ui.visuals().widgets.active.bg_fill)
+        })
+    }
+
+    pub fn icon_button_disabled_for(ui: &egui::Ui) -> Color32 {
+        ui.ctx().data_mut(|d| {
+            d.get_persisted::<Color32>(egui::Id::new("paintfe_icon_button_disabled"))
+                .unwrap_or(ui.visuals().widgets.noninteractive.bg_fill)
+        })
+    }
+
+    pub fn stepper_button_bg_for(ui: &egui::Ui) -> Color32 {
+        ui.ctx().data_mut(|d| {
+            d.get_persisted::<Color32>(egui::Id::new("paintfe_stepper_button_bg"))
+                .unwrap_or(ui.visuals().widgets.inactive.bg_fill)
+        })
     }
 }
 

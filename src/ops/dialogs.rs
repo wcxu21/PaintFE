@@ -233,6 +233,16 @@ pub(crate) fn accent_separator(ui: &mut egui::Ui, colors: &DialogColors) {
     ui.painter().rect_filled(rect, 0.0, colors.separator);
 }
 
+fn themed_stepper_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    let stepper_bg = crate::theme::Theme::stepper_button_bg_for(ui);
+    ui.scope(|ui| {
+        ui.visuals_mut().widgets.inactive.bg_fill = stepper_bg;
+        ui.visuals_mut().widgets.inactive.weak_bg_fill = stepper_bg;
+        ui.small_button(label)
+    })
+    .inner
+}
+
 /// Draw a numeric field with +/- buttons.  Returns true if the value changed.
 pub(crate) fn numeric_field_with_buttons(
     ui: &mut egui::Ui,
@@ -262,7 +272,7 @@ pub(crate) fn numeric_field_with_buttons_focus(
     let range_end = *range.end();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
-        if ui.small_button("-").clicked() {
+        if themed_stepper_button(ui, "-").clicked() {
             *value = (*value - step).max(range_start);
             changed = true;
         }
@@ -279,7 +289,7 @@ pub(crate) fn numeric_field_with_buttons_focus(
         if response.changed() {
             changed = true;
         }
-        if ui.small_button("+").clicked() {
+        if themed_stepper_button(ui, "+").clicked() {
             *value = (*value + step).min(range_end);
             changed = true;
         }
@@ -393,7 +403,7 @@ pub(crate) fn dialog_slider(
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
 
-            if ui.small_button("-").clicked() {
+            if themed_stepper_button(ui, "-").clicked() {
                 *value = (*value - step).max(range_start);
                 changed = true;
             }
@@ -411,7 +421,7 @@ pub(crate) fn dialog_slider(
                 changed = true;
             }
 
-            if ui.small_button("+").clicked() {
+            if themed_stepper_button(ui, "+").clicked() {
                 *value = (*value + step).min(range_end);
                 changed = true;
             }
@@ -2055,6 +2065,8 @@ impl LayerTransformDialog {
 pub struct AlignLayerDialog {
     pub anchor_x: u32,
     pub anchor_y: u32,
+    pub align_to_selection: bool,
+    pub has_selection: bool,
     pub original_pixels: Option<TiledImage>,
     pub original_flat: Option<image::RgbaImage>,
     pub layer_idx: usize,
@@ -2066,9 +2078,12 @@ impl AlignLayerDialog {
         let idx = state.active_layer_index;
         let original = state.layers.get(idx).map(|l| l.pixels.clone());
         let flat = state.layers.get(idx).map(|l| l.pixels.to_rgba_image());
+        let has_selection = state.selection_mask_bounds().is_some();
         Self {
             anchor_x: 1,
             anchor_y: 1,
+            align_to_selection: has_selection,
+            has_selection,
             original_pixels: original,
             original_flat: flat,
             layer_idx: idx,
@@ -2076,7 +2091,7 @@ impl AlignLayerDialog {
         }
     }
 
-    pub fn show(&mut self, ctx: &egui::Context) -> DialogResult<(u32, u32)> {
+    pub fn show(&mut self, ctx: &egui::Context) -> DialogResult<(u32, u32, bool)> {
         let mut result = DialogResult::Open;
         let mut changed = false;
         let colors = DialogColors::from_ctx(ctx);
@@ -2093,6 +2108,30 @@ impl AlignLayerDialog {
                 section_label(ui, &colors, "ALIGN TO CANVAS");
                 ui.label("Moves the active raster layer using its non-transparent bounds.");
                 ui.add_space(4.0);
+
+                ui.horizontal(|ui| {
+                    ui.label("Target:");
+                    if ui
+                        .selectable_label(!self.align_to_selection, "Canvas")
+                        .clicked()
+                    {
+                        self.align_to_selection = false;
+                        changed = true;
+                    }
+                    ui.add_enabled_ui(self.has_selection, |ui| {
+                        if ui
+                            .selectable_label(self.align_to_selection, "Selection")
+                            .clicked()
+                        {
+                            self.align_to_selection = true;
+                            changed = true;
+                        }
+                    });
+                    if !self.has_selection {
+                        ui.label(egui::RichText::new("(no selection)").weak());
+                    }
+                });
+                ui.add_space(2.0);
 
                 let labels = [
                     ["\u{2196}", "\u{2191}", "\u{2197}"],
@@ -2133,7 +2172,11 @@ impl AlignLayerDialog {
 
                 let (ok, cancel, reset) = dialog_footer_with_reset(ui, &colors);
                 if ok {
-                    result = DialogResult::Ok((self.anchor_x, self.anchor_y));
+                    result = DialogResult::Ok((
+                        self.anchor_x,
+                        self.anchor_y,
+                        self.align_to_selection,
+                    ));
                 }
                 if cancel {
                     result = DialogResult::Cancel;
@@ -2141,6 +2184,7 @@ impl AlignLayerDialog {
                 if reset {
                     self.anchor_x = 1;
                     self.anchor_y = 1;
+                    self.align_to_selection = false;
                     if self.live_preview {
                         result = DialogResult::Changed;
                     }

@@ -65,6 +65,12 @@ pub enum Icon {
     Flatten,
     MergeDown,
     MergeDownAsMask,
+    AddLayerMaskRevealAll,
+    AddLayerMaskFromSelection,
+    ToggleLayerMask,
+    InvertLayerMask,
+    ApplyLayerMask,
+    DeleteLayerMask,
     Peek,
     SwapColors,
     CopyHex,
@@ -258,6 +264,12 @@ impl Icon {
             Icon::Flatten => "[F]",
             Icon::MergeDown => "[v]",
             Icon::MergeDownAsMask => "[vm]",
+            Icon::AddLayerMaskRevealAll => "[M+]",
+            Icon::AddLayerMaskFromSelection => "[MS]",
+            Icon::ToggleLayerMask => "[M]",
+            Icon::InvertLayerMask => "[M!]",
+            Icon::ApplyLayerMask => "[MA]",
+            Icon::DeleteLayerMask => "[MX]",
             Icon::Peek => "\u{1F50D}",
             Icon::SettingsGeneral => "[G]",
             Icon::SettingsInterface => "[I]",
@@ -440,7 +452,13 @@ impl Icon {
             Icon::Duplicate => "Duplicate Layer",
             Icon::Flatten => "Flatten All Layers",
             Icon::MergeDown => "Merge Down",
-            Icon::MergeDownAsMask => "Merge Down as Mask",
+            Icon::MergeDownAsMask => "Merge Down as Mono-Mask",
+            Icon::AddLayerMaskRevealAll => "Add Layer Mask (Reveal All)",
+            Icon::AddLayerMaskFromSelection => "Add Layer Mask (From Selection)",
+            Icon::ToggleLayerMask => "Enable/Disable Layer Mask",
+            Icon::InvertLayerMask => "Invert Layer Mask",
+            Icon::ApplyLayerMask => "Apply Layer Mask",
+            Icon::DeleteLayerMask => "Delete Layer Mask",
             Icon::Peek => "Peek Layer",
             Icon::SettingsGeneral => "General",
             Icon::SettingsInterface => "Interface",
@@ -846,6 +864,36 @@ impl Assets {
             ctx,
             Icon::MergeDownAsMask,
             include_bytes!("../assets/icons/ui/merge_down_as_mask.png"),
+        );
+        self.load_icon(
+            ctx,
+            Icon::AddLayerMaskRevealAll,
+            include_bytes!("../assets/icons/ui/new_mask.png"),
+        );
+        self.load_icon(
+            ctx,
+            Icon::AddLayerMaskFromSelection,
+            include_bytes!("../assets/icons/ui/new_mask.png"),
+        );
+        self.load_icon(
+            ctx,
+            Icon::ToggleLayerMask,
+            include_bytes!("../assets/icons/ui/disable_mask.png"),
+        );
+        self.load_icon(
+            ctx,
+            Icon::InvertLayerMask,
+            include_bytes!("../assets/icons/ui/invert_mask.png"),
+        );
+        self.load_icon(
+            ctx,
+            Icon::ApplyLayerMask,
+            include_bytes!("../assets/icons/ui/apply_mask.png"),
+        );
+        self.load_icon(
+            ctx,
+            Icon::DeleteLayerMask,
+            include_bytes!("../assets/icons/ui/delete_mask.png"),
         );
         self.load_icon(
             ctx,
@@ -1826,16 +1874,22 @@ impl Assets {
 
     /// Create a small icon button (for toolbar)
     pub fn small_icon_button(&self, ui: &mut egui::Ui, icon: Icon) -> egui::Response {
+        let icon_bg = crate::theme::Theme::icon_button_bg_for(ui);
+        let icon_active = crate::theme::Theme::icon_button_active_for(ui);
+        let icon_disabled = crate::theme::Theme::icon_button_disabled_for(ui);
         let response = if let Some(texture) = self.textures.get(&icon) {
             let sized_texture = egui::load::SizedTexture::from_handle(texture);
             let img = egui::Image::from_texture(sized_texture).fit_to_exact_size(Vec2::splat(24.0));
-            let mut btn = egui::Button::image(img);
-            if ui.visuals().dark_mode {
-                btn = btn.fill(egui::Color32::from_gray(18));
-            } else {
-                btn = btn.fill(egui::Color32::from_gray(238));
-            }
-            ui.add(btn)
+            let btn = egui::Button::image(img);
+            ui.scope(|ui| {
+                ui.visuals_mut().widgets.inactive.bg_fill = icon_bg;
+                ui.visuals_mut().widgets.inactive.weak_bg_fill = icon_bg;
+                ui.visuals_mut().widgets.active.bg_fill = icon_active;
+                ui.visuals_mut().widgets.active.weak_bg_fill = icon_active;
+                ui.visuals_mut().widgets.noninteractive.bg_fill = icon_disabled;
+                ui.add(btn)
+            })
+            .inner
         } else {
             ui.button(icon.emoji())
         };
@@ -1862,6 +1916,9 @@ impl Assets {
         icon: Icon,
         enabled: bool,
     ) -> egui::Response {
+        let icon_bg = crate::theme::Theme::icon_button_bg_for(ui);
+        let icon_active = crate::theme::Theme::icon_button_active_for(ui);
+        let icon_disabled = crate::theme::Theme::icon_button_disabled_for(ui);
         let response = if let Some(texture) = self.textures.get(&icon) {
             let sized_texture = egui::load::SizedTexture::from_handle(texture);
             let tint = if !enabled {
@@ -1879,17 +1936,20 @@ impl Assets {
             let img = egui::Image::from_texture(sized_texture)
                 .fit_to_exact_size(Vec2::splat(24.0))
                 .tint(tint);
-            let mut btn = egui::Button::image(img);
-            if ui.visuals().dark_mode {
-                btn = btn.fill(egui::Color32::from_gray(18));
-            } else {
-                btn = btn.fill(egui::Color32::from_gray(238));
-            }
-            if enabled {
-                ui.add(btn)
-            } else {
-                ui.add_enabled(false, btn)
-            }
+            let btn = egui::Button::image(img);
+            ui.scope(|ui| {
+                ui.visuals_mut().widgets.inactive.bg_fill = icon_bg;
+                ui.visuals_mut().widgets.inactive.weak_bg_fill = icon_bg;
+                ui.visuals_mut().widgets.active.bg_fill = icon_active;
+                ui.visuals_mut().widgets.active.weak_bg_fill = icon_active;
+                ui.visuals_mut().widgets.noninteractive.bg_fill = icon_disabled;
+                if enabled {
+                    ui.add(btn)
+                } else {
+                    ui.add_enabled(false, btn)
+                }
+            })
+            .inner
         } else {
             ui.add_enabled(enabled, egui::Button::new(icon.emoji()))
         };
@@ -3603,8 +3663,14 @@ pub struct AppSettings {
     pub ov_button_hover: Option<Color32>,
     pub ov_button_active: Option<Color32>,
     pub ov_floating_window_bg: Option<Color32>,
+    pub ov_tool_shelf_bg: Option<Color32>,
     pub ov_toolbar_bg: Option<Color32>,
     pub ov_menu_bg: Option<Color32>,
+    pub ov_icon_button_bg: Option<Color32>,
+    pub ov_icon_button_active: Option<Color32>,
+    pub ov_icon_button_disabled: Option<Color32>,
+    pub ov_text_input_bg: Option<Color32>,
+    pub ov_stepper_button_bg: Option<Color32>,
     pub ov_canvas_bg_top: Option<Color32>,
     pub ov_canvas_bg_bottom: Option<Color32>,
     pub ov_glow_accent: Option<Color32>,
@@ -3725,8 +3791,14 @@ impl Default for AppSettings {
             ov_button_hover: None,
             ov_button_active: None,
             ov_floating_window_bg: None,
+            ov_tool_shelf_bg: None,
             ov_toolbar_bg: None,
             ov_menu_bg: None,
+            ov_icon_button_bg: None,
+            ov_icon_button_active: None,
+            ov_icon_button_disabled: None,
+            ov_text_input_bg: None,
+            ov_stepper_button_bg: None,
             ov_canvas_bg_top: None,
             ov_canvas_bg_bottom: None,
             ov_glow_accent: None,
@@ -3859,8 +3931,14 @@ impl AppSettings {
             button_hover: self.ov_button_hover,
             button_active: self.ov_button_active,
             floating_window_bg: self.ov_floating_window_bg,
+            tool_shelf_bg: self.ov_tool_shelf_bg,
             toolbar_bg: self.ov_toolbar_bg,
             menu_bg: self.ov_menu_bg,
+            icon_button_bg: self.ov_icon_button_bg,
+            icon_button_active: self.ov_icon_button_active,
+            icon_button_disabled: self.ov_icon_button_disabled,
+            text_input_bg: self.ov_text_input_bg,
+            stepper_button_bg: self.ov_stepper_button_bg,
             canvas_bg_top: self.ov_canvas_bg_top,
             canvas_bg_bottom: self.ov_canvas_bg_bottom,
             glow_accent: self.ov_glow_accent,
@@ -3951,8 +4029,14 @@ impl AppSettings {
             ("ov_button_hover", self.ov_button_hover),
             ("ov_button_active", self.ov_button_active),
             ("ov_floating_window_bg", self.ov_floating_window_bg),
+            ("ov_tool_shelf_bg", self.ov_tool_shelf_bg),
             ("ov_toolbar_bg", self.ov_toolbar_bg),
             ("ov_menu_bg", self.ov_menu_bg),
+            ("ov_icon_button_bg", self.ov_icon_button_bg),
+            ("ov_icon_button_active", self.ov_icon_button_active),
+            ("ov_icon_button_disabled", self.ov_icon_button_disabled),
+            ("ov_text_input_bg", self.ov_text_input_bg),
+            ("ov_stepper_button_bg", self.ov_stepper_button_bg),
             ("ov_canvas_bg_top", self.ov_canvas_bg_top),
             ("ov_canvas_bg_bottom", self.ov_canvas_bg_bottom),
             ("ov_glow_accent", self.ov_glow_accent),
@@ -4090,8 +4174,14 @@ impl AppSettings {
         import_ov!("ov_button_hover", ov_button_hover);
         import_ov!("ov_button_active", ov_button_active);
         import_ov!("ov_floating_window_bg", ov_floating_window_bg);
+        import_ov!("ov_tool_shelf_bg", ov_tool_shelf_bg);
         import_ov!("ov_toolbar_bg", ov_toolbar_bg);
         import_ov!("ov_menu_bg", ov_menu_bg);
+        import_ov!("ov_icon_button_bg", ov_icon_button_bg);
+        import_ov!("ov_icon_button_active", ov_icon_button_active);
+        import_ov!("ov_icon_button_disabled", ov_icon_button_disabled);
+        import_ov!("ov_text_input_bg", ov_text_input_bg);
+        import_ov!("ov_stepper_button_bg", ov_stepper_button_bg);
         import_ov!("ov_canvas_bg_top", ov_canvas_bg_top);
         import_ov!("ov_canvas_bg_bottom", ov_canvas_bg_bottom);
         import_ov!("ov_glow_accent", ov_glow_accent);
@@ -4425,8 +4515,14 @@ impl AppSettings {
             ("ov_button_hover", self.ov_button_hover),
             ("ov_button_active", self.ov_button_active),
             ("ov_floating_window_bg", self.ov_floating_window_bg),
+            ("ov_tool_shelf_bg", self.ov_tool_shelf_bg),
             ("ov_toolbar_bg", self.ov_toolbar_bg),
             ("ov_menu_bg", self.ov_menu_bg),
+            ("ov_icon_button_bg", self.ov_icon_button_bg),
+            ("ov_icon_button_active", self.ov_icon_button_active),
+            ("ov_icon_button_disabled", self.ov_icon_button_disabled),
+            ("ov_text_input_bg", self.ov_text_input_bg),
+            ("ov_stepper_button_bg", self.ov_stepper_button_bg),
             ("ov_canvas_bg_top", self.ov_canvas_bg_top),
             ("ov_canvas_bg_bottom", self.ov_canvas_bg_bottom),
             ("ov_glow_accent", self.ov_glow_accent),
@@ -4789,11 +4885,29 @@ impl AppSettings {
                 "ov_floating_window_bg" => {
                     s.ov_floating_window_bg = Self::str_to_opt_color(val);
                 }
+                "ov_tool_shelf_bg" => {
+                    s.ov_tool_shelf_bg = Self::str_to_opt_color(val);
+                }
                 "ov_toolbar_bg" => {
                     s.ov_toolbar_bg = Self::str_to_opt_color(val);
                 }
                 "ov_menu_bg" => {
                     s.ov_menu_bg = Self::str_to_opt_color(val);
+                }
+                "ov_icon_button_bg" => {
+                    s.ov_icon_button_bg = Self::str_to_opt_color(val);
+                }
+                "ov_icon_button_active" => {
+                    s.ov_icon_button_active = Self::str_to_opt_color(val);
+                }
+                "ov_icon_button_disabled" => {
+                    s.ov_icon_button_disabled = Self::str_to_opt_color(val);
+                }
+                "ov_text_input_bg" => {
+                    s.ov_text_input_bg = Self::str_to_opt_color(val);
+                }
+                "ov_stepper_button_bg" => {
+                    s.ov_stepper_button_bg = Self::str_to_opt_color(val);
                 }
                 "ov_canvas_bg_top" => {
                     s.ov_canvas_bg_top = Self::str_to_opt_color(val);
@@ -5857,14 +5971,38 @@ impl SettingsWindow {
                     );
                     Self::opt_color_row(
                         ui,
+                        "Icon Button BG",
+                        &mut settings.ov_icon_button_bg,
+                        &mut self.dirty,
+                    );
+                    Self::opt_color_row(
+                        ui,
+                        "Icon Button Active",
+                        &mut settings.ov_icon_button_active,
+                        &mut self.dirty,
+                    );
+                    Self::opt_color_row(
+                        ui,
+                        "Icon Button Disabled",
+                        &mut settings.ov_icon_button_disabled,
+                        &mut self.dirty,
+                    );
+                    Self::opt_color_row(
+                        ui,
                         "Slider/Control Track",
                         &mut settings.ov_bg3,
                         &mut self.dirty,
                     );
                     Self::opt_color_row(
                         ui,
-                        "Input Background",
-                        &mut settings.ov_bg2,
+                        "Manual Input Background",
+                        &mut settings.ov_text_input_bg,
+                        &mut self.dirty,
+                    );
+                    Self::opt_color_row(
+                        ui,
+                        "Stepper +/- Background",
+                        &mut settings.ov_stepper_button_bg,
                         &mut self.dirty,
                     );
                     Self::opt_color_row(
@@ -5886,6 +6024,12 @@ impl SettingsWindow {
                         ui,
                         "Floating Window",
                         &mut settings.ov_floating_window_bg,
+                        &mut self.dirty,
+                    );
+                    Self::opt_color_row(
+                        ui,
+                        "Tool Shelf",
+                        &mut settings.ov_tool_shelf_bg,
                         &mut self.dirty,
                     );
                     Self::opt_color_row(
@@ -5967,45 +6111,6 @@ impl SettingsWindow {
                     );
                 });
 
-            // --- Effects & Atmosphere ---
-            let id = ui.make_persistent_id("adv_effects");
-            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
-                .show_header(ui, |ui| {
-                    ui.strong("Effects & Atmosphere");
-                })
-                .body(|ui| {
-                    Self::opt_color_row(
-                        ui,
-                        "Glow Accent",
-                        &mut settings.ov_glow_accent,
-                        &mut self.dirty,
-                    );
-                    ui.horizontal(|ui| {
-                        ui.label("Glow Intensity:");
-                        if Self::settings_slider(
-                            ui,
-                            &mut settings.glow_intensity,
-                            0.0..=2.0,
-                            0.1,
-                            1.0,
-                        ) {
-                            self.dirty = true;
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Shadow Strength:");
-                        if Self::settings_slider(
-                            ui,
-                            &mut settings.shadow_strength,
-                            0.0..=2.0,
-                            0.1,
-                            1.0,
-                        ) {
-                            self.dirty = true;
-                        }
-                    });
-                });
-
             // --- Additional Accents ---
             let id = ui.make_persistent_id("adv_accents");
             egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false)
@@ -6045,8 +6150,14 @@ impl SettingsWindow {
                 settings.ov_button_hover = None;
                 settings.ov_button_active = None;
                 settings.ov_floating_window_bg = None;
+                settings.ov_tool_shelf_bg = None;
                 settings.ov_toolbar_bg = None;
                 settings.ov_menu_bg = None;
+                settings.ov_icon_button_bg = None;
+                settings.ov_icon_button_active = None;
+                settings.ov_icon_button_disabled = None;
+                settings.ov_text_input_bg = None;
+                settings.ov_stepper_button_bg = None;
                 settings.ov_canvas_bg_top = None;
                 settings.ov_canvas_bg_bottom = None;
                 settings.ov_glow_accent = None;
@@ -6277,7 +6388,7 @@ impl SettingsWindow {
 
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
-                if ui.small_button("-").on_hover_text("Decrease").clicked() {
+                if Self::themed_stepper_button(ui, "-", "Decrease").clicked() {
                     *value = (*value - step_f).max(min);
                     changed = true;
                 }
@@ -6295,7 +6406,7 @@ impl SettingsWindow {
                     changed = true;
                 }
 
-                if ui.small_button("+").on_hover_text("Increase").clicked() {
+                if Self::themed_stepper_button(ui, "+", "Increase").clicked() {
                     *value = (*value + step_f).min(max);
                     changed = true;
                 }
@@ -6324,7 +6435,7 @@ impl SettingsWindow {
         ui.horizontal(|ui| {
             let min = *range.start();
             let max = *range.end();
-            if ui.small_button("-").on_hover_text("Decrease").clicked() && *value > min {
+            if Self::themed_stepper_button(ui, "-", "Decrease").clicked() && *value > min {
                 *value -= 1;
                 changed = true;
             }
@@ -6339,7 +6450,7 @@ impl SettingsWindow {
             {
                 changed = true;
             }
-            if ui.small_button("+").on_hover_text("Increase").clicked() && *value < max {
+            if Self::themed_stepper_button(ui, "+", "Increase").clicked() && *value < max {
                 *value += 1;
                 changed = true;
             }
@@ -6366,7 +6477,7 @@ impl SettingsWindow {
         ui.horizontal(|ui| {
             let min = *range.start();
             let max = *range.end();
-            if ui.small_button("-").on_hover_text("Decrease").clicked() && *value > min {
+            if Self::themed_stepper_button(ui, "-", "Decrease").clicked() && *value > min {
                 *value -= 1;
                 changed = true;
             }
@@ -6381,7 +6492,7 @@ impl SettingsWindow {
             {
                 changed = true;
             }
-            if ui.small_button("+").on_hover_text("Increase").clicked() && *value < max {
+            if Self::themed_stepper_button(ui, "+", "Increase").clicked() && *value < max {
                 *value += 1;
                 changed = true;
             }
@@ -6393,6 +6504,16 @@ impl SettingsWindow {
             }
         });
         changed
+    }
+
+    fn themed_stepper_button(ui: &mut egui::Ui, label: &str, tooltip: &str) -> egui::Response {
+        let stepper_bg = crate::theme::Theme::stepper_button_bg_for(ui);
+        ui.scope(|ui| {
+            ui.visuals_mut().widgets.inactive.bg_fill = stepper_bg;
+            ui.visuals_mut().widgets.inactive.weak_bg_fill = stepper_bg;
+            ui.small_button(label).on_hover_text(tooltip)
+        })
+        .inner
     }
 
     /// Commit staged theme changes to settings and rebuild the theme

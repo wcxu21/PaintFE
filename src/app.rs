@@ -177,6 +177,8 @@ pub struct PaintFEApp {
 
     // True while a MovePixels overlay is active (extraction already pushed to history).
     is_move_pixels_active: bool,
+    // True when pointer is currently over the floating Layers window.
+    is_pointer_over_layers_panel: bool,
 
     // Async filter pipeline
     filter_sender: mpsc::Sender<FilterResult>,
@@ -498,6 +500,7 @@ impl PaintFEApp {
             tools_panel_pos: None,
             last_screen_size: (0.0, 0.0),
             is_move_pixels_active: false,
+            is_pointer_over_layers_panel: false,
             filter_sender,
             filter_receiver,
             pending_filter_jobs: 0,
@@ -1698,6 +1701,8 @@ impl eframe::App for PaintFEApp {
                                 opacity: 1.0,
                                 blend_mode: BlendMode::Normal,
                                 pixels: tiled,
+                                mask: None,
+                                mask_enabled: true,
                                 lod_cache: None,
                                 gpu_generation: 0,
                                 content: crate::canvas::LayerContent::Raster,
@@ -1848,6 +1853,7 @@ impl eframe::App for PaintFEApp {
         // Event::Text keystokes before handle_input ever sees them.
         if !modal_open
             && self.tools_panel.text_state.is_editing
+            && !self.tools_panel.text_state.font_popup_open
             && let Some(canvas_id) = self.canvas.canvas_widget_id
         {
             ctx.memory_mut(|m| m.request_focus(canvas_id));
@@ -1895,14 +1901,24 @@ impl eframe::App for PaintFEApp {
             let backspace_pressed = ctx.input(|i| i.key_pressed(egui::Key::Backspace));
 
             if delete_pressed {
-                // Delete selected pixels (make transparent) on active layer
-                let has_sel = self
-                    .active_project()
-                    .is_some_and(|p| p.canvas_state.has_selection());
-                if has_sel {
-                    self.do_snapshot_op("Delete Selection", |s| {
-                        s.delete_selected_pixels();
-                    });
+                if self.is_pointer_over_layers_panel {
+                    let project_idx = self.active_project_index;
+                    if let Some(project) = self.projects.get_mut(project_idx) {
+                        self.layers_panel.delete_active_layer_from_app(
+                            &mut project.canvas_state,
+                            &mut project.history,
+                        );
+                    }
+                } else {
+                    // Delete selected pixels (make transparent) on active layer
+                    let has_sel = self
+                        .active_project()
+                        .is_some_and(|p| p.canvas_state.has_selection());
+                    if has_sel {
+                        self.do_snapshot_op("Delete Selection", |s| {
+                            s.delete_selected_pixels();
+                        });
+                    }
                 }
             }
 
@@ -2553,20 +2569,25 @@ impl eframe::App for PaintFEApp {
             if !script_editor_open
                 && !text_tool_editing
                 && kb.is_pressed(ctx, BindableAction::SelectAll)
-                && let Some(project) = self.active_project_mut()
             {
-                let w = project.canvas_state.width;
-                let h = project.canvas_state.height;
-                let sel_before = project.canvas_state.selection_mask.clone();
-                let mask = image::GrayImage::from_pixel(w, h, image::Luma([255u8]));
-                project.canvas_state.selection_mask = Some(mask.clone());
-                project.canvas_state.invalidate_selection_overlay();
-                project.canvas_state.mark_dirty(None);
-                project.history.push(Box::new(SelectionCommand::new(
-                    "Select All",
-                    sel_before,
-                    Some(mask),
-                )));
+                let secondary = self.colors_panel.get_secondary_color_f32();
+                let project_idx = self.active_project_index;
+                if let Some(project) = self.projects.get_mut(project_idx) {
+                    self.tools_panel
+                        .commit_active_tool_preview(&mut project.canvas_state, secondary);
+                    let w = project.canvas_state.width;
+                    let h = project.canvas_state.height;
+                    let sel_before = project.canvas_state.selection_mask.clone();
+                    let mask = image::GrayImage::from_pixel(w, h, image::Luma([255u8]));
+                    project.canvas_state.selection_mask = Some(mask.clone());
+                    project.canvas_state.invalidate_selection_overlay();
+                    project.canvas_state.mark_dirty(None);
+                    project.history.push(Box::new(SelectionCommand::new(
+                        "Select All",
+                        sel_before,
+                        Some(mask),
+                    )));
+                }
             }
 
             // Ctrl+D — Deselect
@@ -6098,7 +6119,7 @@ impl eframe::App for PaintFEApp {
         // --- Floating Tool Shelf (replaces docked context bar) ---
         // Uses a thin panel filled with the canvas background color so the
         // rounded shelf frame visually floats on top of the canvas.
-        let shelf_panel_bg = self.theme.canvas_bg_top;
+        let shelf_panel_bg = self.theme.tool_shelf_bg;
         let shelf_margin = 6.0;
         #[allow(deprecated)]
         egui::Panel::top("tool_shelf_strip")
@@ -6331,6 +6352,7 @@ impl eframe::App for PaintFEApp {
             || ((screen_w - self.last_screen_size.0).abs() > 0.5
                 || (screen_h - self.last_screen_size.1).abs() > 0.5);
 
+        self.is_pointer_over_layers_panel = false;
         self.show_floating_tools_panel(ctx, screen_size_changed);
         self.show_floating_layers_panel(ctx, screen_size_changed);
         self.show_floating_history_panel(ctx, screen_size_changed);
@@ -6379,20 +6401,41 @@ impl eframe::App for PaintFEApp {
         if let Some(stroke_event) = self.tools_panel.take_stroke_event()
             && let Some(project) = self.active_project_mut()
         {
-            // Capture "after" state for the stroke bounds
-            // Use same padding as "before" capture (10.0) to ensure bounds match
-            let after_patch = history::PixelPatch::capture(
-                &project.canvas_state,
-                stroke_event.layer_index,
-                stroke_event.bounds.expand(10.0),
-            );
+            match stroke_event.target {
+                crate::components::tools::StrokeTarget::LayerPixels => {
+                    // Capture "after" state for the stroke bounds
+                    // Use same padding as "before" capture (10.0) to ensure bounds match
+                    let after_patch = history::PixelPatch::capture(
+                        &project.canvas_state,
+                        stroke_event.layer_index,
+                        stroke_event.bounds.expand(10.0),
+                    );
 
-            // Create the brush command with before/after patches
-            if let Some(before_patch) = stroke_event.before_snapshot {
-                let command =
-                    history::BrushCommand::new(stroke_event.description, before_patch, after_patch);
-                project.history.push(Box::new(command));
-                project.mark_dirty();
+                    // Create the brush command with before/after patches
+                    if let Some(before_patch) = stroke_event.before_snapshot {
+                        let command = history::BrushCommand::new(
+                            stroke_event.description,
+                            before_patch,
+                            after_patch,
+                        );
+                        project.history.push(Box::new(command));
+                        project.mark_dirty();
+                    }
+                }
+                crate::components::tools::StrokeTarget::LayerMask => {
+                    if let Some(layer) = project.canvas_state.layers.get(stroke_event.layer_index) {
+                        let command = history::LayerMaskCommand::new(
+                            stroke_event.description,
+                            stroke_event.layer_index,
+                            stroke_event.before_mask,
+                            layer.mask.clone(),
+                            stroke_event.before_mask_enabled,
+                            layer.mask_enabled,
+                        );
+                        project.history.push(Box::new(command));
+                        project.mark_dirty();
+                    }
+                }
             }
         }
 
@@ -7660,15 +7703,21 @@ impl PaintFEApp {
                         && idx < project.canvas_state.layers.len()
                         && !project.canvas_state.layers[idx].is_text_layer()
                     {
+                        let target_bounds = if dlg.align_to_selection {
+                            project.canvas_state.selection_mask_bounds()
+                        } else {
+                            None
+                        };
                         crate::ops::transform::align_layer_to_anchor_from_flat(
                             &mut project.canvas_state,
                             idx,
                             (dlg.anchor_x, dlg.anchor_y),
                             flat,
+                            target_bounds,
                         );
                     }
                 }
-                DialogResult::Ok((_ax, _ay)) => {
+                DialogResult::Ok((_ax, _ay, _selection_target)) => {
                     self.active_dialog = ActiveDialog::None;
                     if let Some(project) = self.active_project_mut() {
                         let idx = dlg.layer_idx;
@@ -11473,6 +11522,7 @@ impl PaintFEApp {
     fn show_floating_layers_panel(&mut self, ctx: &egui::Context, screen_size_changed: bool) {
         let mut show = self.window_visibility.layers;
         let mut close_clicked = false;
+        self.is_pointer_over_layers_panel = false;
 
         let screen_rect = ctx.content_rect();
         let screen_w = screen_rect.max.x;
@@ -11595,8 +11645,61 @@ impl PaintFEApp {
                         }
                     }
                     crate::components::layers::LayerAppAction::MergeDownAsMask(layer_idx) => {
-                        self.do_snapshot_op("Merge Down as Mask", |s| {
+                        self.do_snapshot_op("Merge Down as Mono-Mask", |s| {
                             crate::ops::canvas_ops::merge_down_as_mask(s, layer_idx);
+                        });
+                        self.layers_panel.pending_gpu_clear = true;
+                    }
+                    crate::components::layers::LayerAppAction::AddLayerMaskRevealAll(layer_idx) => {
+                        self.do_layer_snapshot_op("Add Layer Mask", |s| {
+                            crate::ops::canvas_ops::add_layer_mask_reveal_all(s, layer_idx);
+                        });
+                        self.layers_panel.pending_gpu_clear = true;
+                    }
+                    crate::components::layers::LayerAppAction::AddLayerMaskFromSelection(
+                        layer_idx,
+                    ) => {
+                        self.do_layer_snapshot_op("Mask From Selection", |s| {
+                            crate::ops::canvas_ops::add_layer_mask_from_selection(s, layer_idx);
+                        });
+                        self.layers_panel.pending_gpu_clear = true;
+                    }
+                    crate::components::layers::LayerAppAction::ToggleLayerMaskEdit(layer_idx) => {
+                        if let Some(project) = self.projects.get_mut(self.active_project_index)
+                            && layer_idx < project.canvas_state.layers.len()
+                        {
+                            project.canvas_state.active_layer_index = layer_idx;
+                            let has_mask = project.canvas_state.layers[layer_idx].has_live_mask();
+                            if has_mask {
+                                let currently_editing = project.canvas_state.edit_layer_mask
+                                    && project.canvas_state.active_layer_index == layer_idx;
+                                project.canvas_state.edit_layer_mask = !currently_editing;
+                            } else {
+                                project.canvas_state.edit_layer_mask = false;
+                            }
+                        }
+                    }
+                    crate::components::layers::LayerAppAction::ToggleLayerMask(layer_idx) => {
+                        self.do_layer_snapshot_op("Toggle Layer Mask", |s| {
+                            crate::ops::canvas_ops::toggle_layer_mask(s, layer_idx);
+                        });
+                        self.layers_panel.pending_gpu_clear = true;
+                    }
+                    crate::components::layers::LayerAppAction::InvertLayerMask(layer_idx) => {
+                        self.do_layer_snapshot_op("Invert Layer Mask", |s| {
+                            crate::ops::canvas_ops::invert_layer_mask(s, layer_idx);
+                        });
+                        self.layers_panel.pending_gpu_clear = true;
+                    }
+                    crate::components::layers::LayerAppAction::ApplyLayerMask(layer_idx) => {
+                        self.do_layer_snapshot_op("Apply Layer Mask", |s| {
+                            crate::ops::canvas_ops::apply_layer_mask(s, layer_idx);
+                        });
+                        self.layers_panel.pending_gpu_clear = true;
+                    }
+                    crate::components::layers::LayerAppAction::DeleteLayerMask(layer_idx) => {
+                        self.do_layer_snapshot_op("Delete Layer Mask", |s| {
+                            crate::ops::canvas_ops::delete_layer_mask(s, layer_idx);
                         });
                         self.layers_panel.pending_gpu_clear = true;
                     }
@@ -11624,6 +11727,7 @@ impl PaintFEApp {
             self.layers_panel_right_offset = Some((screen_w - win_rect.min.x, win_rect.min.y));
             let hovered =
                 ctx.input(|i| i.pointer.hover_pos().is_some_and(|p| win_rect.contains(p)));
+            self.is_pointer_over_layers_panel = hovered;
             ctx.animate_bool(hover_id, hovered);
         }
 

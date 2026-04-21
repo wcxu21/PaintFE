@@ -337,6 +337,13 @@ impl Default for ToolState {
 }
 
 /// Tracks stroke state for undo/redo integration
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum StrokeTarget {
+    #[default]
+    LayerPixels,
+    LayerMask,
+}
+
 #[derive(Default)]
 pub struct StrokeTracker {
     /// Whether a stroke is currently in progress
@@ -349,8 +356,13 @@ pub struct StrokeTracker {
     pub layer_snapshot: Option<TiledImage>,
     /// For preview-based tools (Brush, Line): We capture before right before commit
     pub uses_preview_layer: bool,
+    /// Whether this stroke targets layer pixels or the active layer mask.
+    pub target: StrokeTarget,
     /// Description of the stroke (e.g., "Brush Stroke", "Eraser Stroke")
     pub description: String,
+    /// Pre-stroke mask snapshot for mask-targeted strokes.
+    pub mask_before: Option<TiledImage>,
+    pub mask_before_enabled: bool,
 }
 
 impl StrokeTracker {
@@ -361,7 +373,28 @@ impl StrokeTracker {
         self.bounds = None;
         self.layer_snapshot = None;
         self.uses_preview_layer = true;
+        self.target = StrokeTarget::LayerPixels;
         self.description = description.to_string();
+        self.mask_before = None;
+        self.mask_before_enabled = true;
+    }
+
+    pub fn start_preview_mask_tool(
+        &mut self,
+        layer_index: usize,
+        description: &str,
+        before_mask: Option<TiledImage>,
+        before_enabled: bool,
+    ) {
+        self.is_active = true;
+        self.layer_index = layer_index;
+        self.bounds = None;
+        self.layer_snapshot = None;
+        self.uses_preview_layer = true;
+        self.target = StrokeTarget::LayerMask;
+        self.description = description.to_string();
+        self.mask_before = before_mask;
+        self.mask_before_enabled = before_enabled;
     }
 
     /// Start tracking a new stroke for a direct-edit tool (Eraser).
@@ -376,7 +409,10 @@ impl StrokeTracker {
         self.bounds = None;
         self.layer_snapshot = Some(layer_pixels.clone());
         self.uses_preview_layer = false;
+        self.target = StrokeTarget::LayerPixels;
         self.description = description.to_string();
+        self.mask_before = None;
+        self.mask_before_enabled = true;
     }
 
     pub fn expand_bounds(&mut self, rect: Rect) {
@@ -423,6 +459,9 @@ impl StrokeTracker {
                 bounds,
                 before_snapshot,
                 description: self.description.clone(),
+                target: self.target,
+                before_mask: self.mask_before.clone(),
+                before_mask_enabled: self.mask_before_enabled,
             }
         });
 
@@ -432,7 +471,10 @@ impl StrokeTracker {
         self.bounds = None;
         self.layer_snapshot = None;
         self.uses_preview_layer = false;
+        self.target = StrokeTarget::LayerPixels;
         self.description.clear();
+        self.mask_before = None;
+        self.mask_before_enabled = true;
 
         event
     }
@@ -443,7 +485,10 @@ impl StrokeTracker {
         self.bounds = None;
         self.layer_snapshot = None;
         self.uses_preview_layer = false;
+        self.target = StrokeTarget::LayerPixels;
         self.description.clear();
+        self.mask_before = None;
+        self.mask_before_enabled = true;
     }
 }
 
@@ -453,6 +498,9 @@ pub struct StrokeEvent {
     pub bounds: Rect,
     pub before_snapshot: Option<PixelPatch>,
     pub description: String,
+    pub target: StrokeTarget,
+    pub before_mask: Option<TiledImage>,
+    pub before_mask_enabled: bool,
 }
 
 #[derive(Default)]
@@ -539,6 +587,7 @@ impl FloodConnectivity {
 pub(crate) struct ActiveFillRegion {
     start_x: u32,
     start_y: u32,
+    layer_idx: usize,
     target_color: Rgba<u8>,
     region_index: Option<ThresholdRegionIndex>,
     fill_mask: Vec<u8>,
@@ -890,6 +939,8 @@ pub struct GradientToolState {
     /// Deferred commit — runs one frame after requested (lets the loading bar render first).
     pub commit_pending: bool,
     pub commit_pending_frame: u8,
+    /// Layer index where the current gradient preview session started.
+    pub source_layer_index: Option<usize>,
 }
 
 impl Default for GradientToolState {
@@ -916,6 +967,7 @@ impl Default for GradientToolState {
             gpu_readback_buf: Vec::new(),
             commit_pending: false,
             commit_pending_frame: 0,
+            source_layer_index: None,
         }
     }
 }
@@ -1155,6 +1207,26 @@ struct SavedRasterStyle {
     last_color: [u8; 4],
 }
 
+#[derive(Default)]
+pub struct FontPreviewTextureCache(pub std::collections::HashMap<String, egui::TextureHandle>);
+
+impl std::fmt::Debug for FontPreviewTextureCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FontPreviewTextureCache")
+            .field("len", &self.0.len())
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FontPreviewInk(pub [u8; 4]);
+
+impl Default for FontPreviewInk {
+    fn default() -> Self {
+        Self([0, 0, 0, 255])
+    }
+}
+
 impl Default for SavedRasterStyle {
     fn default() -> Self {
         Self {
@@ -1201,6 +1273,8 @@ pub struct TextToolState {
     pub line_spacing: f32,
     pub available_fonts: Vec<String>,
     pub font_search: String,
+    /// True while the font-family popup is open (used to avoid stealing input focus).
+    pub font_popup_open: bool,
     pub loaded_font: Option<ab_glyph::FontArc>,
     pub loaded_font_key: String,
     pub commit_pending: bool,
@@ -1240,6 +1314,10 @@ pub struct TextToolState {
     pub glyph_cache: crate::ops::text::GlyphPixelCache,
     /// Async font preview cache: maps font family name -> loaded FontArc (or None if load failed)
     pub font_preview_cache: std::collections::HashMap<String, Option<ab_glyph::FontArc>>,
+    /// Cached egui textures for rasterized font previews shown in the dropdown.
+    pub font_preview_textures: FontPreviewTextureCache,
+    /// Last theme-aware ink color used to build preview textures.
+    pub font_preview_ink: FontPreviewInk,
     /// Channel receiver for async font preview loading results
     pub font_preview_rx:
         Option<std::sync::mpsc::Receiver<Vec<(String, Option<ab_glyph::FontArc>)>>>,
@@ -1337,6 +1415,7 @@ impl Default for TextToolState {
             line_spacing: 1.0,
             available_fonts: Vec::new(),
             font_search: String::new(),
+            font_popup_open: false,
             loaded_font: None,
             loaded_font_key: String::new(),
             commit_pending: false,
@@ -1361,6 +1440,8 @@ impl Default for TextToolState {
             cached_raster_key: String::new(),
             glyph_cache: std::collections::HashMap::new(),
             font_preview_cache: std::collections::HashMap::new(),
+            font_preview_textures: FontPreviewTextureCache::default(),
+            font_preview_ink: FontPreviewInk::default(),
             font_preview_rx: None,
             font_preview_pending: std::collections::HashSet::new(),
             editing_text_layer: false,
@@ -1443,6 +1524,8 @@ pub struct LiquifyToolState {
     pub mode: LiquifyMode,
     pub dirty_rect: Option<[i32; 4]>,
     pub source_snapshot: Option<image::RgbaImage>,
+    /// Layer index captured with `source_snapshot`.
+    pub source_layer_index: Option<usize>,
     pub warp_buffer: Vec<u8>,
     pub commit_pending: bool,
     pub commit_pending_frame: u8,
@@ -1459,6 +1542,7 @@ impl Default for LiquifyToolState {
             mode: LiquifyMode::Push,
             dirty_rect: None,
             source_snapshot: None,
+            source_layer_index: None,
             warp_buffer: Vec::new(),
             commit_pending: false,
             commit_pending_frame: 0,
@@ -1595,6 +1679,8 @@ pub struct ShapesToolState {
     pub commit_pending_frame: u8,
     /// Reusable RGBA buffer for rasterized shape — avoids per-frame allocation.
     pub cached_shape_buf: Vec<u8>,
+    /// Layer index where the current shape preview session started.
+    pub source_layer_index: Option<usize>,
 }
 
 impl Default for ShapesToolState {
@@ -1611,6 +1697,7 @@ impl Default for ShapesToolState {
             commit_pending: false,
             commit_pending_frame: 0,
             cached_shape_buf: Vec::new(),
+            source_layer_index: None,
         }
     }
 }
@@ -1903,8 +1990,30 @@ impl ToolsPanel {
         secondary_color_f32: [f32; 4],
     ) -> Option<StrokeEvent> {
         let is_eraser = self.active_tool == Tool::Eraser;
+        let editing_mask = canvas_state.edit_layer_mask
+            && canvas_state
+                .layers
+                .get(canvas_state.active_layer_index)
+                .is_some_and(|l| l.has_live_mask());
 
-        if is_eraser {
+        if editing_mask {
+            let layer_idx = canvas_state.active_layer_index;
+            let (before_mask, before_enabled) = canvas_state
+                .layers
+                .get(layer_idx)
+                .map(|l| (l.mask.clone(), l.mask_enabled))
+                .unwrap_or((None, true));
+            self.stroke_tracker.start_preview_mask_tool(
+                layer_idx,
+                if is_eraser {
+                    "Layer Mask Erase"
+                } else {
+                    "Layer Mask Paint"
+                },
+                before_mask,
+                before_enabled,
+            );
+        } else if is_eraser {
             if let Some(layer) = canvas_state.layers.get(canvas_state.active_layer_index) {
                 self.stroke_tracker.start_direct_tool(
                     canvas_state.active_layer_index,
@@ -1922,7 +2031,7 @@ impl ToolsPanel {
                 .start_preview_tool(canvas_state.active_layer_index, description);
         }
 
-        if !is_eraser {
+        if !is_eraser || editing_mask {
             if canvas_state.preview_layer.is_none()
                 || canvas_state.preview_layer.as_ref().unwrap().width() != canvas_state.width
                 || canvas_state.preview_layer.as_ref().unwrap().height() != canvas_state.height
@@ -1971,7 +2080,13 @@ impl ToolsPanel {
 
         self.stroke_tracker.expand_bounds(modified_rect);
 
-        if !is_eraser {
+        if editing_mask {
+            let stroke_event = self.stroke_tracker.finish(canvas_state);
+            self.commit_preview_to_layer_mask(canvas_state, is_eraser);
+            canvas_state.clear_preview_state();
+            canvas_state.mark_dirty(Some(modified_rect.expand(12.0)));
+            stroke_event
+        } else if !is_eraser {
             let stroke_event = self.stroke_tracker.finish(canvas_state);
             self.commit_bezier_to_layer(canvas_state, primary_color_f32);
             canvas_state.clear_preview_state();
@@ -2206,6 +2321,88 @@ impl ToolsPanel {
         }
     }
 
+    /// Commit the current tool's in-progress preview immediately.
+    /// Returns true if a commit occurred.
+    pub fn commit_active_tool_preview(
+        &mut self,
+        canvas_state: &mut CanvasState,
+        secondary_color_f32: [f32; 4],
+    ) -> bool {
+        match self.active_tool {
+            Tool::Line if self.line_state.line_tool.stage == LineStage::Editing => {
+                let line_editing_mask = canvas_state.edit_layer_mask
+                    && canvas_state
+                        .layers
+                        .get(canvas_state.active_layer_index)
+                        .is_some_and(|l| l.has_live_mask());
+                if let Some(final_bounds) = self.line_state.line_tool.last_bounds {
+                    self.stroke_tracker.expand_bounds(final_bounds);
+                }
+                let stroke_event = self.stroke_tracker.finish(canvas_state);
+                let mirror_bounds = canvas_state.mirror_preview_layer();
+                if line_editing_mask {
+                    self.commit_preview_to_layer_mask(canvas_state, false);
+                } else {
+                    self.commit_bezier_to_layer(canvas_state, secondary_color_f32);
+                }
+                let base_dirty = self.line_state.line_tool.last_bounds;
+                let combined = match (base_dirty, mirror_bounds) {
+                    (Some(b), Some(m)) => Some(b.union(m)),
+                    (Some(b), None) => Some(b),
+                    (None, Some(m)) => Some(m),
+                    (None, None) => None,
+                };
+                if let Some(dirty) = combined {
+                    canvas_state.mark_dirty(Some(dirty));
+                } else {
+                    self.mark_full_dirty(canvas_state);
+                }
+                canvas_state.clear_preview_state();
+                self.line_state.line_tool.stage = LineStage::Idle;
+                self.line_state.line_tool.last_bounds = None;
+                if stroke_event.is_some() {
+                    self.pending_stroke_event = stroke_event;
+                }
+                true
+            }
+            Tool::Fill if self.fill_state.active_fill.is_some() => {
+                self.commit_fill_preview(canvas_state);
+                true
+            }
+            Tool::Gradient if self.gradient_state.drag_start.is_some() => {
+                self.commit_gradient(canvas_state);
+                true
+            }
+            Tool::Text if self.text_state.is_editing => {
+                if !self.text_state.text.is_empty() {
+                    self.stroke_tracker
+                        .start_preview_tool(canvas_state.active_layer_index, "Text");
+                    self.commit_text(canvas_state);
+                } else {
+                    self.text_state.is_editing = false;
+                    self.text_state.editing_text_layer = false;
+                    self.text_state.origin = None;
+                    canvas_state.text_editing_layer = None;
+                    canvas_state.clear_preview_state();
+                }
+                true
+            }
+            Tool::Liquify if self.liquify_state.is_active => {
+                self.commit_liquify(canvas_state);
+                true
+            }
+            Tool::MeshWarp if self.mesh_warp_state.is_active => {
+                self.commit_mesh_warp(canvas_state);
+                true
+            }
+            Tool::Shapes if self.shapes_state.placed.is_some() => {
+                self.commit_shape(canvas_state);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Compact vertical tool strip for floating window
     /// Returns an action indicating what the user clicked
     pub fn show_compact(
@@ -2297,14 +2494,9 @@ impl ToolsPanel {
 
         let mut current_y = grid_rect.min.y;
         let dark_mode = ui.visuals().dark_mode;
-
-        // In dark mode, use a noticeably darker fill than the panel to create a recessed look
-        // In light mode, use near-white so buttons blend into the panel
-        let tool_btn_fill = if dark_mode {
-            egui::Color32::from_gray(18)
-        } else {
-            egui::Color32::from_gray(238)
-        };
+        let tool_btn_fill = crate::theme::Theme::icon_button_bg_for(ui);
+        let tool_btn_active = crate::theme::Theme::icon_button_active_for(ui);
+        let tool_btn_disabled = crate::theme::Theme::icon_button_disabled_for(ui);
 
         for (gi, group) in groups.iter().enumerate() {
             let group_rows = group.len().div_ceil(cols);
@@ -2329,9 +2521,9 @@ impl ToolsPanel {
 
                 // Background fill — selected > hovered > recessed default
                 let fill = if tool_disabled {
-                    tool_btn_fill
+                    tool_btn_disabled
                 } else if selected {
-                    ui.visuals().selection.bg_fill
+                    tool_btn_active
                 } else if hovered {
                     ui.visuals().widgets.hovered.bg_fill
                 } else {
@@ -2449,9 +2641,9 @@ impl ToolsPanel {
             let hovered = resp.hovered() && !shapes_disabled;
 
             let fill = if shapes_disabled {
-                tool_btn_fill
+                tool_btn_disabled
             } else if is_shapes {
-                ui.visuals().selection.bg_fill
+                tool_btn_active
             } else if hovered {
                 ui.visuals().widgets.hovered.bg_fill
             } else {
@@ -4495,22 +4687,29 @@ impl ToolsPanel {
         // different layer, reordered, deleted, etc.), commit any tool that
         // has uncommitted state — mirrors the auto-commit-on-tool-switch
         // logic below.
+        let prev_layer_index = self.last_tracked_layer_index;
         let layer_changed = canvas_state.active_layer_index != self.last_tracked_layer_index
             || canvas_state.layers.len() != self.last_tracked_layer_count;
         if layer_changed {
-            self.last_tracked_layer_index = canvas_state.active_layer_index;
-            self.last_tracked_layer_count = canvas_state.layers.len();
-
             // Line
             if self.active_tool == Tool::Line
                 && self.line_state.line_tool.stage == LineStage::Editing
             {
+                let line_editing_mask = canvas_state.edit_layer_mask
+                    && canvas_state
+                        .layers
+                        .get(canvas_state.active_layer_index)
+                        .is_some_and(|l| l.has_live_mask());
                 if let Some(final_bounds) = self.line_state.line_tool.last_bounds {
                     self.stroke_tracker.expand_bounds(final_bounds);
                 }
                 let auto_commit_event = self.stroke_tracker.finish(canvas_state);
                 let mirror_bounds = canvas_state.mirror_preview_layer();
-                self.commit_bezier_to_layer(canvas_state, secondary_color_f32);
+                if line_editing_mask {
+                    self.commit_preview_to_layer_mask(canvas_state, false);
+                } else {
+                    self.commit_bezier_to_layer(canvas_state, secondary_color_f32);
+                }
                 let base_dirty = self.line_state.line_tool.last_bounds;
                 let combined = match (base_dirty, mirror_bounds) {
                     (Some(b), Some(m)) => Some(b.union(m)),
@@ -4567,8 +4766,14 @@ impl ToolsPanel {
             }
             // Shape
             if self.active_tool == Tool::Shapes && self.shapes_state.placed.is_some() {
+                if self.shapes_state.source_layer_index.is_none() {
+                    self.shapes_state.source_layer_index = Some(prev_layer_index);
+                }
                 self.commit_shape(canvas_state);
             }
+
+            self.last_tracked_layer_index = canvas_state.active_layer_index;
+            self.last_tracked_layer_count = canvas_state.layers.len();
 
             // Auto-switch tool for text layers (also called from app.rs
             // immediately after layers panel for zero-delay switching).
@@ -4638,6 +4843,11 @@ impl ToolsPanel {
 
         // Auto-commit Bézier line if tool changed away from Line tool
         if self.active_tool != Tool::Line && self.line_state.line_tool.stage == LineStage::Editing {
+            let line_editing_mask = canvas_state.edit_layer_mask
+                && canvas_state
+                    .layers
+                    .get(canvas_state.active_layer_index)
+                    .is_some_and(|l| l.has_live_mask());
             // Capture "before" for undo (layer still unchanged, line is in preview)
             if let Some(final_bounds) = self.line_state.line_tool.last_bounds {
                 self.stroke_tracker.expand_bounds(final_bounds);
@@ -4645,7 +4855,11 @@ impl ToolsPanel {
             let auto_commit_event = self.stroke_tracker.finish(canvas_state);
 
             let mirror_bounds = canvas_state.mirror_preview_layer();
-            self.commit_bezier_to_layer(canvas_state, secondary_color_f32);
+            if line_editing_mask {
+                self.commit_preview_to_layer_mask(canvas_state, false);
+            } else {
+                self.commit_bezier_to_layer(canvas_state, secondary_color_f32);
+            }
 
             // Mark dirty: combine original line bounds with mirrored bounds
             let base_dirty = self.line_state.line_tool.last_bounds;
@@ -4811,6 +5025,11 @@ impl ToolsPanel {
                 }
 
                 let is_painting = is_primary_down || is_secondary_down;
+                let editing_mask = canvas_state.edit_layer_mask
+                    && canvas_state
+                        .layers
+                        .get(canvas_state.active_layer_index)
+                        .is_some_and(|l| l.has_live_mask());
                 let resize_modifier_held =
                     self.active_tool == Tool::Brush && self.brush_resize_drag_modifier_held(ui);
                 let resize_drag_threshold = 4.0;
@@ -4927,7 +5146,24 @@ impl ToolsPanel {
 
                             // Start stroke tracking for Undo/Redo
                             let is_eraser = self.active_tool == Tool::Eraser;
-                            if is_eraser {
+                            if editing_mask {
+                                let layer_idx = canvas_state.active_layer_index;
+                                let (before_mask, before_enabled) = canvas_state
+                                    .layers
+                                    .get(layer_idx)
+                                    .map(|l| (l.mask.clone(), l.mask_enabled))
+                                    .unwrap_or((None, true));
+                                self.stroke_tracker.start_preview_mask_tool(
+                                    layer_idx,
+                                    if is_eraser {
+                                        "Layer Mask Erase"
+                                    } else {
+                                        "Layer Mask Paint"
+                                    },
+                                    before_mask,
+                                    before_enabled,
+                                );
+                            } else if is_eraser {
                                 // Eraser uses preview layer as an erase mask — capture before at commit time
                                 self.stroke_tracker.start_preview_tool(
                                     canvas_state.active_layer_index,
@@ -4965,9 +5201,21 @@ impl ToolsPanel {
                                 // Mark preview as eraser mask mode
                                 canvas_state.preview_is_eraser = true;
                                 canvas_state.preview_force_composite = true;
+                                canvas_state.preview_targets_mask = false;
+                                canvas_state.preview_mask_reveal = false;
                             } else {
                                 // Set preview blend mode to match tool's blending mode
                                 canvas_state.preview_blend_mode = self.properties.blending_mode;
+                                canvas_state.preview_targets_mask = false;
+                                canvas_state.preview_mask_reveal = false;
+                            }
+
+                            if editing_mask {
+                                // In mask edit mode, preview alpha represents conceal/reveal delta.
+                                canvas_state.preview_force_composite = true;
+                                canvas_state.preview_targets_mask = true;
+                                canvas_state.preview_mask_reveal = is_eraser;
+                                canvas_state.preview_is_eraser = false;
                             }
                         }
 
@@ -5108,8 +5356,14 @@ impl ToolsPanel {
                         // SINGLE GPU UPLOAD: Mark dirty ONCE for all sub-frame events
                         // ============================================================
                         if frame_dirty_rect.is_positive() {
-                            // All tools (Brush, Pencil, Eraser) use the preview path now
-                            canvas_state.mark_preview_changed_rect(frame_dirty_rect);
+                            if editing_mask {
+                                // Keep edits in preview during drag; commit once on release.
+                                // This avoids per-frame mask writes + full masked-layer uploads.
+                                canvas_state.mark_preview_changed_rect(frame_dirty_rect);
+                            } else {
+                                // All tools (Brush, Pencil, Eraser) use the preview path now
+                                canvas_state.mark_preview_changed_rect(frame_dirty_rect);
+                            }
                         }
 
                         self.tool_state.last_pos = Some(current_pos);
@@ -5125,7 +5379,11 @@ impl ToolsPanel {
                         // Finish stroke tracking BEFORE commit - this captures "before" from unchanged layer
                         stroke_event = self.stroke_tracker.finish(canvas_state);
 
-                        if is_eraser {
+                        if editing_mask {
+                            // Commit mask once at stroke end for smooth interactive dragging.
+                            self.commit_preview_to_layer_mask(canvas_state, is_eraser);
+                            canvas_state.clear_preview_state();
+                        } else if is_eraser {
                             // Commit the eraser mask to the active layer
                             self.commit_eraser_to_layer(canvas_state);
                         } else {
@@ -5146,6 +5404,12 @@ impl ToolsPanel {
                 }
             }
             Tool::Line => {
+                let line_editing_mask = canvas_state.edit_layer_mask
+                    && canvas_state
+                        .layers
+                        .get(canvas_state.active_layer_index)
+                        .is_some_and(|l| l.has_live_mask());
+
                 // Guard: auto-rasterize text layers before destructive line tool
                 if is_primary_pressed
                     && let Some(layer) = canvas_state.layers.get(canvas_state.active_layer_index)
@@ -5274,8 +5538,23 @@ impl ToolsPanel {
                                 self.line_state.line_tool.options.arrow_side;
 
                             // Start stroke tracking (line uses preview layer like Brush)
-                            self.stroke_tracker
-                                .start_preview_tool(canvas_state.active_layer_index, "Line");
+                            if line_editing_mask {
+                                let layer_idx = canvas_state.active_layer_index;
+                                let (before_mask, before_enabled) = canvas_state
+                                    .layers
+                                    .get(layer_idx)
+                                    .map(|l| (l.mask.clone(), l.mask_enabled))
+                                    .unwrap_or((None, true));
+                                self.stroke_tracker.start_preview_mask_tool(
+                                    layer_idx,
+                                    "Line Mask",
+                                    before_mask,
+                                    before_enabled,
+                                );
+                            } else {
+                                self.stroke_tracker
+                                    .start_preview_tool(canvas_state.active_layer_index, "Line");
+                            }
                             if let Some(bounds) = self.line_state.line_tool.last_bounds {
                                 self.stroke_tracker.expand_bounds(bounds);
                             }
@@ -5347,7 +5626,11 @@ impl ToolsPanel {
 
                             // Commit the line to the actual layer
                             let mirror_bounds = canvas_state.mirror_preview_layer();
-                            self.commit_bezier_to_layer(canvas_state, secondary_color_f32);
+                            if line_editing_mask {
+                                self.commit_preview_to_layer_mask(canvas_state, false);
+                            } else {
+                                self.commit_bezier_to_layer(canvas_state, secondary_color_f32);
+                            }
 
                             // Mark dirty: combine original line bounds with mirrored bounds
                             let base_dirty = self.line_state.line_tool.last_bounds;
@@ -5429,10 +5712,14 @@ impl ToolsPanel {
 
                                         // Commit the current line
                                         let mirror_bounds = canvas_state.mirror_preview_layer();
-                                        self.commit_bezier_to_layer(
-                                            canvas_state,
-                                            secondary_color_f32,
-                                        );
+                                        if line_editing_mask {
+                                            self.commit_preview_to_layer_mask(canvas_state, false);
+                                        } else {
+                                            self.commit_bezier_to_layer(
+                                                canvas_state,
+                                                secondary_color_f32,
+                                            );
+                                        }
 
                                         // Mark dirty: combine original line bounds with mirrored bounds
                                         let base_dirty = self.line_state.line_tool.last_bounds;
@@ -5833,6 +6120,7 @@ impl ToolsPanel {
                                 self.fill_state.active_fill = Some(ActiveFillRegion {
                                     start_x: result.start_x,
                                     start_y: result.start_y,
+                                    layer_idx: canvas_state.active_layer_index,
                                     target_color: result.target_color,
                                     region_index: result.region_index,
                                     fill_mask: result.fill_mask,
@@ -5848,6 +6136,7 @@ impl ToolsPanel {
                                 self.fill_state.active_fill = Some(ActiveFillRegion {
                                     start_x: result.start_x,
                                     start_y: result.start_y,
+                                    layer_idx: canvas_state.active_layer_index,
                                     target_color: result.target_color,
                                     region_index: result.region_index,
                                     fill_mask: result.fill_mask,
@@ -7194,7 +7483,9 @@ impl ToolsPanel {
                         None => true, // no widget focused — canvas owns input
                     }
                 });
-                if self.text_state.is_editing && canvas_has_focus {
+                let allow_text_capture = !self.text_state.font_popup_open
+                    && (canvas_has_focus || !ui.ctx().egui_wants_keyboard_input());
+                if self.text_state.is_editing && allow_text_capture {
                     let events: Vec<egui::Event> = ui.input(|i| i.events.clone());
                     let shift_held = ui.input(|i| i.modifiers.shift);
                     let ctrl_held = ui.input(|i| i.modifiers.command);
@@ -7455,6 +7746,7 @@ impl ToolsPanel {
                     self.liquify_state.displacement = None;
                     self.liquify_state.is_active = false;
                     self.liquify_state.source_snapshot = None;
+                    self.liquify_state.source_layer_index = None;
                     self.liquify_state.warp_buffer.clear();
                     self.liquify_state.dirty_rect = None;
                     canvas_state.clear_preview_state();
@@ -7478,6 +7770,8 @@ impl ToolsPanel {
                             {
                                 self.liquify_state.source_snapshot =
                                     Some(layer.pixels.to_rgba_image());
+                                self.liquify_state.source_layer_index =
+                                    Some(canvas_state.active_layer_index);
                             }
                             self.liquify_state.displacement =
                                 Some(crate::ops::transform::DisplacementField::new(
@@ -7775,12 +8069,14 @@ impl ToolsPanel {
                 if escape_pressed {
                     if self.shapes_state.placed.is_some() {
                         self.shapes_state.placed = None;
+                        self.shapes_state.source_layer_index = None;
                         canvas_state.clear_preview_state();
                         canvas_state.mark_dirty(None);
                     } else if self.shapes_state.is_drawing {
                         self.shapes_state.is_drawing = false;
                         self.shapes_state.draw_start = None;
                         self.shapes_state.draw_end = None;
+                        self.shapes_state.source_layer_index = None;
                         canvas_state.clear_preview_state();
                         canvas_state.mark_dirty(None);
                     }
@@ -7826,6 +8122,12 @@ impl ToolsPanel {
 
                             let top_mid_x = (corners_canvas[0].0 + corners_canvas[1].0) * 0.5;
                             let top_mid_y = (corners_canvas[0].1 + corners_canvas[1].1) * 0.5;
+                            let right_mid_x = (corners_canvas[1].0 + corners_canvas[2].0) * 0.5;
+                            let right_mid_y = (corners_canvas[1].1 + corners_canvas[2].1) * 0.5;
+                            let bottom_mid_x = (corners_canvas[2].0 + corners_canvas[3].0) * 0.5;
+                            let bottom_mid_y = (corners_canvas[2].1 + corners_canvas[3].1) * 0.5;
+                            let left_mid_x = (corners_canvas[3].0 + corners_canvas[0].0) * 0.5;
+                            let left_mid_y = (corners_canvas[3].1 + corners_canvas[0].1) * 0.5;
                             let rot_offset = 20.0 / zoom;
                             let dir_x = top_mid_x - placed.cx;
                             let dir_y = top_mid_y - placed.cy;
@@ -7855,6 +8157,24 @@ impl ToolsPanel {
                                     let dy = pos_f.1 - cy;
                                     if (dx * dx + dy * dy).sqrt() < hit_radius {
                                         hit = Some(handle_names[i]);
+                                        break;
+                                    }
+                                }
+                            }
+
+                            // Check edge-midpoint handles
+                            if hit.is_none() {
+                                let edge_handles = [
+                                    (ShapeHandle::Top, top_mid_x, top_mid_y),
+                                    (ShapeHandle::Right, right_mid_x, right_mid_y),
+                                    (ShapeHandle::Bottom, bottom_mid_x, bottom_mid_y),
+                                    (ShapeHandle::Left, left_mid_x, left_mid_y),
+                                ];
+                                for (edge_handle, cx, cy) in edge_handles {
+                                    let dx = pos_f.0 - cx;
+                                    let dy = pos_f.1 - cy;
+                                    if (dx * dx + dy * dy).sqrt() < hit_radius {
+                                        hit = Some(edge_handle);
                                         break;
                                     }
                                 }
@@ -7893,6 +8213,10 @@ impl ToolsPanel {
                                     ShapeHandle::TopRight => (-p.hw, p.hh),
                                     ShapeHandle::BottomRight => (-p.hw, -p.hh),
                                     ShapeHandle::BottomLeft => (p.hw, -p.hh),
+                                    ShapeHandle::Top => (0.0, p.hh),
+                                    ShapeHandle::Right => (-p.hw, 0.0),
+                                    ShapeHandle::Bottom => (0.0, -p.hh),
+                                    ShapeHandle::Left => (p.hw, 0.0),
                                     _ => (0.0, 0.0),
                                 };
                                 p.drag_anchor = [
@@ -7937,7 +8261,7 @@ impl ToolsPanel {
                                         need_preview = true;
                                     }
                                     Some(_handle) => {
-                                        // Corner resize: anchor is opposite corner
+                                        // Resize: corners are two-axis, edge handles are one-axis.
                                         let ax = p.drag_anchor[0];
                                         let ay = p.drag_anchor[1];
                                         let mx = pos_f.0;
@@ -7947,39 +8271,74 @@ impl ToolsPanel {
                                         let sin_r = p.rotation.sin();
                                         let dx = (mx - ax) * 0.5;
                                         let dy = (my - ay) * 0.5;
-                                        let mut lx = (dx * cos_r + dy * sin_r).abs();
-                                        let mut ly = (-dx * sin_r + dy * cos_r).abs();
-                                        // Shift: constrain to 1:1 aspect ratio
-                                        if shift_held {
-                                            let side = lx.max(ly);
-                                            lx = side;
-                                            ly = side;
+                                        let local_dx = dx * cos_r + dy * sin_r;
+                                        let local_dy = -dx * sin_r + dy * cos_r;
+
+                                        if matches!(
+                                            _handle,
+                                            ShapeHandle::Top
+                                                | ShapeHandle::Right
+                                                | ShapeHandle::Bottom
+                                                | ShapeHandle::Left
+                                        ) {
+                                            // Opposite edge midpoint is fixed anchor. For edge handles,
+                                            // only one local axis changes to avoid perpendicular drift.
+                                            match _handle {
+                                                ShapeHandle::Top | ShapeHandle::Bottom => {
+                                                    let new_hh = local_dy.abs().max(2.0);
+                                                    let center_local = match _handle {
+                                                        ShapeHandle::Top => (0.0, -new_hh),
+                                                        ShapeHandle::Bottom => (0.0, new_hh),
+                                                        _ => (0.0, 0.0),
+                                                    };
+                                                    p.cx = ax + center_local.0 * cos_r
+                                                        - center_local.1 * sin_r;
+                                                    p.cy = ay + center_local.0 * sin_r
+                                                        + center_local.1 * cos_r;
+                                                    p.hh = new_hh;
+                                                }
+                                                ShapeHandle::Left | ShapeHandle::Right => {
+                                                    let new_hw = local_dx.abs().max(2.0);
+                                                    let center_local = match _handle {
+                                                        ShapeHandle::Right => (new_hw, 0.0),
+                                                        ShapeHandle::Left => (-new_hw, 0.0),
+                                                        _ => (0.0, 0.0),
+                                                    };
+                                                    p.cx = ax + center_local.0 * cos_r
+                                                        - center_local.1 * sin_r;
+                                                    p.cy = ay + center_local.0 * sin_r
+                                                        + center_local.1 * cos_r;
+                                                    p.hw = new_hw;
+                                                }
+                                                _ => {}
+                                            }
+                                        } else {
+                                            let mut lx = local_dx.abs();
+                                            let mut ly = local_dy.abs();
+                                            // Shift: constrain to 1:1 aspect ratio
+                                            if shift_held {
+                                                let side = lx.max(ly);
+                                                lx = side;
+                                                ly = side;
+                                            }
+                                            // Recompute center from anchor + constrained size
+                                            // The dragged corner in local space is the negation of the anchor's local offset
+                                            let (anchor_lx, anchor_ly) = match _handle {
+                                                ShapeHandle::TopLeft => (lx, ly),
+                                                ShapeHandle::TopRight => (-lx, ly),
+                                                ShapeHandle::BottomRight => (-lx, -ly),
+                                                ShapeHandle::BottomLeft => (lx, -ly),
+                                                _ => (0.0, 0.0),
+                                            };
+                                            let new_cx =
+                                                ax + (-anchor_lx) * cos_r - (-anchor_ly) * sin_r;
+                                            let new_cy =
+                                                ay + (-anchor_lx) * sin_r + (-anchor_ly) * cos_r;
+                                            p.cx = new_cx;
+                                            p.cy = new_cy;
+                                            p.hw = lx.max(2.0);
+                                            p.hh = ly.max(2.0);
                                         }
-                                        // Recompute center from anchor + constrained size
-                                        // The dragged corner in local space is the negation of the anchor's local offset
-                                        let (anchor_lx, anchor_ly) = match _handle {
-                                            ShapeHandle::TopLeft => (lx, ly),
-                                            ShapeHandle::TopRight => (-lx, ly),
-                                            ShapeHandle::BottomRight => (-lx, -ly),
-                                            ShapeHandle::BottomLeft => (lx, -ly),
-                                            _ => (0.0, 0.0),
-                                        };
-                                        // Anchor canvas pos is known; center = anchor + rotated(-anchor_local)
-                                        let neg_lx = -anchor_lx;
-                                        let _neg_ly = -anchor_ly;
-                                        let half_diag_x = (anchor_lx + neg_lx) * 0.5; // = 0
-                                        let _ = half_diag_x;
-                                        // Center = anchor + rotate((-anchor_lx + lx_sign*lx), ...) * 0.5  ... simpler:
-                                        // anchor is at (anchor_lx) in local; center is at (0,0) in local
-                                        // so center_canvas = anchor_canvas + rotate(-anchor_lx, -anchor_ly)
-                                        let new_cx =
-                                            ax + (-anchor_lx) * cos_r - (-anchor_ly) * sin_r;
-                                        let new_cy =
-                                            ay + (-anchor_lx) * sin_r + (-anchor_ly) * cos_r;
-                                        p.cx = new_cx;
-                                        p.cy = new_cy;
-                                        p.hw = lx.max(2.0);
-                                        p.hh = ly.max(2.0);
                                         need_preview = true;
                                     }
                                     None => {}
@@ -8004,6 +8363,7 @@ impl ToolsPanel {
                             self.shapes_state.is_drawing = true;
                             self.shapes_state.draw_start = Some([pos_f.0, pos_f.1]);
                             self.shapes_state.draw_end = Some([pos_f.0, pos_f.1]);
+                            self.shapes_state.source_layer_index = Some(canvas_state.active_layer_index);
                             self.stroke_tracker
                                 .start_preview_tool(canvas_state.active_layer_index, "Shape");
                         }
@@ -8077,6 +8437,7 @@ impl ToolsPanel {
                                 } else {
                                     self.shapes_state.draw_start = None;
                                     self.shapes_state.draw_end = None;
+                                    self.shapes_state.source_layer_index = None;
                                     canvas_state.clear_preview_state();
                                 }
                             }
@@ -8207,6 +8568,8 @@ impl ToolsPanel {
                         self.gradient_state.drag_end = Some(click_pos);
                         self.gradient_state.dragging = true;
                         self.gradient_state.dragging_handle = None;
+                        self.gradient_state.source_layer_index =
+                            Some(canvas_state.active_layer_index);
 
                         // Start stroke tracking
                         self.stroke_tracker
@@ -9192,6 +9555,76 @@ impl ToolsPanel {
                             let new_a = (current_a * (1.0 - mask_strength)).max(0.0);
                             layer_pixel[3] = (new_a * 255.0) as u8;
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Commit preview alpha into the active layer mask.
+    /// `reveal=true` reduces conceal alpha (mask eraser), `reveal=false` increases conceal.
+    fn commit_preview_to_layer_mask(&self, canvas_state: &mut CanvasState, reveal: bool) {
+        let width = canvas_state.width;
+        let height = canvas_state.height;
+
+        let (preview_ptr, preview_chunk_keys): (*const TiledImage, Vec<(u32, u32)>) =
+            match &canvas_state.preview_layer {
+                Some(preview) => (preview as *const TiledImage, preview.chunk_keys().collect()),
+                None => return,
+            };
+
+        let mask_ptr = canvas_state
+            .selection_mask
+            .as_ref()
+            .map(|m| m as *const GrayImage);
+
+        if let Some(active_layer) = canvas_state.layers.get_mut(canvas_state.active_layer_index) {
+            active_layer.ensure_mask();
+            let Some(mask) = active_layer.mask.as_mut() else {
+                return;
+            };
+            active_layer.mask_enabled = true;
+            let selection = mask_ptr.map(|p| unsafe { &*p });
+            let preview = unsafe { &*preview_ptr };
+
+            for (cx, cy) in preview_chunk_keys {
+                let Some(preview_chunk) = preview.get_chunk(cx, cy) else {
+                    continue;
+                };
+                let base_x = cx * CHUNK_SIZE;
+                let base_y = cy * CHUNK_SIZE;
+                let cw = CHUNK_SIZE.min(width.saturating_sub(base_x));
+                let ch = CHUNK_SIZE.min(height.saturating_sub(base_y));
+
+                for ly in 0..ch {
+                    for lx in 0..cw {
+                        let gx = base_x + lx;
+                        let gy = base_y + ly;
+
+                        if let Some(sel) = selection {
+                            if gx >= sel.width() || gy >= sel.height() {
+                                continue;
+                            }
+                            if sel.get_pixel(gx, gy).0[0] == 0 {
+                                continue;
+                            }
+                        }
+
+                        let strength = preview_chunk.get_pixel(lx, ly)[3];
+                        if strength == 0 {
+                            continue;
+                        }
+
+                        let mut mp = *mask.get_pixel(gx, gy);
+                        let old = mp[3] as u32;
+                        let s = strength as u32;
+                        let new_alpha = if reveal {
+                            ((old * (255 - s)) / 255) as u8
+                        } else {
+                            (old + ((255 - old) * s) / 255) as u8
+                        };
+                        mp[3] = new_alpha;
+                        mask.put_pixel(gx, gy, mp);
                     }
                 }
             }
@@ -10714,6 +11147,20 @@ impl ToolsPanel {
         }
         // Line tool uses the tool's blending mode for preview
         canvas_state.preview_blend_mode = self.properties.blending_mode;
+        if canvas_state.edit_layer_mask
+            && canvas_state
+                .layers
+                .get(canvas_state.active_layer_index)
+                .is_some_and(|l| l.has_live_mask())
+        {
+            canvas_state.preview_force_composite = true;
+            canvas_state.preview_targets_mask = true;
+            canvas_state.preview_mask_reveal = false;
+            canvas_state.preview_is_eraser = false;
+        } else {
+            canvas_state.preview_targets_mask = false;
+            canvas_state.preview_mask_reveal = false;
+        }
 
         // OPTIMIZATION: Only clear the previous frame's bounding box instead of entire image
         if let Some(ref mut preview) = canvas_state.preview_layer {
@@ -12339,6 +12786,7 @@ impl ToolsPanel {
         self.fill_state.active_fill = Some(ActiveFillRegion {
             start_x: start_pos.0,
             start_y: start_pos.1,
+            layer_idx: canvas_state.active_layer_index,
             target_color,
             region_index: None,
             fill_mask: Vec::new(),
@@ -12420,7 +12868,14 @@ impl ToolsPanel {
 
     /// Commit the fill preview to the actual layer
     fn commit_fill_preview(&mut self, canvas_state: &mut CanvasState) {
-        if self.fill_state.active_fill.is_none() {
+        let Some(active_fill) = self.fill_state.active_fill.as_ref() else {
+            return;
+        };
+
+        let target_layer_idx = active_fill.layer_idx;
+        if target_layer_idx >= canvas_state.layers.len() {
+            self.clear_fill_preview_state();
+            canvas_state.clear_preview_state();
             return;
         }
 
@@ -12446,8 +12901,7 @@ impl ToolsPanel {
 
             let chunk_size = crate::canvas::CHUNK_SIZE;
 
-            if let Some(active_layer) = canvas_state.layers.get_mut(canvas_state.active_layer_index)
-            {
+            if let Some(active_layer) = canvas_state.layers.get_mut(target_layer_idx) {
                 for (cx, cy, chunk) in &chunk_data {
                     let base_x = cx * chunk_size;
                     let base_y = cy * chunk_size;
@@ -14334,6 +14788,14 @@ impl ToolsPanel {
             return;
         }
 
+        let Some(target_layer_idx) = self.gradient_state.source_layer_index else {
+            return;
+        };
+        if target_layer_idx >= canvas_state.layers.len() {
+            self.cancel_gradient(canvas_state);
+            return;
+        }
+
         // Capture "before" snapshot BEFORE modifying the layer
         let stroke_event = self.stroke_tracker.finish(canvas_state);
 
@@ -14352,8 +14814,7 @@ impl ToolsPanel {
 
             let chunk_size = CHUNK_SIZE;
 
-            if let Some(active_layer) = canvas_state.layers.get_mut(canvas_state.active_layer_index)
-            {
+            if let Some(active_layer) = canvas_state.layers.get_mut(target_layer_idx) {
                 for (cx, cy, chunk) in &chunk_data {
                     let base_x = cx * chunk_size;
                     let base_y = cy * chunk_size;
@@ -14411,6 +14872,7 @@ impl ToolsPanel {
         self.gradient_state.drag_end = None;
         self.gradient_state.dragging = false;
         self.gradient_state.dragging_handle = None;
+        self.gradient_state.source_layer_index = None;
 
         // Mark dirty and clear preview
         canvas_state.clear_preview_state();
@@ -14428,6 +14890,7 @@ impl ToolsPanel {
         self.gradient_state.drag_end = None;
         self.gradient_state.dragging = false;
         self.gradient_state.dragging_handle = None;
+        self.gradient_state.source_layer_index = None;
         self.stroke_tracker.cancel();
         canvas_state.clear_preview_state();
         canvas_state.mark_dirty(None);
@@ -14887,20 +15350,75 @@ impl ToolsPanel {
                 crate::ops::text::enumerate_font_weights(&self.text_state.font_family);
         }
 
-        // Poll async font preview results
-        if let Some(ref rx) = self.text_state.font_preview_rx {
-            while let Ok(batch) = rx.try_recv() {
-                for (name, font) in batch {
-                    self.text_state.font_preview_pending.remove(&name);
-                    self.text_state.font_preview_cache.insert(name, font);
+        // Poll async font preview results. The loader sends multiple batches
+        // until all family previews are cached.
+        if let Some(rx) = self.text_state.font_preview_rx.take() {
+            let mut keep_rx = true;
+            loop {
+                match rx.try_recv() {
+                    Ok(batch) => {
+                        for (name, font) in batch {
+                            self.text_state.font_preview_pending.remove(&name);
+                            self.text_state.font_preview_cache.insert(name, font);
+                        }
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        keep_rx = false;
+                        break;
+                    }
                 }
+            }
+            if keep_rx {
+                self.text_state.font_preview_rx = Some(rx);
+            }
+        }
+
+        // Ensure all font previews are loaded in the background with one
+        // persistent batch stream (egui virtualized rows can then render from cache).
+        if !self.text_state.available_fonts.is_empty()
+            && self.text_state.font_preview_rx.is_none()
+            && self.text_state.font_preview_pending.is_empty()
+            && self.text_state.font_preview_cache.len() < self.text_state.available_fonts.len()
+        {
+            let missing: Vec<String> = self
+                .text_state
+                .available_fonts
+                .iter()
+                .filter(|name| !self.text_state.font_preview_cache.contains_key(name.as_str()))
+                .cloned()
+                .collect();
+            if !missing.is_empty() {
+                for name in &missing {
+                    self.text_state.font_preview_pending.insert(name.clone());
+                }
+                let (tx, rx) = std::sync::mpsc::channel();
+                self.text_state.font_preview_rx = Some(rx);
+                std::thread::spawn(move || {
+                    const BATCH: usize = 24;
+                    let mut out: Vec<(String, Option<ab_glyph::FontArc>)> =
+                        Vec::with_capacity(BATCH);
+                    for name in missing {
+                        let font = crate::ops::text::load_system_font(&name, 400, false);
+                        out.push((name, font));
+                        if out.len() >= BATCH {
+                            if tx.send(out).is_err() {
+                                return;
+                            }
+                            out = Vec::with_capacity(BATCH);
+                        }
+                    }
+                    if !out.is_empty() {
+                        let _ = tx.send(out);
+                    }
+                });
             }
         }
 
         ui.label(t!("ctx.text.font"));
         let family_label = self.text_state.font_family.clone();
         let popup_id = ui.make_persistent_id("ctx_text_font_popup");
-        let is_open = egui::Popup::is_id_open(ui.ctx(), popup_id);
+        self.text_state.font_popup_open = egui::Popup::is_id_open(ui.ctx(), popup_id);
 
         if self.text_state.available_fonts.is_empty() {
             // Still loading
@@ -14921,18 +15439,35 @@ impl ToolsPanel {
             if button_response.clicked() {
                 egui::Popup::toggle_id(ui.ctx(), popup_id);
             }
-            if is_open {
-                let below = button_response.rect;
-                egui::Area::new(popup_id)
-                    .order(egui::Order::Foreground)
-                    .fixed_pos(egui::pos2(below.min.x, below.max.y))
-                    .show(ui.ctx(), |ui| {
-                        egui::Frame::popup(ui.style()).show(ui, |ui| {
-                            ui.set_min_width(250.0);
+            egui::Popup::new(
+                popup_id,
+                ui.ctx().clone(),
+                egui::PopupAnchor::from(&button_response),
+                ui.layer_id(),
+            )
+            .open_memory(None::<egui::SetOpenCommand>)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                            const FONT_LIST_HEIGHT: f32 = 300.0;
+                            const FONT_POPUP_WIDTH: f32 = 360.0;
+                            const FONT_LIST_WIDTH: f32 = FONT_POPUP_WIDTH - 18.0;
+                            let preview_ink = {
+                                let color = contrast_text_color(ui.visuals().window_fill());
+                                [color.r(), color.g(), color.b(), color.a()]
+                            };
+                            if self.text_state.font_preview_ink.0 != preview_ink {
+                                self.text_state.font_preview_ink = FontPreviewInk(preview_ink);
+                                self.text_state.font_preview_textures.0.clear();
+                            }
+                            ui.set_min_width(FONT_POPUP_WIDTH);
+                            ui.set_max_width(FONT_POPUP_WIDTH);
+                            // Keep popup height stable so clearing search restores a tall list.
+                            ui.set_min_height(FONT_LIST_HEIGHT + 38.0);
                             let te_resp = ui.add(
                                 egui::TextEdit::singleline(&mut self.text_state.font_search)
                                     .hint_text(t!("ctx.text.search"))
-                                    .desired_width(230.0),
+                                    .desired_width(FONT_LIST_WIDTH - 6.0),
                             );
                             if !te_resp.has_focus() && self.text_state.font_search.is_empty() {
                                 te_resp.request_focus();
@@ -14945,12 +15480,14 @@ impl ToolsPanel {
                                 .filter(|f| search.is_empty() || f.to_lowercase().contains(&search))
                                 .collect();
 
-                            // Collect fonts needing preview loading from visible area
-                            let mut to_load: Vec<String> = Vec::new();
-
                             let row_height = 22.0;
                             let total_rows = fonts.len().min(200);
-                            egui::ScrollArea::vertical().max_height(300.0).show_rows(
+                            let list_width = FONT_LIST_WIDTH;
+                            egui::ScrollArea::vertical()
+                                .auto_shrink([false, false])
+                                .min_scrolled_width(list_width)
+                                .max_height(FONT_LIST_HEIGHT)
+                                .show_rows(
                                 ui,
                                 row_height,
                                 total_rows,
@@ -14962,131 +15499,193 @@ impl ToolsPanel {
                                         let font_name = &fonts[idx];
                                         let is_selected =
                                             self.text_state.font_family == **font_name;
+                                        let preview_text = "Abc";
+                                        let row_width = list_width;
+                                        let preview_width = 118.0;
+                                        let gap = 8.0;
+                                        let name_width = (row_width - preview_width - gap).max(120.0);
 
-                                        // Queue font for preview loading if not cached
-                                        if !self
-                                            .text_state
-                                            .font_preview_cache
-                                            .contains_key(font_name.as_str())
-                                            && !self
-                                                .text_state
-                                                .font_preview_pending
-                                                .contains(font_name.as_str())
-                                        {
-                                            to_load.push((*font_name).clone());
+                                        let (row_rect, row_resp) = ui.allocate_exact_size(
+                                            egui::vec2(row_width, row_height),
+                                            egui::Sense::click(),
+                                        );
+                                        let name_rect = egui::Rect::from_min_max(
+                                            row_rect.min,
+                                            egui::pos2(row_rect.min.x + name_width, row_rect.max.y),
+                                        );
+                                        let preview_rect = egui::Rect::from_min_max(
+                                            egui::pos2(name_rect.max.x + gap, row_rect.min.y),
+                                            row_rect.max,
+                                        );
+                                        let row_clip = row_rect.intersect(ui.clip_rect());
+                                        let painter = ui.painter().with_clip_rect(row_clip);
+                                        let row_fully_visible = row_clip.height() >= (row_height - 0.5);
+
+                                        if row_resp.hovered() && row_fully_visible {
+                                            painter.rect_filled(
+                                                row_rect.shrink2(egui::vec2(1.0, 1.0)),
+                                                0.0,
+                                                ui.visuals().widgets.hovered.weak_bg_fill,
+                                            );
                                         }
 
-                                        // Layout: left-aligned font name + preview
-                                        let resp = ui.horizontal(|ui| {
-                                            let preview_text = "Abc";
-                                            let preview_width = 60.0;
-                                            let name_width = 250.0 - preview_width - 16.0;
+                                        if is_selected && row_fully_visible {
+                                            painter.rect_filled(
+                                                name_rect.shrink2(egui::vec2(2.0, 2.0)),
+                                                0.0,
+                                                ui.visuals().selection.bg_fill,
+                                            );
+                                        }
 
-                                            // Font name (left-aligned, truncated)
-                                            let display_name = if font_name.len() > 22 {
-                                                format!("{}…", &font_name[..21])
-                                            } else {
-                                                (*font_name).clone()
-                                            };
+                                        let display_name = if font_name.len() > 22 {
+                                            format!("{}…", &font_name[..21])
+                                        } else {
+                                            (*font_name).clone()
+                                        };
+                                        painter.text(
+                                            egui::pos2(name_rect.min.x + 6.0, name_rect.center().y),
+                                            egui::Align2::LEFT_CENTER,
+                                            display_name,
+                                            egui::FontId::default(),
+                                            ui.visuals().text_color(),
+                                        );
 
-                                            let label_resp = ui
-                                                .with_layout(
-                                                    egui::Layout::left_to_right(
-                                                        egui::Align::Center,
-                                                    )
-                                                    .with_main_wrap(false),
-                                                    |ui| {
-                                                        ui.set_min_size(egui::vec2(
-                                                            name_width, row_height,
-                                                        ));
-                                                        ui.set_max_size(egui::vec2(
-                                                            name_width, row_height,
-                                                        ));
-                                                        ui.selectable_label(
-                                                            is_selected,
-                                                            &display_name,
-                                                        )
-                                                    },
-                                                )
-                                                .inner;
-
-                                            // Font preview (rendered with ab_glyph if cached)
-                                            if let Some(Some(preview_font)) = self
-                                                .text_state
-                                                .font_preview_cache
-                                                .get(font_name.as_str())
-                                            {
-                                                use ab_glyph::{Font as AbFont, ScaleFont as _};
-                                                let preview_size = 14.0;
-                                                let scaled = preview_font.as_scaled(preview_size);
-                                                let (rect, painter) = ui.allocate_painter(
-                                                    egui::vec2(preview_width, row_height),
-                                                    egui::Sense::hover(),
-                                                );
-                                                let text_color = ui.visuals().text_color();
-                                                let base_y = rect.rect.min.y
-                                                    + scaled.ascent()
-                                                    + (row_height - preview_size) * 0.5;
-                                                let mut cx = rect.rect.min.x;
-                                                let mut prev_glyph: Option<ab_glyph::GlyphId> =
-                                                    None;
-                                                for ch in preview_text.chars() {
-                                                    let gid = preview_font.glyph_id(ch);
-                                                    if let Some(prev) = prev_glyph {
-                                                        cx += scaled.kern(prev, gid);
-                                                    }
-                                                    let glyph = gid.with_scale_and_position(
-                                                        preview_size,
-                                                        ab_glyph::point(cx, base_y),
+                                        match self
+                                            .text_state
+                                            .font_preview_cache
+                                            .get(font_name.as_str())
+                                        {
+                                            Some(Some(preview_font)) => {
+                                                if !self
+                                                    .text_state
+                                                    .font_preview_textures
+                                                    .0
+                                                    .contains_key(font_name.as_str())
+                                                {
+                                                    let mut preview_coverage = Vec::new();
+                                                    let mut preview_glyph_cache =
+                                                        crate::ops::text::GlyphPixelCache::default();
+                                                    let preview = crate::ops::text::rasterize_text(
+                                                        preview_font,
+                                                        preview_text,
+                                                        18.0,
+                                                        crate::ops::text::TextAlignment::Left,
+                                                        0.0,
+                                                        0.0,
+                                                        self.text_state.font_preview_ink.0,
+                                                        true,
+                                                        false,
+                                                        false,
+                                                        false,
+                                                        false,
+                                                        256,
+                                                        64,
+                                                        &mut preview_coverage,
+                                                        &mut preview_glyph_cache,
+                                                        None,
+                                                        0.0,
+                                                        1.0,
+                                                        1.0,
+                                                        1.0,
                                                     );
-                                                    if let Some(outlined) =
-                                                        preview_font.outline_glyph(glyph)
-                                                    {
-                                                        let bounds = outlined.px_bounds();
-                                                        outlined.draw(|px, py, cov| {
-                                                            if cov > 0.1 {
-                                                                let x = bounds.min.x + px as f32;
-                                                                let y = bounds.min.y + py as f32;
-                                                                let alpha = (cov
-                                                                    * text_color.a() as f32)
-                                                                    .round()
-                                                                    .min(255.0)
-                                                                    as u8;
-                                                                let c =
-                                                                    Color32::from_rgba_unmultiplied(
-                                                                        text_color.r(),
-                                                                        text_color.g(),
-                                                                        text_color.b(),
-                                                                        alpha,
-                                                                    );
-                                                                painter.rect_filled(
-                                                                    egui::Rect::from_min_size(
-                                                                        egui::pos2(x, y),
-                                                                        egui::vec2(1.0, 1.0),
-                                                                    ),
-                                                                    0.0,
-                                                                    c,
-                                                                );
-                                                            }
-                                                        });
+                                                    if preview.buf_w > 0 && preview.buf_h > 0 {
+                                                        let color_image =
+                                                            egui::ColorImage::from_rgba_unmultiplied(
+                                                                [
+                                                                    preview.buf_w as usize,
+                                                                    preview.buf_h as usize,
+                                                                ],
+                                                                &preview.buf,
+                                                            );
+                                                        let texture = ui.ctx().load_texture(
+                                                            format!(
+                                                                "font_preview_tex::{}",
+                                                                font_name
+                                                            ),
+                                                            color_image,
+                                                            egui::TextureOptions::LINEAR,
+                                                        );
+                                                        self.text_state
+                                                            .font_preview_textures
+                                                            .0
+                                                            .insert((*font_name).clone(), texture);
                                                     }
-                                                    cx += scaled.h_advance(gid);
-                                                    prev_glyph = Some(gid);
                                                 }
-                                            } else {
-                                                // Show placeholder while loading
-                                                ui.add_sized(
-                                                    [preview_width, row_height],
-                                                    egui::Label::new(
-                                                        egui::RichText::new("Abc").weak().italics(),
+
+                                                if let Some(texture) = self
+                                                    .text_state
+                                                    .font_preview_textures
+                                                    .0
+                                                    .get(font_name.as_str())
+                                                {
+                                                    let tex_size = texture.size_vec2();
+                                                    let max_w = (preview_rect.width() - 24.0).max(8.0);
+                                                    let max_h = (preview_rect.height() - 4.0).max(8.0);
+                                                    let scale = (max_w / tex_size.x)
+                                                        .min(max_h / tex_size.y)
+                                                        .max(0.01);
+                                                    let draw_size = tex_size * scale;
+                                                    let image_rect = egui::Rect::from_min_size(
+                                                        egui::pos2(
+                                                            preview_rect.min.x + 4.0,
+                                                            preview_rect.center().y
+                                                                - draw_size.y * 0.5,
+                                                        ),
+                                                        draw_size,
+                                                    );
+                                                    painter.image(
+                                                        texture.id(),
+                                                        image_rect,
+                                                        egui::Rect::from_min_max(
+                                                            egui::pos2(0.0, 0.0),
+                                                            egui::pos2(1.0, 1.0),
+                                                        ),
+                                                        Color32::WHITE,
+                                                    );
+                                                } else {
+                                                    painter.text(
+                                                        egui::pos2(
+                                                            preview_rect.min.x + 4.0,
+                                                            preview_rect.center().y,
+                                                        ),
+                                                        egui::Align2::LEFT_CENTER,
+                                                        "No preview",
+                                                        egui::FontId::default(),
+                                                        ui.visuals().weak_text_color(),
+                                                    );
+                                                }
+                                            }
+                                            Some(None) => {
+                                                painter.text(
+                                                    egui::pos2(
+                                                        preview_rect.min.x + 4.0,
+                                                        preview_rect.center().y,
                                                     ),
+                                                    egui::Align2::LEFT_CENTER,
+                                                    "No preview",
+                                                    egui::FontId::default(),
+                                                    ui.visuals().weak_text_color(),
                                                 );
                                             }
+                                            None => {
+                                                let pending = self
+                                                    .text_state
+                                                    .font_preview_pending
+                                                    .contains(font_name.as_str());
+                                                painter.text(
+                                                    egui::pos2(
+                                                        preview_rect.min.x + 4.0,
+                                                        preview_rect.center().y,
+                                                    ),
+                                                    egui::Align2::LEFT_CENTER,
+                                                    if pending { "Loading" } else { "Queued" },
+                                                    egui::FontId::default(),
+                                                    ui.visuals().weak_text_color(),
+                                                );
+                                            }
+                                        }
 
-                                            label_resp
-                                        });
-
-                                        if resp.inner.clicked() {
+                                        if row_resp.clicked() {
                                             self.text_state.font_family = (*font_name).clone();
                                             self.text_state.loaded_font = None;
                                             self.text_state.preview_dirty = true;
@@ -15111,45 +15710,13 @@ impl ToolsPanel {
                                 },
                             );
 
-                            // Launch async loading for visible fonts that need previews
-                            if !to_load.is_empty() {
-                                for name in &to_load {
-                                    self.text_state.font_preview_pending.insert(name.clone());
-                                }
-                                let (tx, rx) = std::sync::mpsc::channel();
-                                // Replace old receiver with new one
-                                self.text_state.font_preview_rx = Some(rx);
-                                std::thread::spawn(move || {
-                                    let batch: Vec<(String, Option<ab_glyph::FontArc>)> = to_load
-                                        .into_iter()
-                                        .map(|name| {
-                                            let font = crate::ops::text::load_system_font(
-                                                &name, 400, false,
-                                            );
-                                            (name, font)
-                                        })
-                                        .collect();
-                                    let _ = tx.send(batch);
-                                });
+                            if !self.text_state.font_preview_pending.is_empty() && total_rows > 0 {
                                 ui.ctx()
-                                    .request_repaint_after(std::time::Duration::from_millis(50));
+                                    .request_repaint_after(std::time::Duration::from_millis(16));
                             }
                         });
-                    });
-                // Close popup if user clicks elsewhere
-                let popup_rect = ui.ctx().memory(|mem| mem.area_rect(popup_id));
-                if let Some(popup_rect) = popup_rect {
-                    let pointer_pos = ui.input(|i| i.pointer.interact_pos());
-                    let clicked_outside = ui.input(|i| i.pointer.any_click());
-                    if clicked_outside
-                        && let Some(pos) = pointer_pos
-                        && !popup_rect.contains(pos)
-                        && !button_response.rect.contains(pos)
-                    {
-                        egui::Popup::close_id(ui.ctx(), popup_id);
-                    }
-                }
-            }
+            });
+                    self.text_state.font_popup_open = egui::Popup::is_id_open(ui.ctx(), popup_id);
         }
 
         // Weight dropdown (only show if more than one weight available)
@@ -16419,6 +16986,19 @@ impl ToolsPanel {
             Some(s) => s,
             None => return,
         };
+        let Some(target_layer_idx) = self.liquify_state.source_layer_index else {
+            return;
+        };
+        if target_layer_idx >= canvas_state.layers.len() {
+            self.liquify_state.displacement = None;
+            self.liquify_state.is_active = false;
+            self.liquify_state.source_snapshot = None;
+            self.liquify_state.source_layer_index = None;
+            self.liquify_state.warp_buffer.clear();
+            self.liquify_state.dirty_rect = None;
+            canvas_state.clear_preview_state();
+            return;
+        }
 
         // Expand undo/redo bounds to cover the full canvas (liquify affects everything)
         self.stroke_tracker.expand_bounds(egui::Rect::from_min_max(
@@ -16429,7 +17009,7 @@ impl ToolsPanel {
         let stroke_event = self.stroke_tracker.finish(canvas_state);
         let warped = crate::ops::transform::warp_displacement_full(source, displacement);
 
-        if let Some(active_layer) = canvas_state.layers.get_mut(canvas_state.active_layer_index) {
+        if let Some(active_layer) = canvas_state.layers.get_mut(target_layer_idx) {
             let w = canvas_state.width.min(warped.width());
             let h = canvas_state.height.min(warped.height());
             for y in 0..h {
@@ -16444,6 +17024,7 @@ impl ToolsPanel {
         self.liquify_state.displacement = None;
         self.liquify_state.is_active = false;
         self.liquify_state.source_snapshot = None;
+        self.liquify_state.source_layer_index = None;
         self.liquify_state.warp_buffer.clear();
         self.liquify_state.dirty_rect = None;
         canvas_state.clear_preview_state();
@@ -16597,6 +17178,16 @@ impl ToolsPanel {
             Some(s) => s,
             None => return,
         };
+        let target_layer_idx = self.mesh_warp_state.snapshot_layer_index;
+        if target_layer_idx >= canvas_state.layers.len() {
+            self.mesh_warp_state.is_active = false;
+            self.mesh_warp_state.points.clear();
+            self.mesh_warp_state.original_points.clear();
+            self.mesh_warp_state.source_snapshot = None;
+            self.mesh_warp_state.warp_buffer.clear();
+            canvas_state.clear_preview_state();
+            return;
+        }
 
         // Expand undo/redo bounds to cover the full canvas
         self.stroke_tracker.expand_bounds(egui::Rect::from_min_max(
@@ -16615,7 +17206,7 @@ impl ToolsPanel {
             canvas_state.height,
         );
 
-        if let Some(active_layer) = canvas_state.layers.get_mut(canvas_state.active_layer_index) {
+        if let Some(active_layer) = canvas_state.layers.get_mut(target_layer_idx) {
             let w = canvas_state.width.min(warped.width());
             let h = canvas_state.height.min(warped.height());
             for y in 0..h {
@@ -16917,6 +17508,8 @@ impl ToolsPanel {
             let cols = 5;
             let icon_size = egui::Vec2::splat(28.0);
             let accent = ui.visuals().hyperlink_color;
+            let selected_stroke = egui::Stroke::new(1.0, contrast_text_color(accent));
+            let selected_alpha = if color_luminance(accent) > 0.6 { 34 } else { 70 };
 
             egui::Grid::new("shapes_icon_grid")
                 .spacing(egui::Vec2::splat(2.0))
@@ -16935,8 +17528,14 @@ impl ToolsPanel {
                                     accent.r(),
                                     accent.g(),
                                     accent.b(),
-                                    60,
+                                    selected_alpha,
                                 ),
+                            );
+                            ui.painter().rect_stroke(
+                                rect,
+                                4.0,
+                                selected_stroke,
+                                egui::StrokeKind::Middle,
                             );
                         }
                         if response.hovered() {
@@ -17131,14 +17730,33 @@ impl ToolsPanel {
             return;
         }
 
+        let Some(target_layer_idx) = self.shapes_state.source_layer_index else {
+            return;
+        };
+        if target_layer_idx >= canvas_state.layers.len() {
+            self.shapes_state.placed = None;
+            self.shapes_state.draw_start = None;
+            self.shapes_state.draw_end = None;
+            self.shapes_state.is_drawing = false;
+            self.shapes_state.source_layer_index = None;
+            canvas_state.clear_preview_state();
+            return;
+        }
+
         // Apply mirror to shape preview before committing
-        canvas_state.mirror_preview_layer();
+        let mirror_bounds = canvas_state.mirror_preview_layer();
+        if let Some(bounds) = canvas_state.preview_stroke_bounds {
+            self.stroke_tracker.expand_bounds(bounds);
+        }
+        if let Some(bounds) = mirror_bounds {
+            self.stroke_tracker.expand_bounds(bounds);
+        }
 
         let blend_mode = self.properties.blending_mode;
         let stroke_event = self.stroke_tracker.finish(canvas_state);
 
         if let Some(ref preview) = canvas_state.preview_layer
-            && let Some(active_layer) = canvas_state.layers.get_mut(canvas_state.active_layer_index)
+            && let Some(active_layer) = canvas_state.layers.get_mut(target_layer_idx)
         {
             let chunk_data: Vec<(u32, u32, image::RgbaImage)> = preview
                 .chunk_keys()
@@ -17171,6 +17789,7 @@ impl ToolsPanel {
         self.shapes_state.draw_start = None;
         self.shapes_state.draw_end = None;
         self.shapes_state.is_drawing = false;
+        self.shapes_state.source_layer_index = None;
         canvas_state.clear_preview_state();
         canvas_state.mark_dirty(None);
 
@@ -17229,6 +17848,39 @@ impl ToolsPanel {
             );
             painter.rect_stroke(
                 egui::Rect::from_center_size(*corner, egui::vec2(hs * 2.0, hs * 2.0)),
+                1.0,
+                egui::Stroke::new(1.0, Color32::BLACK),
+                egui::StrokeKind::Middle,
+            );
+        }
+
+        let edge_handles = [
+            Pos2::new(
+                (screen_corners[0].x + screen_corners[1].x) * 0.5,
+                (screen_corners[0].y + screen_corners[1].y) * 0.5,
+            ),
+            Pos2::new(
+                (screen_corners[1].x + screen_corners[2].x) * 0.5,
+                (screen_corners[1].y + screen_corners[2].y) * 0.5,
+            ),
+            Pos2::new(
+                (screen_corners[2].x + screen_corners[3].x) * 0.5,
+                (screen_corners[2].y + screen_corners[3].y) * 0.5,
+            ),
+            Pos2::new(
+                (screen_corners[3].x + screen_corners[0].x) * 0.5,
+                (screen_corners[3].y + screen_corners[0].y) * 0.5,
+            ),
+        ];
+        let ehs = 3.0;
+        for p in edge_handles {
+            painter.rect_filled(
+                egui::Rect::from_center_size(p, egui::vec2(ehs * 2.0, ehs * 2.0)),
+                1.0,
+                accent,
+            );
+            painter.rect_stroke(
+                egui::Rect::from_center_size(p, egui::vec2(ehs * 2.0, ehs * 2.0)),
                 1.0,
                 egui::Stroke::new(1.0, Color32::BLACK),
                 egui::StrokeKind::Middle,
@@ -17333,3 +17985,22 @@ fn rotate_screen_point(p: Pos2, center: Pos2, angle: f32) -> Pos2 {
         center.y + dx * sin_a + dy * cos_a,
     )
 }
+
+fn color_luminance(c: Color32) -> f32 {
+    let r = c.r() as f32 / 255.0;
+    let g = c.g() as f32 / 255.0;
+    let b = c.b() as f32 / 255.0;
+    0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+fn contrast_text_color(fill: Color32) -> Color32 {
+    let luminance = color_luminance(fill);
+    let contrast_with_black = (luminance + 0.05) / 0.05;
+    let contrast_with_white = 1.05 / (luminance + 0.05);
+    if contrast_with_black >= contrast_with_white {
+        Color32::BLACK
+    } else {
+        Color32::WHITE
+    }
+}
+

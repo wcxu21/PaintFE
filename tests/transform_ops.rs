@@ -315,7 +315,7 @@ fn align_layer_to_bottom_right_anchor() {
     }
 
     let flat = state.layers[0].pixels.to_rgba_image();
-    transform::align_layer_to_anchor_from_flat(&mut state, 0, (2, 2), &flat);
+    transform::align_layer_to_anchor_from_flat(&mut state, 0, (2, 2), &flat, None);
 
     let out = state.layers[0].pixels.to_rgba_image();
     // 2x2 block should end at bottom-right: (8,8)..(9,9)

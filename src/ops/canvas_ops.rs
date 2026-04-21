@@ -88,6 +88,138 @@ pub fn merge_down_as_mask(state: &mut CanvasState, layer_idx: usize) {
     state.mark_dirty(None);
 }
 
+pub fn add_layer_mask_reveal_all(state: &mut CanvasState, layer_idx: usize) {
+    let Some(layer) = state.layers.get_mut(layer_idx) else {
+        return;
+    };
+    if layer.has_live_mask() {
+        layer.mask_enabled = true;
+        return;
+    }
+
+    layer.ensure_mask();
+    let Some(mask) = layer.mask.as_mut() else {
+        return;
+    };
+    for y in 0..mask.height() {
+        for x in 0..mask.width() {
+            mask.put_pixel(x, y, Rgba([0, 0, 0, 0]));
+        }
+    }
+    layer.mask_enabled = true;
+    state.mark_dirty(None);
+}
+
+pub fn add_layer_mask_from_selection(state: &mut CanvasState, layer_idx: usize) {
+    let Some(layer) = state.layers.get_mut(layer_idx) else {
+        return;
+    };
+    if layer.has_live_mask() {
+        layer.mask_enabled = true;
+        return;
+    }
+
+    layer.ensure_mask();
+    let Some(mask) = layer.mask.as_mut() else {
+        return;
+    };
+    if let Some(sel) = &state.selection_mask {
+        let w = mask.width().min(sel.width());
+        let h = mask.height().min(sel.height());
+        for y in 0..h {
+            for x in 0..w {
+                // Selection=255 should reveal fully, so mask conceal is inverted.
+                let reveal = sel.get_pixel(x, y)[0];
+                let conceal = 255u8.saturating_sub(reveal);
+                mask.put_pixel(x, y, Rgba([0, 0, 0, conceal]));
+            }
+        }
+    } else {
+        // No selection: default to reveal-all mask.
+        for y in 0..mask.height() {
+            for x in 0..mask.width() {
+                mask.put_pixel(x, y, Rgba([0, 0, 0, 0]));
+            }
+        }
+    }
+
+    layer.mask_enabled = true;
+    state.mark_dirty(None);
+}
+
+pub fn toggle_layer_mask(state: &mut CanvasState, layer_idx: usize) {
+    let Some(layer) = state.layers.get_mut(layer_idx) else {
+        return;
+    };
+    if layer.has_live_mask() {
+        layer.mask_enabled = !layer.mask_enabled;
+        state.mark_dirty(None);
+    }
+}
+
+pub fn invert_layer_mask(state: &mut CanvasState, layer_idx: usize) {
+    let Some(layer) = state.layers.get_mut(layer_idx) else {
+        return;
+    };
+    let Some(mask) = layer.mask.as_mut() else {
+        return;
+    };
+
+    for y in 0..mask.height() {
+        for x in 0..mask.width() {
+            let mut p = *mask.get_pixel(x, y);
+            p[3] = 255 - p[3];
+            mask.put_pixel(x, y, p);
+        }
+    }
+    layer.mask_enabled = true;
+    state.mark_dirty(None);
+}
+
+pub fn apply_layer_mask(state: &mut CanvasState, layer_idx: usize) {
+    let is_active = state.active_layer_index == layer_idx;
+    let Some(layer) = state.layers.get_mut(layer_idx) else {
+        return;
+    };
+    let Some(mask) = layer.mask.clone() else {
+        return;
+    };
+
+    let w = layer.pixels.width().min(mask.width());
+    let h = layer.pixels.height().min(mask.height());
+    for y in 0..h {
+        for x in 0..w {
+            let conceal = mask.get_pixel(x, y)[3];
+            if conceal == 0 {
+                continue;
+            }
+            let mut px = *layer.pixels.get_pixel(x, y);
+            px[3] = ((px[3] as u32 * (255 - conceal as u32)) / 255) as u8;
+            layer.pixels.put_pixel(x, y, px);
+        }
+    }
+    layer.mask = None;
+    layer.mask_enabled = true;
+    if is_active {
+        state.edit_layer_mask = false;
+    }
+    state.mark_dirty(None);
+}
+
+pub fn delete_layer_mask(state: &mut CanvasState, layer_idx: usize) {
+    let is_active = state.active_layer_index == layer_idx;
+    let Some(layer) = state.layers.get_mut(layer_idx) else {
+        return;
+    };
+    if layer.mask.take().is_some() {
+        layer.mask_enabled = true;
+        if is_active {
+            state.edit_layer_mask = false;
+        }
+        state.mark_dirty(None);
+    }
+}
+
 /// Add a new transparent layer above the active layer.
 pub fn add_layer(state: &mut CanvasState, history: &mut HistoryManager) {
     let idx = (state.active_layer_index + 1).min(state.layers.len());
@@ -135,6 +267,8 @@ pub fn delete_layer(state: &mut CanvasState, history: &mut HistoryManager) {
     history.push(Box::new(LayerOpCommand::new(LayerOperation::Delete {
         index: idx,
         pixels: removed.pixels,
+        mask: removed.mask,
+        mask_enabled: removed.mask_enabled,
         name: removed.name,
         visible: removed.visible,
         opacity: removed.opacity,
@@ -166,9 +300,13 @@ pub fn duplicate_layer(state: &mut CanvasState, history: &mut HistoryManager) {
     dup.opacity = src.opacity;
     dup.blend_mode = src.blend_mode;
     dup.content = src.content.clone();
+    dup.mask = src.mask.clone();
+    dup.mask_enabled = src.mask_enabled;
 
     let new_idx = idx + 1;
     let dup_pixels = dup.pixels.clone();
+    let dup_mask = dup.mask.clone();
+    let dup_mask_enabled = dup.mask_enabled;
     let dup_name = dup.name.clone();
     let dup_visible = dup.visible;
     let dup_opacity = dup.opacity;
@@ -181,6 +319,8 @@ pub fn duplicate_layer(state: &mut CanvasState, history: &mut HistoryManager) {
         source_index: idx,
         new_index: new_idx,
         pixels: dup_pixels,
+        mask: dup_mask,
+        mask_enabled: dup_mask_enabled,
         name: dup_name,
         visible: dup_visible,
         opacity: dup_opacity,

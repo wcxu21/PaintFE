@@ -1322,6 +1322,11 @@ pub struct Layer {
     pub opacity: f32,
     pub blend_mode: BlendMode,
     pub pixels: TiledImage,
+    /// Optional live (non-destructive) layer mask.
+    /// We encode concealment in alpha: 0 = reveal, 255 = fully hidden.
+    pub mask: Option<TiledImage>,
+    /// Whether the live mask participates in compositing.
+    pub mask_enabled: bool,
     /// Downscaled cache (max 1024px longest edge) for zoomed-out rendering.
     /// Not serialized — rebuilt on demand.
     pub lod_cache: Option<Arc<RgbaImage>>,
@@ -1344,6 +1349,8 @@ impl Layer {
             opacity: 1.0,
             blend_mode: BlendMode::Normal,
             pixels,
+            mask: None,
+            mask_enabled: true,
             lod_cache: None,
             gpu_generation: 0,
             content: LayerContent::Raster,
@@ -1358,6 +1365,8 @@ impl Layer {
             opacity: 1.0,
             blend_mode: BlendMode::Normal,
             pixels: TiledImage::new(width, height),
+            mask: None,
+            mask_enabled: true,
             lod_cache: None,
             gpu_generation: 0,
             content: LayerContent::Text(TextLayerData::default()),
@@ -1372,6 +1381,59 @@ impl Layer {
     /// Invalidate the LOD cache (call after any pixel modification).
     pub fn invalidate_lod(&mut self) {
         self.lod_cache = None;
+    }
+
+    pub fn has_live_mask(&self) -> bool {
+        self.mask.is_some()
+    }
+
+    pub fn ensure_mask(&mut self) {
+        if self.mask.is_none() {
+            self.mask = Some(TiledImage::new(self.pixels.width(), self.pixels.height()));
+            self.mask_enabled = true;
+        }
+    }
+
+    #[inline]
+    pub fn apply_mask_alpha_at(&self, x: u32, y: u32, src_alpha: u8) -> u8 {
+        if !self.mask_enabled {
+            return src_alpha;
+        }
+        let conceal = self
+            .mask
+            .as_ref()
+            .map(|m| m.get_pixel(x, y)[3])
+            .unwrap_or(0);
+        if conceal == 0 {
+            src_alpha
+        } else {
+            ((src_alpha as u32 * (255 - conceal as u32)) / 255) as u8
+        }
+    }
+
+    /// Flatten this layer to RGBA, applying the live mask to alpha when enabled.
+    pub fn to_masked_rgba_image(&self) -> RgbaImage {
+        let mut flat = self.pixels.to_rgba_image();
+        if !self.mask_enabled {
+            return flat;
+        }
+        let Some(mask) = &self.mask else {
+            return flat;
+        };
+        let w = flat.width().min(mask.width());
+        let h = flat.height().min(mask.height());
+        for y in 0..h {
+            for x in 0..w {
+                let conceal = mask.get_pixel(x, y)[3];
+                if conceal == 0 {
+                    continue;
+                }
+                let mut p = *flat.get_pixel(x, y);
+                p[3] = ((p[3] as u32 * (255 - conceal as u32)) / 255) as u8;
+                flat.put_pixel(x, y, p);
+            }
+        }
+        flat
     }
 
     /// Return a reference to the downscaled LOD image, generating it lazily.
@@ -1505,6 +1567,7 @@ impl MirrorPositionsU32 {
 pub struct CanvasState {
     pub layers: Vec<Layer>,
     pub active_layer_index: usize,
+    pub edit_layer_mask: bool,
     pub width: u32,
     pub height: u32,
     pub composite_cache: Option<egui::TextureHandle>,
@@ -1527,6 +1590,12 @@ pub struct CanvasState {
     /// rather than blending on top.  Used by Liquify and Mesh Warp whose
     /// previews contain the entire warped layer.
     pub preview_replaces_layer: bool,
+    /// When true, preview alpha represents edits to the active layer's mask
+    /// (conceal/reveal) rather than paint blended directly into layer pixels.
+    pub preview_targets_mask: bool,
+    /// Meaningful only when `preview_targets_mask` is true.
+    /// false = increase conceal (paint mask), true = decrease conceal (erase/reveal mask).
+    pub preview_mask_reveal: bool,
     /// Monotonically increasing counter, bumped on each mark_dirty call
     pub dirty_generation: u64,
     /// Selection mask – 0 = unselected, 255 = fully selected.
@@ -1626,6 +1695,7 @@ impl CanvasState {
         Self {
             layers: vec![background],
             active_layer_index: 0,
+            edit_layer_mask: false,
             width,
             height,
             composite_cache: None,
@@ -1639,6 +1709,8 @@ impl CanvasState {
             preview_force_composite: false,
             preview_is_eraser: false,
             preview_replaces_layer: false,
+            preview_targets_mask: false,
+            preview_mask_reveal: false,
             dirty_generation: 0,
             selection_mask: None,
             lod_composite_cache: None,
@@ -1686,6 +1758,8 @@ impl CanvasState {
         self.preview_force_composite = false;
         self.preview_is_eraser = false;
         self.preview_replaces_layer = false;
+        self.preview_targets_mask = false;
+        self.preview_mask_reveal = false;
     }
 
     /// Mirror all populated pixels in the preview layer according to the
@@ -1999,6 +2073,11 @@ impl CanvasState {
 
                     let is_active = li == active_idx;
                     let layer_chunk = layer.pixels.get_chunk(cx, cy);
+                    let mask_chunk = if layer.mask_enabled {
+                        layer.mask.as_ref().and_then(|m| m.get_chunk(cx, cy))
+                    } else {
+                        None
+                    };
                     let preview_chunk = if is_active {
                         preview.as_ref().and_then(|p| p.get_chunk(cx, cy))
                     } else {
@@ -2066,6 +2145,13 @@ impl CanvasState {
                                 }
                             }
 
+                            if let Some(mchunk) = mask_chunk {
+                                let conceal = mchunk.get_pixel(lx, ly)[3];
+                                if conceal > 0 {
+                                    top[3] = ((top[3] as u32 * (255 - conceal as u32)) / 255) as u8;
+                                }
+                            }
+
                             if opaque_overwrite && top[3] == 255 {
                                 pixels[idx] = top;
                             } else {
@@ -2122,6 +2208,8 @@ impl CanvasState {
         let preview_blend_mode = self.preview_blend_mode;
         let preview_is_eraser = self.preview_is_eraser;
         let preview_replaces = self.preview_replaces_layer;
+        let preview_targets_mask = self.preview_targets_mask;
+        let preview_mask_reveal = self.preview_mask_reveal;
         let active_layer_index = self.active_layer_index;
 
         let row_len = target_w as usize;
@@ -2139,19 +2227,33 @@ impl CanvasState {
                     // Opaque-base optimisation: find the deepest fully-opaque
                     // normal-blend pixel to skip layers beneath it
                     let mut start_layer_idx = 0;
-                    for (idx, layer) in layers.iter().enumerate().rev() {
-                        if !layer.visible {
-                            continue;
-                        }
-                        if preview_is_eraser && preview_layer.is_some() && idx == active_layer_index
-                        {
-                            continue;
-                        }
-                        if layer.blend_mode == BlendMode::Normal && layer.opacity >= 1.0 {
-                            let pixel = layer.pixels.get_pixel(x, y);
-                            if pixel[3] == 255 {
-                                start_layer_idx = idx;
-                                break;
+                    if !preview_targets_mask {
+                        for (idx, layer) in layers.iter().enumerate().rev() {
+                            if !layer.visible {
+                                continue;
+                            }
+                            if preview_is_eraser
+                                && preview_layer.is_some()
+                                && idx == active_layer_index
+                            {
+                                continue;
+                            }
+                            if layer.blend_mode == BlendMode::Normal && layer.opacity >= 1.0 {
+                                let mut effective_a = layer.pixels.get_pixel(x, y)[3];
+                                if effective_a == 255 && layer.mask_enabled
+                                    && let Some(mask) = &layer.mask
+                                {
+                                    let conceal = mask.get_pixel(x, y)[3];
+                                    if conceal > 0 {
+                                        effective_a =
+                                            ((effective_a as u32 * (255 - conceal as u32)) / 255)
+                                                as u8;
+                                    }
+                                }
+                                if effective_a == 255 {
+                                    start_layer_idx = idx;
+                                    break;
+                                }
                             }
                         }
                     }
@@ -2163,6 +2265,7 @@ impl CanvasState {
                             continue;
                         }
                         let mut top = *layer.pixels.get_pixel(x, y);
+                        let mut preview_conceal_override: Option<u8> = None;
 
                         if li == active_layer_index
                             && let Some(preview) = preview_layer
@@ -2170,7 +2273,23 @@ impl CanvasState {
                             // Preview is at reduced resolution — sample
                             // at the output coordinate directly.
                             let pp = *preview.get_pixel(out_x as u32, row_idx as u32);
-                            if preview_replaces {
+                            if preview_targets_mask {
+                                if pp[3] > 0 {
+                                    let old_conceal = if layer.mask_enabled {
+                                        layer.mask.as_ref().map_or(0, |m| m.get_pixel(x, y)[3])
+                                    } else {
+                                        0
+                                    };
+                                    let old = old_conceal as u32;
+                                    let s = pp[3] as u32;
+                                    let new_conceal = if preview_mask_reveal {
+                                        ((old * (255 - s)) / 255) as u8
+                                    } else {
+                                        (old + ((255 - old) * s) / 255) as u8
+                                    };
+                                    preview_conceal_override = Some(new_conceal);
+                                }
+                            } else if preview_replaces {
                                 top = pp;
                             } else if pp[3] > 0 {
                                 if preview_is_eraser {
@@ -2197,6 +2316,17 @@ impl CanvasState {
                                         Self::blend_pixel_static(top, pp, preview_blend_mode, 1.0);
                                 }
                             }
+                        }
+
+                        let conceal = if let Some(c) = preview_conceal_override {
+                            c
+                        } else if layer.mask_enabled {
+                            layer.mask.as_ref().map_or(0, |m| m.get_pixel(x, y)[3])
+                        } else {
+                            0
+                        };
+                        if conceal > 0 {
+                            top[3] = ((top[3] as u32 * (255 - conceal as u32)) / 255) as u8;
                         }
 
                         base = Self::blend_pixel_static(base, top, layer.blend_mode, layer.opacity);
@@ -2242,6 +2372,8 @@ impl CanvasState {
         let preview_blend_mode = self.preview_blend_mode;
         let preview_is_eraser = self.preview_is_eraser;
         let preview_replaces = self.preview_replaces_layer;
+        let preview_targets_mask = self.preview_targets_mask;
+        let preview_mask_reveal = self.preview_mask_reveal;
         let active_layer_index = self.active_layer_index;
 
         // 2. Pre-allocate output and parallelise row-by-row in-place
@@ -2293,23 +2425,38 @@ impl CanvasState {
 
                         // Opaque-base optimisation: find deepest opaque Normal pixel
                         let mut start_layer_idx = 0;
-                        for (idx, layer) in layers.iter().enumerate().rev() {
-                            if !layer.visible {
-                                continue;
-                            }
-                            if preview_is_eraser
-                                && preview_layer.is_some()
-                                && idx == active_layer_index
-                            {
-                                continue;
-                            }
-                            if layer.blend_mode == BlendMode::Normal
-                                && layer.opacity >= 1.0
-                                && let Some(raw) = chunk_raws[idx]
-                                && raw[px_off + 3] == 255
-                            {
-                                start_layer_idx = idx;
-                                break;
+                        if !preview_targets_mask {
+                            for (idx, layer) in layers.iter().enumerate().rev() {
+                                if !layer.visible {
+                                    continue;
+                                }
+                                if preview_is_eraser
+                                    && preview_layer.is_some()
+                                    && idx == active_layer_index
+                                {
+                                    continue;
+                                }
+                                if layer.blend_mode == BlendMode::Normal
+                                    && layer.opacity >= 1.0
+                                    && let Some(raw) = chunk_raws[idx]
+                                {
+                                    let mut effective_a = raw[px_off + 3];
+                                    if effective_a == 255 && layer.mask_enabled
+                                        && let Some(mask) = &layer.mask
+                                    {
+                                        let conceal = mask.get_pixel(x, y)[3];
+                                        if conceal > 0 {
+                                            effective_a =
+                                                ((effective_a as u32 * (255 - conceal as u32))
+                                                    / 255)
+                                                    as u8;
+                                        }
+                                    }
+                                    if effective_a == 255 {
+                                        start_layer_idx = idx;
+                                        break;
+                                    }
+                                }
                             }
                         }
 
@@ -2328,6 +2475,7 @@ impl CanvasState {
                                 ]),
                                 None => Rgba([0, 0, 0, 0]),
                             };
+                            let mut preview_conceal_override: Option<u8> = None;
 
                             if li == active_layer_index && preview_layer.is_some() {
                                 let pp = match preview_raw {
@@ -2339,7 +2487,23 @@ impl CanvasState {
                                     ]),
                                     None => Rgba([0, 0, 0, 0]),
                                 };
-                                if preview_replaces {
+                                if preview_targets_mask {
+                                    if pp[3] > 0 {
+                                        let old_conceal = if layer.mask_enabled {
+                                            layer.mask.as_ref().map_or(0, |m| m.get_pixel(x, y)[3])
+                                        } else {
+                                            0
+                                        };
+                                        let old = old_conceal as u32;
+                                        let s = pp[3] as u32;
+                                        let new_conceal = if preview_mask_reveal {
+                                            ((old * (255 - s)) / 255) as u8
+                                        } else {
+                                            (old + ((255 - old) * s) / 255) as u8
+                                        };
+                                        preview_conceal_override = Some(new_conceal);
+                                    }
+                                } else if preview_replaces {
                                     top = pp;
                                 } else if pp[3] > 0 {
                                     if preview_is_eraser {
@@ -2356,6 +2520,17 @@ impl CanvasState {
                                         );
                                     }
                                 }
+                            }
+
+                            let conceal = if let Some(c) = preview_conceal_override {
+                                c
+                            } else if layer.mask_enabled {
+                                layer.mask.as_ref().map_or(0, |m| m.get_pixel(x, y)[3])
+                            } else {
+                                0
+                            };
+                            if conceal > 0 {
+                                top[3] = ((top[3] as u32 * (255 - conceal as u32)) / 255) as u8;
                             }
 
                             base = Self::blend_pixel_static(
@@ -2419,7 +2594,13 @@ impl CanvasState {
                         if !layer.visible {
                             continue;
                         }
-                        let top = *layer.pixels.get_pixel(x as u32, y as u32);
+                        let mut top = *layer.pixels.get_pixel(x as u32, y as u32);
+                        if layer.mask_enabled && let Some(mask) = &layer.mask {
+                            let conceal = mask.get_pixel(x as u32, y as u32)[3];
+                            if conceal > 0 {
+                                top[3] = ((top[3] as u32 * (255 - conceal as u32)) / 255) as u8;
+                            }
+                        }
                         base = Self::blend_pixel_static(base, top, layer.blend_mode, layer.opacity);
                     }
                     let a = base[3];
@@ -2814,6 +2995,41 @@ impl CanvasState {
         self.selection_mask.is_some()
     }
 
+    /// Return tight bounds of the current selection mask as (min_x, min_y, max_x, max_y).
+    pub fn selection_mask_bounds(&self) -> Option<(u32, u32, u32, u32)> {
+        let mask = self.selection_mask.as_ref()?;
+        let w = mask.width();
+        let h = mask.height();
+        if w == 0 || h == 0 {
+            return None;
+        }
+
+        let mut min_x = w;
+        let mut min_y = h;
+        let mut max_x = 0u32;
+        let mut max_y = 0u32;
+        let mut found = false;
+
+        for y in 0..h {
+            for x in 0..w {
+                if mask.get_pixel(x, y).0[0] == 0 {
+                    continue;
+                }
+                found = true;
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+            }
+        }
+
+        if found {
+            Some((min_x, min_y, max_x, max_y))
+        } else {
+            None
+        }
+    }
+
     /// Translate the selection mask by (dx, dy) pixels.
     /// The mask is shifted; pixels that move off-canvas are clipped,
     /// and newly-exposed areas are unselected (0).
@@ -3184,11 +3400,14 @@ impl Canvas {
         // Also always reclaim focus when the text tool is editing — this
         // prevents DragValues in floating panels (color, etc.) from holding
         // focus and silently swallowing keystrokes meant for the text layer.
-        let text_tool_editing = tools
+        let force_canvas_focus_for_text = tools
             .as_ref()
-            .map(|t| t.text_state.is_editing)
+            .map(|t| t.text_state.is_editing && !t.text_state.font_popup_open)
             .unwrap_or(false);
-        if !ui.ctx().memory(|m| m.focused().is_some()) || response.clicked() || text_tool_editing {
+        if !ui.ctx().memory(|m| m.focused().is_some())
+            || response.clicked()
+            || force_canvas_focus_for_text
+        {
             response.request_focus();
         }
         let canvas_rect = response.rect;
@@ -3251,6 +3470,8 @@ impl Canvas {
                         continue;
                     }
 
+                    let has_live_mask = layer.mask_enabled && layer.mask.is_some();
+
                     if gpu.layer_is_current(idx, layer.gpu_generation) {
                         continue;
                     }
@@ -3269,11 +3490,27 @@ impl Canvas {
                             let (ax, ay, aw, ah) =
                                 crate::gpu::align_dirty_rect(rx, ry, rw, rh, cw, ch);
                             if aw > 0 && ah > 0 {
-                                // A7: use fast chunk-aware extraction with reusable buffer
                                 let mut buf = std::mem::take(&mut state.region_extract_buf);
                                 layer
                                     .pixels
                                     .extract_region_rgba_fast(ax, ay, aw, ah, &mut buf);
+
+                                // For masked layers, fold conceal alpha into the extracted
+                                // region so we can still do partial uploads.
+                                if has_live_mask && let Some(mask) = &layer.mask {
+                                    for y in 0..ah {
+                                        for x in 0..aw {
+                                            let conceal = mask.get_pixel(ax + x, ay + y)[3];
+                                            if conceal == 0 {
+                                                continue;
+                                            }
+                                            let off = ((y * aw + x) * 4 + 3) as usize;
+                                            let a = buf[off] as u32;
+                                            buf[off] = ((a * (255 - conceal as u32)) / 255) as u8;
+                                        }
+                                    }
+                                }
+
                                 let region = crate::gpu::renderer::DirtyRegion {
                                     x: ax,
                                     y: ay,
@@ -3295,7 +3532,7 @@ impl Canvas {
                     };
 
                     if !did_partial {
-                        let flat = layer.pixels.to_rgba_image();
+                        let flat = layer.to_masked_rgba_image();
                         gpu.ensure_layer_texture(
                             idx,
                             layer.pixels.width(),
@@ -3696,6 +3933,10 @@ impl Canvas {
                     .get(state.active_layer_index)
                     .map(|l| l.blend_mode == BlendMode::Normal && l.opacity >= 1.0)
                     .unwrap_or(false);
+                let active_layer_has_live_mask = state
+                    .layers
+                    .get(state.active_layer_index)
+                    .is_some_and(|l| l.mask_enabled && l.has_live_mask());
                 let has_layers_above = state
                     .layers
                     .iter()
@@ -3703,6 +3944,8 @@ impl Canvas {
                     .any(|l| l.visible);
                 let use_fast_path = state.preview_blend_mode == BlendMode::Normal
                     && active_layer_normal
+                    && !active_layer_has_live_mask
+                    && !state.preview_targets_mask
                     && !state.preview_force_composite
                     && !has_layers_above
                     && !state.preview_is_eraser;

@@ -213,6 +213,63 @@ impl Command for BrushCommand {
     }
 }
 
+/// Undo/redo for mask painting strokes (stores mask image before/after).
+pub struct LayerMaskCommand {
+    description: String,
+    layer_index: usize,
+    before_mask: Option<TiledImage>,
+    after_mask: Option<TiledImage>,
+    before_enabled: bool,
+    after_enabled: bool,
+}
+
+impl LayerMaskCommand {
+    pub fn new(
+        description: String,
+        layer_index: usize,
+        before_mask: Option<TiledImage>,
+        after_mask: Option<TiledImage>,
+        before_enabled: bool,
+        after_enabled: bool,
+    ) -> Self {
+        Self {
+            description,
+            layer_index,
+            before_mask,
+            after_mask,
+            before_enabled,
+            after_enabled,
+        }
+    }
+}
+
+impl Command for LayerMaskCommand {
+    fn undo(&self, canvas: &mut CanvasState) {
+        if let Some(layer) = canvas.layers.get_mut(self.layer_index) {
+            layer.mask = self.before_mask.clone();
+            layer.mask_enabled = self.before_enabled;
+        }
+        canvas.mark_dirty(None);
+    }
+
+    fn redo(&self, canvas: &mut CanvasState) {
+        if let Some(layer) = canvas.layers.get_mut(self.layer_index) {
+            layer.mask = self.after_mask.clone();
+            layer.mask_enabled = self.after_enabled;
+        }
+        canvas.mark_dirty(None);
+    }
+
+    fn description(&self) -> String {
+        self.description.clone()
+    }
+
+    fn memory_size(&self) -> usize {
+        self.before_mask.as_ref().map_or(0, |m| m.memory_bytes())
+            + self.after_mask.as_ref().map_or(0, |m| m.memory_bytes())
+    }
+}
+
 // ============================================================================
 // LAYER OPERATION COMMAND - For layer add/delete/reorder/opacity changes
 // ============================================================================
@@ -231,6 +288,8 @@ pub enum LayerOperation {
     Delete {
         index: usize,
         pixels: TiledImage,
+        mask: Option<TiledImage>,
+        mask_enabled: bool,
         name: String,
         visible: bool,
         opacity: f32,
@@ -257,6 +316,8 @@ pub enum LayerOperation {
         source_index: usize,
         new_index: usize,
         pixels: TiledImage,
+        mask: Option<TiledImage>,
+        mask_enabled: bool,
         name: String,
         visible: bool,
         opacity: f32,
@@ -293,6 +354,8 @@ impl Command for LayerOpCommand {
             LayerOperation::Delete {
                 index,
                 pixels,
+                mask,
+                mask_enabled,
                 name,
                 visible,
                 opacity,
@@ -306,6 +369,8 @@ impl Command for LayerOpCommand {
                     Rgba([0, 0, 0, 0]),
                 );
                 layer.pixels = pixels.clone();
+                layer.mask = mask.clone();
+                layer.mask_enabled = *mask_enabled;
                 layer.visible = *visible;
                 layer.opacity = *opacity;
                 layer.content = content.clone();
@@ -416,6 +481,8 @@ impl Command for LayerOpCommand {
             LayerOperation::Duplicate {
                 new_index,
                 pixels,
+                mask,
+                mask_enabled,
                 name,
                 visible,
                 opacity,
@@ -430,6 +497,8 @@ impl Command for LayerOpCommand {
                     Rgba([0, 0, 0, 0]),
                 );
                 layer.pixels = pixels.clone();
+                layer.mask = mask.clone();
+                layer.mask_enabled = *mask_enabled;
                 layer.visible = *visible;
                 layer.opacity = *opacity;
                 layer.content = content.clone();
@@ -477,8 +546,12 @@ impl Command for LayerOpCommand {
 
     fn memory_size(&self) -> usize {
         match &self.operation {
-            LayerOperation::Delete { pixels, name, .. } => pixels.memory_bytes() + name.len(),
-            LayerOperation::Duplicate { pixels, name, .. } => pixels.memory_bytes() + name.len(),
+            LayerOperation::Delete {
+                pixels, mask, name, ..
+            } => pixels.memory_bytes() + mask.as_ref().map_or(0, |m| m.memory_bytes()) + name.len(),
+            LayerOperation::Duplicate {
+                pixels, mask, name, ..
+            } => pixels.memory_bytes() + mask.as_ref().map_or(0, |m| m.memory_bytes()) + name.len(),
             LayerOperation::Add { name, .. } => name.len(),
             LayerOperation::Rename {
                 old_name, new_name, ..
@@ -768,6 +841,10 @@ pub struct SingleLayerSnapshotCommand {
     layer_index: usize,
     before_pixels: TiledImage,
     after_pixels: Option<TiledImage>,
+    before_mask: Option<TiledImage>,
+    after_mask: Option<TiledImage>,
+    before_mask_enabled: bool,
+    after_mask_enabled: bool,
     before_opacity: f32,
     after_opacity: f32,
     before_blend_mode: crate::canvas::BlendMode,
@@ -790,10 +867,12 @@ impl SingleLayerSnapshotCommand {
         } else {
             layer_idx.min(state.layers.len() - 1)
         };
-        let (before_pixels, before_opacity, before_blend_mode, before_content) =
+        let (before_pixels, before_mask, before_mask_enabled, before_opacity, before_blend_mode, before_content) =
             if let Some(layer) = state.layers.get(safe_idx) {
                 (
                     layer.pixels.clone(),
+                    layer.mask.clone(),
+                    layer.mask_enabled,
                     layer.opacity,
                     layer.blend_mode,
                     layer.content.clone(),
@@ -801,6 +880,8 @@ impl SingleLayerSnapshotCommand {
             } else {
                 (
                     TiledImage::new(1, 1),
+                    None,
+                    true,
                     1.0,
                     crate::canvas::BlendMode::Normal,
                     LayerContent::Raster,
@@ -811,6 +892,10 @@ impl SingleLayerSnapshotCommand {
             layer_index: safe_idx,
             before_pixels,
             after_pixels: None,
+            before_mask,
+            after_mask: None,
+            before_mask_enabled,
+            after_mask_enabled: before_mask_enabled,
             before_opacity,
             after_opacity: before_opacity,
             before_blend_mode,
@@ -824,6 +909,8 @@ impl SingleLayerSnapshotCommand {
     pub fn set_after(&mut self, state: &CanvasState) {
         if let Some(layer) = state.layers.get(self.layer_index) {
             self.after_pixels = Some(layer.pixels.clone());
+            self.after_mask = layer.mask.clone();
+            self.after_mask_enabled = layer.mask_enabled;
             self.after_opacity = layer.opacity;
             self.after_blend_mode = layer.blend_mode;
             self.after_content = layer.content.clone();
@@ -835,6 +922,8 @@ impl Command for SingleLayerSnapshotCommand {
     fn undo(&self, canvas: &mut CanvasState) {
         if let Some(layer) = canvas.layers.get_mut(self.layer_index) {
             layer.pixels = self.before_pixels.clone();
+            layer.mask = self.before_mask.clone();
+            layer.mask_enabled = self.before_mask_enabled;
             layer.opacity = self.before_opacity;
             layer.blend_mode = self.before_blend_mode;
             layer.content = self.before_content.clone();
@@ -847,6 +936,8 @@ impl Command for SingleLayerSnapshotCommand {
             && let Some(layer) = canvas.layers.get_mut(self.layer_index)
         {
             layer.pixels = after.clone();
+            layer.mask = self.after_mask.clone();
+            layer.mask_enabled = self.after_mask_enabled;
             layer.opacity = self.after_opacity;
             layer.blend_mode = self.after_blend_mode;
             layer.content = self.after_content.clone();
@@ -860,7 +951,9 @@ impl Command for SingleLayerSnapshotCommand {
 
     fn memory_size(&self) -> usize {
         self.before_pixels.memory_bytes()
+            + self.before_mask.as_ref().map_or(0, |m| m.memory_bytes())
             + self.after_pixels.as_ref().map_or(0, |p| p.memory_bytes())
+            + self.after_mask.as_ref().map_or(0, |m| m.memory_bytes())
     }
 }
 

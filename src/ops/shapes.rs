@@ -142,6 +142,10 @@ pub enum ShapeHandle {
     TopRight,
     BottomLeft,
     BottomRight,
+    Top,
+    Right,
+    Bottom,
+    Left,
     Rotate,
 }
 
@@ -210,6 +214,28 @@ fn sdf_ellipse(px: f32, py: f32, rx: f32, ry: f32) -> f32 {
     // Distance from normalised circle surface, scaled back
     let scale = (rx * rx * ny * ny + ry * ry * nx * nx).sqrt() / (rx * ry * len);
     (len - 1.0) / scale
+}
+
+/// SDF for an isosceles triangle fitted to the rectangle [-hx, hx] × [-hy, hy].
+fn sdf_triangle_box(px: f32, py: f32, hx: f32, hy: f32) -> f32 {
+    let ax = 0.0;
+    let ay = -hy;
+    let bx = hx;
+    let by = hy;
+    let cx = -hx;
+    let cy = hy;
+
+    let d1 = sdf_line_segment(px, py, ax, ay, bx, by);
+    let d2 = sdf_line_segment(px, py, bx, by, cx, cy);
+    let d3 = sdf_line_segment(px, py, cx, cy, ax, ay);
+    let edge_dist = d1.min(d2.min(d3));
+
+    let c1 = (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+    let c2 = (cx - bx) * (py - by) - (cy - by) * (px - bx);
+    let c3 = (ax - cx) * (py - cy) - (ay - cy) * (px - cx);
+    let inside = (c1 >= 0.0 && c2 >= 0.0 && c3 >= 0.0) || (c1 <= 0.0 && c2 <= 0.0 && c3 <= 0.0);
+
+    if inside { -edge_dist } else { edge_dist }
 }
 
 /// SDF for a regular polygon with `n` sides, circumscribed radius `r`.
@@ -510,7 +536,7 @@ pub fn shape_sdf(kind: ShapeKind, px: f32, py: f32, hx: f32, hy: f32, corner_rad
         ShapeKind::Rectangle => sdf_box(px, py, hx, hy),
         ShapeKind::Ellipse => sdf_ellipse(px, py, hx, hy),
         ShapeKind::RoundedRect => sdf_rounded_box(px, py, hx, hy, corner_radius),
-        ShapeKind::Triangle => sdf_polygon(px, py, hx.min(hy), 3),
+        ShapeKind::Triangle => sdf_triangle_box(px, py, hx, hy),
         ShapeKind::RightTriangle => sdf_right_triangle(px, py, hx, hy),
         ShapeKind::Trapezoid => sdf_trapezoid(px, py, hx, hy),
         ShapeKind::Parallelogram => sdf_parallelogram(px, py, hx, hy),

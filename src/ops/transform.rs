@@ -274,6 +274,7 @@ pub fn align_layer_to_anchor_from_flat(
     layer_idx: usize,
     anchor: (u32, u32),
     original_flat: &RgbaImage,
+    target_bounds: Option<(u32, u32, u32, u32)>,
 ) {
     if layer_idx >= state.layers.len() {
         return;
@@ -285,18 +286,26 @@ pub fn align_layer_to_anchor_from_flat(
 
     let bounds_w = max_x as i32 - min_x as i32 + 1;
     let bounds_h = max_y as i32 - min_y as i32 + 1;
-    let canvas_w = state.width as i32;
-    let canvas_h = state.height as i32;
+    let (tx0, ty0, tx1, ty1) = target_bounds.unwrap_or_else(|| {
+        (
+            0,
+            0,
+            state.width.saturating_sub(1),
+            state.height.saturating_sub(1),
+        )
+    });
+    let target_w = tx1 as i32 - tx0 as i32 + 1;
+    let target_h = ty1 as i32 - ty0 as i32 + 1;
 
     let target_min_x = match anchor.0 {
-        0 => 0,
-        1 => (canvas_w - bounds_w) / 2,
-        _ => canvas_w - bounds_w,
+        0 => tx0 as i32,
+        1 => tx0 as i32 + (target_w - bounds_w) / 2,
+        _ => tx1 as i32 + 1 - bounds_w,
     };
     let target_min_y = match anchor.1 {
-        0 => 0,
-        1 => (canvas_h - bounds_h) / 2,
-        _ => canvas_h - bounds_h,
+        0 => ty0 as i32,
+        1 => ty0 as i32 + (target_h - bounds_h) / 2,
+        _ => ty1 as i32 + 1 - bounds_h,
     };
 
     let dx = target_min_x - min_x as i32;

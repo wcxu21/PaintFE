@@ -1,5 +1,5 @@
 // ============================================================================
-// EFFECT DIALOGS â€” Modal dialog UIs for all 24 effects
+// EFFECT DIALOGS — Modal dialog UIs for all 24 effects
 // ============================================================================
 //
 // Each dialog follows the standard pattern:
@@ -286,7 +286,7 @@ impl MotionBlurDialog {
                         ui.label("Angle");
                         let r = ui.add(
                             egui::Slider::new(&mut self.angle, -180.0..=180.0)
-                                .suffix("Â°")
+                                .suffix("°")
                                 .max_decimals(0),
                         );
                         if track_slider(&r, &mut self.dragging) {
@@ -309,10 +309,10 @@ impl MotionBlurDialog {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
                             for &(label, val) in &[
-                                ("â†’", 0.0),
-                                ("â†—", -45.0),
-                                ("â†‘", -90.0),
-                                ("â†–", -135.0),
+                                ("→", 0.0),
+                                ("↗", -45.0),
+                                ("↑", -90.0),
+                                ("↖", -135.0),
                             ] {
                                 let btn = if (self.angle - val).abs() < 1.0 {
                                     egui::Button::new(egui::RichText::new(label).strong())
@@ -1148,7 +1148,7 @@ impl TwistDialog {
                         ui.label("Angle");
                         let r = ui.add(
                             egui::Slider::new(&mut self.angle, -720.0..=720.0)
-                                .suffix("Â°")
+                                .suffix("°")
                                 .max_decimals(0),
                         );
                         if track_slider(&r, &mut self.dragging) {
@@ -1757,7 +1757,7 @@ impl HalftoneDialog {
                         ui.label("Angle");
                         let r = ui.add(
                             egui::Slider::new(&mut self.angle, -90.0..=90.0)
-                                .suffix("Â°")
+                                .suffix("°")
                                 .max_decimals(0),
                         );
                         if track_slider(&r, &mut self.dragging) {
@@ -2297,7 +2297,7 @@ impl PixelDragDialog {
                         ui.label("Direction");
                         let r = ui.add(
                             egui::Slider::new(&mut self.direction, -180.0..=180.0)
-                                .suffix("Â°")
+                                .suffix("°")
                                 .max_decimals(0),
                         );
                         if track_slider(&r, &mut self.dragging) {
@@ -2835,7 +2835,7 @@ impl ColorFilterDialog {
 }
 
 // ============================================================================
-// RENDER â€” CONTOURS DIALOG
+// RENDER — CONTOURS DIALOG
 // ============================================================================
 
 effect_dialog_base!(ContoursDialog {
