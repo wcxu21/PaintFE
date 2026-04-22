@@ -425,6 +425,8 @@ pub struct Theme {
     pub widget_rounding: f32,
     pub window_rounding: f32,
     pub menu_rounding: f32,
+    pub glow_intensity: f32,
+    pub shadow_strength: f32,
 }
 
 impl Default for Theme {
@@ -503,6 +505,8 @@ impl Theme {
             widget_rounding: 6.0,
             window_rounding: 10.0,
             menu_rounding: 8.0,
+            glow_intensity: 1.0,
+            shadow_strength: 1.0,
         }
     }
 
@@ -575,6 +579,8 @@ impl Theme {
             widget_rounding: 6.0,
             window_rounding: 10.0,
             menu_rounding: 8.0,
+            glow_intensity: 1.0,
+            shadow_strength: 1.0,
         }
     }
 
@@ -689,6 +695,12 @@ impl Theme {
         if let Some(c) = ov.accent4 {
             self.accent4 = c;
         }
+        if let Some(v) = ov.glow_intensity {
+            self.glow_intensity = v.clamp(0.0, 2.0);
+        }
+        if let Some(v) = ov.shadow_strength {
+            self.shadow_strength = v.clamp(0.0, 2.0);
+        }
         // Geometry overrides
         if let Some(v) = ov.widget_rounding {
             self.widget_rounding = v;
@@ -699,6 +711,9 @@ impl Theme {
         if let Some(v) = ov.menu_rounding {
             self.menu_rounding = v;
         }
+
+        self.glow_accent = Self::scale_color_alpha(self.glow_accent, self.glow_intensity);
+        self.glow_accent3 = Self::scale_color_alpha(self.glow_accent3, self.glow_intensity);
     }
 
     /// Lighten a color by adding `amount` to each RGB channel
@@ -709,6 +724,28 @@ impl Theme {
             c.b().saturating_add(amount),
             c.a(),
         )
+    }
+
+    fn scale_color_alpha(color: Color32, factor: f32) -> Color32 {
+        let scaled_alpha = ((color.a() as f32) * factor.clamp(0.0, 2.0)).round() as u16;
+        Color32::from_rgba_unmultiplied(
+            color.r(),
+            color.g(),
+            color.b(),
+            scaled_alpha.min(255) as u8,
+        )
+    }
+
+    fn scaled_shadow_alpha(&self, base_alpha: u8) -> u8 {
+        ((base_alpha as f32) * self.shadow_strength.clamp(0.0, 2.0))
+            .round()
+            .clamp(0.0, 255.0) as u8
+    }
+
+    fn scaled_shadow_blur(&self, base_blur: u8) -> u8 {
+        ((base_blur as f32) * self.shadow_strength.clamp(0.0, 2.0))
+            .round()
+            .clamp(0.0, 255.0) as u8
     }
 
     pub fn apply(&self, ctx: &egui::Context) {
@@ -736,31 +773,13 @@ impl Theme {
 
         // Inactive widgets: slider rails, checkbox bg, combo-box bg.
         // Must contrast clearly against panel_bg / window_bg (which equal button_bg in our palette).
-        let inactive_fill = match self.mode {
-            ThemeMode::Dark => Color32::from_rgb(42, 42, 53), // #2a2a35 — blue-tinted mid-gray
-            ThemeMode::Light => Color32::from_gray(228), // subtle but visible buttons/dropdowns
-        };
-        visuals.widgets.inactive.bg_fill = inactive_fill;
-        visuals.widgets.inactive.weak_bg_fill = inactive_fill;
+        visuals.widgets.inactive.bg_fill = self.button_bg;
+        visuals.widgets.inactive.weak_bg_fill = self.bg3;
         visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, self.text_color);
         visuals.widgets.inactive.bg_stroke = Stroke::NONE;
         visuals.widgets.inactive.corner_radius = CornerRadius::same(self.widget_rounding as u8);
 
         // Theme-consistent interactive fills so selected/highlighted controls follow preset accent.
-        let hover_fill = match self.mode {
-            ThemeMode::Dark => Color32::from_rgba_unmultiplied(
-                self.accent.r(),
-                self.accent.g(),
-                self.accent.b(),
-                32,
-            ),
-            ThemeMode::Light => Color32::from_rgba_unmultiplied(
-                self.accent.r(),
-                self.accent.g(),
-                self.accent.b(),
-                26,
-            ),
-        };
         let selection_fill = match self.mode {
             ThemeMode::Dark => Color32::from_rgba_unmultiplied(
                 self.accent.r(),
@@ -777,14 +796,14 @@ impl Theme {
         };
 
         // Hover: accent-tinted fill + accent border for clear feedback.
-        visuals.widgets.hovered.bg_fill = hover_fill;
+    visuals.widgets.hovered.bg_fill = self.button_hover;
         visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, self.text_color);
-        visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, self.accent);
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, self.border_lit);
         visuals.widgets.hovered.corner_radius = CornerRadius::same(self.widget_rounding as u8);
         visuals.widgets.hovered.expansion = 1.0; // subtle grow on hover (Phase 9)
 
         // Active/selected: stronger accent-tinted fill
-        visuals.widgets.active.bg_fill = selection_fill;
+    visuals.widgets.active.bg_fill = self.button_active;
         visuals.widgets.active.fg_stroke = Stroke::new(1.0, self.text_color);
         visuals.widgets.active.bg_stroke = Stroke::new(1.0, self.accent_strong);
         visuals.widgets.active.corner_radius = CornerRadius::same(self.widget_rounding as u8);
@@ -813,9 +832,9 @@ impl Theme {
         };
         visuals.window_shadow = Shadow {
             offset: [0, 0],
-            blur: 10,
+            blur: self.scaled_shadow_blur(10),
             spread: 0,
-            color: Color32::from_black_alpha(shadow_alpha),
+            color: Color32::from_black_alpha(self.scaled_shadow_alpha(shadow_alpha)),
         };
         visuals.window_stroke = Stroke::new(1.0, self.border_color);
 
@@ -829,9 +848,9 @@ impl Theme {
         };
         visuals.popup_shadow = Shadow {
             offset: [0, 0],
-            blur: 1,
+            blur: self.scaled_shadow_blur(1),
             spread: 0,
-            color: Color32::from_black_alpha(popup_alpha),
+            color: Color32::from_black_alpha(self.scaled_shadow_alpha(popup_alpha)),
         };
 
         // Separator
@@ -907,14 +926,14 @@ impl Theme {
             ThemeMode::Light => 32,
         };
         egui::Frame::NONE
-            .fill(self.panel_bg)
+            .fill(self.floating_window_bg)
             .corner_radius(CornerRadius::same(10))
             .stroke(Stroke::new(1.0, self.border_color))
             .shadow(Shadow {
                 offset: [0, 0],
-                blur: 10,
+                blur: self.scaled_shadow_blur(10),
                 spread: 0,
-                color: Color32::from_black_alpha(shadow_alpha),
+                color: Color32::from_black_alpha(self.scaled_shadow_alpha(shadow_alpha)),
             })
             .inner_margin(egui::Margin::same(10))
     }
@@ -923,33 +942,25 @@ impl Theme {
     /// `ctx.animate_bool(id, is_hovered)` to smoothly transition border color.
     pub fn floating_window_frame_animated(&self, hover_t: f32) -> egui::Frame {
         let border = Self::lerp_color(self.border_color, self.border_lit, hover_t);
-        match self.mode {
-            ThemeMode::Dark => egui::Frame::NONE
-                .fill(self.panel_bg)
-                .corner_radius(CornerRadius::same(10))
-                .stroke(Stroke::new(1.0, border))
-                .shadow(Shadow {
-                    offset: [0, 0],
-                    blur: 10,
-                    spread: 0,
-                    color: Color32::from_black_alpha(50),
-                })
-                .inner_margin(egui::Margin::same(10)),
-            ThemeMode::Light => {
-                // Light mode: clean white fill, very subtle shadow, defined border
-                egui::Frame::NONE
-                    .fill(self.panel_bg)
-                    .corner_radius(CornerRadius::same(10))
-                    .stroke(Stroke::new(1.0, Color32::from_rgb(190, 190, 205)))
-                    .shadow(Shadow {
-                        offset: [0, 0],
-                        blur: 6,
-                        spread: 0,
-                        color: Color32::from_black_alpha(18),
-                    })
-                    .inner_margin(egui::Margin::same(10))
-            }
-        }
+        let shadow_alpha = match self.mode {
+            ThemeMode::Dark => 50,
+            ThemeMode::Light => 18,
+        };
+        let shadow_blur = match self.mode {
+            ThemeMode::Dark => 10,
+            ThemeMode::Light => 6,
+        };
+        egui::Frame::NONE
+            .fill(self.floating_window_bg)
+            .corner_radius(CornerRadius::same(10))
+            .stroke(Stroke::new(1.0, border))
+            .shadow(Shadow {
+                offset: [0, 0],
+                blur: self.scaled_shadow_blur(shadow_blur),
+                spread: 0,
+                color: Color32::from_black_alpha(self.scaled_shadow_alpha(shadow_alpha)),
+            })
+            .inner_margin(egui::Margin::same(10))
     }
 
     /// Linearly interpolate between two colors.
@@ -976,9 +987,9 @@ impl Theme {
             .stroke(Stroke::new(1.0, self.border_color))
             .shadow(Shadow {
                 offset: [0, 0],
-                blur: 16,
+                blur: self.scaled_shadow_blur(16),
                 spread: 0,
-                color: Color32::from_black_alpha(shadow_alpha),
+                color: Color32::from_black_alpha(self.scaled_shadow_alpha(shadow_alpha)),
             })
             .inner_margin(egui::Margin::same(16))
     }
@@ -1001,7 +1012,7 @@ impl Theme {
         // No stroke — the accent bottom line is painted separately in app.rs
         // to avoid a 4-sided border from egui's Frame::stroke
         egui::Frame::NONE
-            .fill(self.bg_color)
+            .fill(self.menu_bg)
             .inner_margin(egui::Margin::symmetric(8, 2))
     }
 
@@ -1044,9 +1055,9 @@ impl Theme {
                     .stroke(Stroke::new(1.0, self.border_color))
                     .shadow(Shadow {
                         offset: [0, 0],
-                        blur: 6,
+                        blur: self.scaled_shadow_blur(6),
                         spread: 0,
-                        color: Color32::from_black_alpha(40),
+                        color: Color32::from_black_alpha(self.scaled_shadow_alpha(40)),
                     })
                     .inner_margin(egui::Margin::symmetric(10, 5))
             }
@@ -1056,9 +1067,9 @@ impl Theme {
                 .stroke(Stroke::new(1.0, Color32::from_rgb(208, 208, 222)))
                 .shadow(Shadow {
                     offset: [0, 0],
-                    blur: 4,
+                    blur: self.scaled_shadow_blur(4),
                     spread: 0,
-                    color: Color32::from_black_alpha(14),
+                    color: Color32::from_black_alpha(self.scaled_shadow_alpha(14)),
                 })
                 .inner_margin(egui::Margin::symmetric(10, 5)),
         }

@@ -1,5 +1,6 @@
 use ab_glyph::{Font, FontArc, GlyphId, ScaleFont, point};
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 /// Cache for rasterized glyph pixel data. Key: (GlyphId, font_size_bits, width_scale_bits, height_scale_bits).
 /// Value: (pixels as (u32, u32, f32), bounds_min_x_at_origin_zero, bounds_min_y_at_origin_zero).
@@ -100,6 +101,81 @@ pub struct RasterizedText {
 pub struct TextLayoutMetrics {
     pub line_advances: Vec<Vec<f32>>,
     pub line_height: f32,
+}
+
+static SYSTEM_FONT_FAMILIES: OnceLock<Vec<String>> = OnceLock::new();
+static PREFERRED_DEFAULT_FONT_FAMILY: OnceLock<String> = OnceLock::new();
+
+fn matches_font_family(candidate: &str, requested: &str) -> bool {
+    candidate.eq_ignore_ascii_case(requested)
+}
+
+fn pick_preferred_font_family(families: &[String]) -> String {
+    #[cfg(target_os = "windows")]
+    const PREFERRED: &[&str] = &[
+        "Segoe UI",
+        "Arial",
+        "Tahoma",
+        "Verdana",
+        "Noto Sans",
+    ];
+    #[cfg(target_os = "macos")]
+    const PREFERRED: &[&str] = &[
+        "SF Pro",
+        "Helvetica Neue",
+        "Helvetica",
+        "Arial",
+        "Noto Sans",
+    ];
+    #[cfg(target_os = "linux")]
+    const PREFERRED: &[&str] = &[
+        "Noto Sans",
+        "DejaVu Sans",
+        "Liberation Sans",
+        "Ubuntu",
+        "Cantarell",
+        "Arial",
+    ];
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    const PREFERRED: &[&str] = &["Noto Sans", "Arial", "DejaVu Sans", "Liberation Sans"];
+
+    for preferred in PREFERRED {
+        if let Some(found) = families
+            .iter()
+            .find(|family| matches_font_family(family, preferred))
+        {
+            return found.clone();
+        }
+    }
+
+    families
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "Arial".to_string())
+}
+
+pub fn cached_system_fonts() -> &'static [String] {
+    SYSTEM_FONT_FAMILIES
+        .get_or_init(enumerate_system_fonts)
+        .as_slice()
+}
+
+pub fn preferred_default_font_family() -> String {
+    PREFERRED_DEFAULT_FONT_FAMILY
+        .get_or_init(|| pick_preferred_font_family(cached_system_fonts()))
+        .clone()
+}
+
+pub fn resolve_font_family_preference(family: &str) -> String {
+    let requested = family.trim();
+    if !requested.is_empty()
+        && let Some(found) = cached_system_fonts()
+            .iter()
+            .find(|candidate| matches_font_family(candidate, requested))
+    {
+        return found.clone();
+    }
+    preferred_default_font_family()
 }
 
 /// Compute only layout metrics (line advances + line height) without rasterizing pixels.

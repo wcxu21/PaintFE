@@ -155,6 +155,18 @@ fn main() -> Result<(), eframe::Error> {
         }
     }
 
+        // Suppress GLib/GIO/DBus debug noise that appears in some Wayland/Fedora setups.
+        // Only set these if the user hasn't overridden them.
+        #[cfg(target_os = "linux")]
+        {
+            if std::env::var_os("G_MESSAGES_DEBUG").is_none() {
+                unsafe { std::env::set_var("G_MESSAGES_DEBUG", "") };
+            }
+            if std::env::var_os("G_DEBUG").is_none() {
+                unsafe { std::env::set_var("G_DEBUG", "") };
+            }
+        }
+
     // Initialize session log (overwrites previous session log)
     logger::init();
 

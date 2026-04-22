@@ -6,6 +6,35 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## [1.2.8] - 2026-04-22
+
+### Added
+- **Line anti-aliasing control**: Added anti-aliasing support for line rendering with a dedicated toggle for sharper or smoother edges as needed.
+- **Selection alpha copy option**: Added a setting to control transparent cutout behavior when copying selections, preserving expected alpha semantics for compositing workflows.
+- **Improved copy/paste transform workflow**: Added support for copying transformed pasted content and re-pasting it at the original placement.
+
+### Changed
+- **Fill precision for pixel art**: Improved Fill bucket precision for low-resolution and narrow features, with better behavior on 1px structures.
+- **Color widget interaction**: Updated color selection controls to respond reliably on click/press interactions.
+- **Customization and control polish**: Refined input handling, slider behavior, and preference control consistency across settings and tool dialogs.
+- **Shape rendering rework**: Reworked Heart, Trapezoid, and Cross shape implementations for more stable and predictable output.
+- **Text tool font support**: Expanded text font handling and settings behavior, including stronger cross-platform support on Linux and macOS.
+
+### Fixed
+- **Wayland startup noise**: Suppressed non-critical Wayland/Linux runtime noise for cleaner startup diagnostics.
+- **Async cancellation robustness**: Improved cancellation and lifecycle handling for async actions and preview jobs.
+- **egui color picker issues**: Resolved color picker regressions in settings and related UI flows.
+- **Layer panel text interaction**: Removed unintended text selection behavior in the layers widget.
+- **Window state handling**: Fixed fake fullscreen/maximized persistence and restoration behavior.
+- **Selection commit behavior**: Ensured Ctrl+A and related selection actions properly commit active transform/preview states.
+- **Layer deletion selection state**: Selection is now cleared correctly when deleting the active layer containing it.
+- **Liquify history tracking**: Fixed Liquify commits not being captured correctly in undo/redo history.
+- **Paste lifecycle isolation**: Fixed image paste overlays persisting across new files/projects.
+- **Selection-aware transforms**: Flip/rotate operations now correctly apply within active selections.
+- **Pencil tool stability**: Fixed edge-case Pencil behavior and improved reliability.
+
+---
+
 ## [1.2.7] - 2026-04-22
 
 ### Changed

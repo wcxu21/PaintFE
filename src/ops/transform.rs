@@ -3,8 +3,17 @@
 // ============================================================================
 
 use crate::canvas::{CanvasState, Layer, TiledImage};
-use image::{Rgba, RgbaImage, imageops};
+use image::{GrayImage, Luma, Rgba, RgbaImage, imageops};
 use rayon::prelude::*;
+
+#[derive(Clone, Copy)]
+enum SelectionCanvasTransform {
+    FlipHorizontal,
+    FlipVertical,
+    Rotate90Cw,
+    Rotate90Ccw,
+    Rotate180,
+}
 
 /// Interpolation method for resize operations.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
@@ -51,6 +60,9 @@ impl Interpolation {
 
 /// Flip the entire canvas horizontally (mirror left↔right).
 pub fn flip_canvas_horizontal(state: &mut CanvasState) {
+    if try_transform_selected_region(state, SelectionCanvasTransform::FlipHorizontal) {
+        return;
+    }
     state.layers.par_iter_mut().for_each(|layer| {
         layer.pixels.flip_horizontal_chunked();
     });
@@ -59,6 +71,9 @@ pub fn flip_canvas_horizontal(state: &mut CanvasState) {
 
 /// Flip the entire canvas vertically (mirror top↔bottom).
 pub fn flip_canvas_vertical(state: &mut CanvasState) {
+    if try_transform_selected_region(state, SelectionCanvasTransform::FlipVertical) {
+        return;
+    }
     state.layers.par_iter_mut().for_each(|layer| {
         layer.pixels.flip_vertical_chunked();
     });
@@ -67,6 +82,9 @@ pub fn flip_canvas_vertical(state: &mut CanvasState) {
 
 /// Rotate the entire canvas 90° clockwise (swaps W↔H).
 pub fn rotate_canvas_90cw(state: &mut CanvasState) {
+    if try_transform_selected_region(state, SelectionCanvasTransform::Rotate90Cw) {
+        return;
+    }
     let new_pixels: Vec<_> = state
         .layers
         .par_iter()
@@ -83,6 +101,9 @@ pub fn rotate_canvas_90cw(state: &mut CanvasState) {
 
 /// Rotate the entire canvas 90° counter-clockwise (swaps W↔H).
 pub fn rotate_canvas_90ccw(state: &mut CanvasState) {
+    if try_transform_selected_region(state, SelectionCanvasTransform::Rotate90Ccw) {
+        return;
+    }
     let new_pixels: Vec<_> = state
         .layers
         .par_iter()
@@ -99,10 +120,170 @@ pub fn rotate_canvas_90ccw(state: &mut CanvasState) {
 
 /// Rotate the entire canvas 180°.
 pub fn rotate_canvas_180(state: &mut CanvasState) {
+    if try_transform_selected_region(state, SelectionCanvasTransform::Rotate180) {
+        return;
+    }
     state.layers.par_iter_mut().for_each(|layer| {
         layer.pixels.rotate_180_chunked();
     });
     state.mark_dirty(None);
+}
+
+fn try_transform_selected_region(
+    state: &mut CanvasState,
+    transform: SelectionCanvasTransform,
+) -> bool {
+    if selection_covers_full_canvas(state) {
+        return false;
+    }
+
+    let Some((min_x, min_y, max_x, max_y)) = state.selection_mask_bounds() else {
+        return false;
+    };
+    let Some(selection_mask) = state.selection_mask.clone() else {
+        return false;
+    };
+
+    let region_w = max_x - min_x + 1;
+    let region_h = max_y - min_y + 1;
+    let mut region_mask = GrayImage::new(region_w, region_h);
+    for y in 0..region_h {
+        for x in 0..region_w {
+            let src = *selection_mask.get_pixel(min_x + x, min_y + y);
+            region_mask.put_pixel(x, y, src);
+        }
+    }
+
+    let transformed_mask = transform_gray_region(&region_mask, transform);
+    let (dst_min_x, dst_min_y) = centered_region_origin(
+        min_x as i32,
+        min_y as i32,
+        region_w,
+        region_h,
+        transformed_mask.width(),
+        transformed_mask.height(),
+    );
+
+    for layer in &mut state.layers {
+        let flat = layer.pixels.to_rgba_image();
+        let mut cutout = RgbaImage::from_pixel(region_w, region_h, Rgba([0, 0, 0, 0]));
+
+        for y in 0..region_h {
+            for x in 0..region_w {
+                if region_mask.get_pixel(x, y)[0] == 0 {
+                    continue;
+                }
+                cutout.put_pixel(x, y, *flat.get_pixel(min_x + x, min_y + y));
+                layer
+                    .pixels
+                    .put_pixel(min_x + x, min_y + y, Rgba([0, 0, 0, 0]));
+            }
+        }
+
+        let transformed_cutout = transform_rgba_region(&cutout, transform);
+        for y in 0..transformed_mask.height() {
+            for x in 0..transformed_mask.width() {
+                if transformed_mask.get_pixel(x, y)[0] == 0 {
+                    continue;
+                }
+                let dst_x = dst_min_x + x as i32;
+                let dst_y = dst_min_y + y as i32;
+                if dst_x < 0
+                    || dst_y < 0
+                    || dst_x >= state.width as i32
+                    || dst_y >= state.height as i32
+                {
+                    continue;
+                }
+                layer.pixels.put_pixel(
+                    dst_x as u32,
+                    dst_y as u32,
+                    *transformed_cutout.get_pixel(x, y),
+                );
+            }
+        }
+    }
+
+    let mut new_mask = GrayImage::new(state.width, state.height);
+    for y in 0..transformed_mask.height() {
+        for x in 0..transformed_mask.width() {
+            let value = transformed_mask.get_pixel(x, y)[0];
+            if value == 0 {
+                continue;
+            }
+            let dst_x = dst_min_x + x as i32;
+            let dst_y = dst_min_y + y as i32;
+            if dst_x < 0 || dst_y < 0 || dst_x >= state.width as i32 || dst_y >= state.height as i32 {
+                continue;
+            }
+            new_mask.put_pixel(dst_x as u32, dst_y as u32, Luma([value]));
+        }
+    }
+
+    state.selection_mask = Some(new_mask);
+    state.invalidate_selection_overlay();
+    state.composite_cache = None;
+    state.clear_preview_state();
+    state.mark_dirty(None);
+    true
+}
+
+fn selection_covers_full_canvas(state: &CanvasState) -> bool {
+    let Some(mask) = state.selection_mask.as_ref() else {
+        return false;
+    };
+    if state.width == 0 || state.height == 0 {
+        return false;
+    }
+    if mask.width() != state.width || mask.height() != state.height {
+        return false;
+    }
+    if state.selection_mask_bounds() != Some((0, 0, state.width - 1, state.height - 1)) {
+        return false;
+    }
+    mask.pixels().all(|px| px[0] > 0)
+}
+
+fn centered_region_origin(
+    min_x: i32,
+    min_y: i32,
+    src_w: u32,
+    src_h: u32,
+    dst_w: u32,
+    dst_h: u32,
+) -> (i32, i32) {
+    (
+        min_x + floor_div2(src_w as i32 - dst_w as i32),
+        min_y + floor_div2(src_h as i32 - dst_h as i32),
+    )
+}
+
+fn floor_div2(value: i32) -> i32 {
+    if value >= 0 || value % 2 == 0 {
+        value / 2
+    } else {
+        value / 2 - 1
+    }
+}
+
+fn transform_rgba_region(src: &RgbaImage, transform: SelectionCanvasTransform) -> RgbaImage {
+    match transform {
+        SelectionCanvasTransform::FlipHorizontal => imageops::flip_horizontal(src),
+        SelectionCanvasTransform::FlipVertical => imageops::flip_vertical(src),
+        SelectionCanvasTransform::Rotate90Cw => imageops::rotate90(src),
+        SelectionCanvasTransform::Rotate90Ccw => imageops::rotate270(src),
+        SelectionCanvasTransform::Rotate180 => imageops::rotate180(src),
+    }
+}
+
+fn transform_gray_region(src: &GrayImage, transform: SelectionCanvasTransform) -> GrayImage {
+    match transform {
+        SelectionCanvasTransform::FlipHorizontal => imageops::flip_horizontal(src),
+        SelectionCanvasTransform::FlipVertical => imageops::flip_vertical(src),
+        SelectionCanvasTransform::Rotate90Cw => imageops::rotate90(src),
+        SelectionCanvasTransform::Rotate90Ccw => imageops::rotate270(src),
+        SelectionCanvasTransform::Rotate180 => imageops::rotate180(src),
+    }
 }
 
 /// Resize the entire image (all layers) to new dimensions with given interpolation.
@@ -1361,4 +1542,85 @@ pub fn warp_mesh_catmull_rom(
         out_h,
     );
     warp_displacement_full(src, &displacement)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::canvas::Layer;
+
+    fn transparent_state(width: u32, height: u32, layer_count: usize) -> CanvasState {
+        let mut state = CanvasState::new(width, height);
+        state.layers[0] = Layer::new(
+            "Layer 1".to_string(),
+            width,
+            height,
+            Rgba([0, 0, 0, 0]),
+        );
+        while state.layers.len() < layer_count {
+            state.layers.push(Layer::new(
+                format!("Layer {}", state.layers.len() + 1),
+                width,
+                height,
+                Rgba([0, 0, 0, 0]),
+            ));
+        }
+        state
+    }
+
+    #[test]
+    fn flip_canvas_horizontal_moves_selected_pixels_on_all_layers() {
+        let mut state = transparent_state(4, 4, 2);
+        state.layers[0].pixels.put_pixel(0, 1, Rgba([255, 0, 0, 255]));
+        state.layers[0].pixels.put_pixel(0, 2, Rgba([0, 255, 0, 255]));
+        state.layers[1].pixels.put_pixel(0, 1, Rgba([0, 0, 255, 255]));
+
+        let mut mask = GrayImage::new(4, 4);
+        mask.put_pixel(0, 1, Luma([255]));
+        mask.put_pixel(1, 1, Luma([255]));
+        mask.put_pixel(0, 2, Luma([255]));
+        state.selection_mask = Some(mask);
+
+        flip_canvas_horizontal(&mut state);
+
+        assert_eq!(*state.layers[0].pixels.get_pixel(0, 1), Rgba([0, 0, 0, 0]));
+        assert_eq!(*state.layers[0].pixels.get_pixel(1, 1), Rgba([255, 0, 0, 255]));
+        assert_eq!(*state.layers[0].pixels.get_pixel(1, 2), Rgba([0, 255, 0, 255]));
+        assert_eq!(*state.layers[1].pixels.get_pixel(1, 1), Rgba([0, 0, 255, 255]));
+
+        let mask = state.selection_mask.expect("selection mask should remain active");
+        assert_eq!(*mask.get_pixel(0, 1), Luma([255]));
+        assert_eq!(*mask.get_pixel(1, 1), Luma([255]));
+        assert_eq!(*mask.get_pixel(1, 2), Luma([255]));
+        assert_eq!(*mask.get_pixel(0, 2), Luma([0]));
+    }
+
+    #[test]
+    fn rotate_canvas_90cw_rotates_selected_region_and_mask() {
+        let mut state = transparent_state(5, 5, 2);
+        state.layers[0].pixels.put_pixel(1, 1, Rgba([255, 0, 0, 255]));
+        state.layers[0].pixels.put_pixel(1, 2, Rgba([0, 255, 0, 255]));
+        state.layers[1].pixels.put_pixel(1, 1, Rgba([0, 0, 255, 255]));
+
+        let mut mask = GrayImage::new(5, 5);
+        mask.put_pixel(1, 1, Luma([255]));
+        mask.put_pixel(2, 1, Luma([255]));
+        mask.put_pixel(1, 2, Luma([255]));
+        mask.put_pixel(1, 3, Luma([255]));
+        state.selection_mask = Some(mask);
+
+        rotate_canvas_90cw(&mut state);
+
+        assert_eq!(*state.layers[0].pixels.get_pixel(2, 1), Rgba([255, 0, 0, 255]));
+        assert_eq!(*state.layers[0].pixels.get_pixel(1, 1), Rgba([0, 255, 0, 255]));
+        assert_eq!(*state.layers[1].pixels.get_pixel(2, 1), Rgba([0, 0, 255, 255]));
+        assert_eq!(*state.layers[0].pixels.get_pixel(1, 2), Rgba([0, 0, 0, 0]));
+
+        let mask = state.selection_mask.expect("selection mask should remain active");
+        assert_eq!(*mask.get_pixel(1, 1), Luma([255]));
+        assert_eq!(*mask.get_pixel(2, 1), Luma([255]));
+        assert_eq!(*mask.get_pixel(2, 2), Luma([255]));
+        assert_eq!(*mask.get_pixel(0, 1), Luma([255]));
+        assert_eq!(*mask.get_pixel(1, 2), Luma([0]));
+    }
 }

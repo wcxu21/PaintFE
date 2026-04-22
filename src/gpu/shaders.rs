@@ -849,6 +849,13 @@ fn cs_fill_preview(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
+    // Preserve pixel precision for tiny regions and 1px structures.
+    // Softening these can make valid fills appear invisible.
+    if (neighbor_fill_count <= 2u) {
+        textureStore(out_tex, out_coord, u.fill_color);
+        return;
+    }
+
     let ratio = f32(neighbor_fill_count) / f32(total_neighbors);
     let t = ratio * ratio * (3.0 - 2.0 * ratio);
     let bg = textureLoad(bg_tex, canvas_coord, 0);

@@ -73,6 +73,7 @@ struct PendingPasteRequest {
     cursor_canvas: Option<(f32, f32)>,
     source_center: Option<egui::Pos2>,
     use_source_center: bool,
+    overwrite_transparent_pixels: bool,
 }
 
 /// Result delivered from a background IO thread.
@@ -191,6 +192,8 @@ pub struct PaintFEApp {
     filter_status_description: String,
     /// Monotonically-increasing token; preview jobs carrying an older token are discarded on receipt.
     preview_job_token: u64,
+        /// Cancellation flag for the current preview job; set to true before spawning a new one.
+        filter_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 
     // Async canvas-wide operation pipeline (resize image/canvas)
     canvas_op_sender: mpsc::Sender<CanvasOpResult>,
@@ -346,7 +349,7 @@ impl PaintFEApp {
         ipc_receiver: mpsc::Receiver<PathBuf>,
     ) -> Self {
         // Initialize settings from disk (or defaults if no saved file)
-        let settings = AppSettings::load();
+        let mut settings = AppSettings::load();
 
         // Apply saved language preference (or auto-detect on first boot)
         if settings.language.is_empty() {
@@ -418,6 +421,9 @@ impl PaintFEApp {
         }
 
         // Initialize theme from settings with accent and apply immediately
+        settings.persisted_text_font_family =
+            crate::ops::text::resolve_font_family_preference(&settings.persisted_text_font_family);
+
         let accent = if settings.theme_preset == crate::theme::ThemePreset::Custom {
             settings.custom_accent
         } else {
@@ -507,6 +513,7 @@ impl PaintFEApp {
             filter_ops_start_time: None,
             filter_status_description: String::new(),
             preview_job_token: 1,
+                filter_cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             canvas_op_sender,
             canvas_op_receiver,
             io_sender,
@@ -630,12 +637,28 @@ impl PaintFEApp {
 
     /// Create a new untitled project and switch to it
     fn new_project(&mut self, width: u32, height: u32) {
+        if self.paste_overlay.is_some() {
+            self.commit_paste_overlay();
+        }
         self.persist_active_project_view();
         self.untitled_counter += 1;
         let project = Project::new_untitled(self.untitled_counter, width, height);
         self.projects.push(project);
         self.active_project_index = self.projects.len() - 1;
         self.restore_active_project_view();
+    }
+
+    fn copy_active_selection_or_overlay(&self) -> bool {
+        if let Some(overlay) = self.paste_overlay.as_ref() {
+            crate::ops::clipboard::copy_overlay(overlay)
+        } else if let Some(project) = self.active_project() {
+            crate::ops::clipboard::copy_selection(
+                &project.canvas_state,
+                self.settings.clipboard_copy_transparent_cutout,
+            )
+        } else {
+            false
+        }
     }
 
     /// If the initial blank project should be auto-closed (because we opened a
@@ -750,6 +773,7 @@ impl PaintFEApp {
         cursor_canvas: Option<(f32, f32)>,
         source_center: Option<egui::Pos2>,
         use_source_center: bool,
+        overwrite_transparent_pixels: bool,
     ) {
         if self.paste_overlay.is_some() {
             self.commit_paste_overlay();
@@ -765,6 +789,7 @@ impl PaintFEApp {
             cursor_canvas,
             source_center,
             use_source_center,
+            overwrite_transparent_pixels,
         };
 
         if request.image.width() > project.canvas_state.width
@@ -777,6 +802,7 @@ impl PaintFEApp {
     }
 
     fn queue_paste_from_clipboard(&mut self, cursor_canvas: Option<(f32, f32)>) {
+        let cutout_enabled = self.settings.clipboard_copy_transparent_cutout;
         let payload = if let Some(payload) = crate::ops::clipboard::get_clipboard_image_for_paste()
         {
             payload
@@ -785,10 +811,15 @@ impl PaintFEApp {
                 image: img,
                 source: ClipboardImageSource::Internal,
                 origin_center: None,
+                overwrite_transparent_pixels: true,
             }
         } else {
             return;
         };
+
+        // Respect the user's "transparent cutout" setting: even if the clipboard
+        // payload says overwrite (internal copy), disable it when the setting is off.
+        let overwrite = payload.overwrite_transparent_pixels && cutout_enabled;
 
         let use_source_center =
             payload.source == ClipboardImageSource::Internal && payload.origin_center.is_some();
@@ -797,6 +828,7 @@ impl PaintFEApp {
             cursor_canvas,
             payload.origin_center,
             use_source_center,
+            overwrite,
         );
     }
 
@@ -839,6 +871,8 @@ impl PaintFEApp {
             } else {
                 PasteOverlay::from_image(request.image, cw, ch)
             };
+            let mut overlay = overlay;
+            overlay.overwrite_transparent_pixels = request.overwrite_transparent_pixels;
 
             project.canvas_state.clear_selection();
             self.paste_overlay = Some(overlay);
@@ -976,6 +1010,11 @@ impl PaintFEApp {
             .settings
             .persisted_shapes_corner_radius
             .clamp(0.0, 1000.0);
+        self.tools_panel.text_state.font_family = crate::ops::text::resolve_font_family_preference(
+            &self.settings.persisted_text_font_family,
+        );
+        self.tools_panel.text_state.loaded_font = None;
+        self.tools_panel.text_state.loaded_font_key.clear();
     }
 
     fn compute_tool_settings_fingerprint(&self) -> u64 {
@@ -1090,6 +1129,7 @@ impl PaintFEApp {
             .corner_radius
             .to_bits()
             .hash(&mut hasher);
+        self.tools_panel.text_state.font_family.hash(&mut hasher);
 
         hasher.finish()
     }
@@ -1122,6 +1162,7 @@ impl PaintFEApp {
             .to_bits()
             .hash(&mut hasher);
         hash_opt_pair(self.settings.persist_window_pos, &mut hasher);
+        self.settings.persist_window_maximized.hash(&mut hasher);
         self.palette_panel
             .serialize_recent_colors()
             .hash(&mut hasher);
@@ -1233,6 +1274,7 @@ impl PaintFEApp {
         .to_string();
         self.settings.persisted_shapes_anti_alias = self.tools_panel.shapes_state.anti_alias;
         self.settings.persisted_shapes_corner_radius = self.tools_panel.shapes_state.corner_radius;
+        self.settings.persisted_text_font_family = self.tools_panel.text_state.font_family.clone();
 
         self.settings.save();
     }
@@ -1294,6 +1336,10 @@ impl eframe::App for PaintFEApp {
         // --- First frame startup file processing ---
         if self.first_frame {
             self.first_frame = false;
+
+            if self.settings.persist_window_maximized {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+            }
 
             // Open files passed as positional arguments (e.g. right-click → "Open with PaintFE")
             let files = std::mem::take(&mut self.pending_startup_files);
@@ -2177,10 +2223,8 @@ impl eframe::App for PaintFEApp {
             let copy_poll_edge = poll_ctrl_c_down && !self.prev_ctrl_c_down;
             let copy_vk_edge =
                 vk_probe.ctrl_down && vk_probe.c_press_count != self.prev_vk_c_press_count;
-            if (copy_pressed || copy_poll_edge || copy_vk_edge)
-                && let Some(project) = self.active_project()
-            {
-                crate::ops::clipboard::copy_selection(&project.canvas_state);
+            if copy_pressed || copy_poll_edge || copy_vk_edge {
+                self.copy_active_selection_or_overlay();
             }
 
             // Ctrl+X — Cut
@@ -2239,10 +2283,12 @@ impl eframe::App for PaintFEApp {
                 let has_sel = self
                     .active_project()
                     .is_some_and(|p| p.canvas_state.has_selection());
+                let transparent_cutout = self.settings.clipboard_copy_transparent_cutout;
                 let mut cut_applied = false;
                 if has_sel {
                     self.do_snapshot_op("Cut Selection", |s| {
-                        cut_applied = crate::ops::clipboard::cut_selection(s);
+                        cut_applied =
+                            crate::ops::clipboard::cut_selection(s, transparent_cutout);
                     });
                 }
             }
@@ -2563,31 +2609,8 @@ impl eframe::App for PaintFEApp {
 
             // Ctrl+A — Select All (skip when script editor has text focus)
             let script_editor_open = self.window_visibility.script_editor;
-            let text_tool_editing = self.tools_panel.active_tool
-                == crate::components::tools::Tool::Text
-                && self.tools_panel.text_state.is_editing;
-            if !script_editor_open
-                && !text_tool_editing
-                && kb.is_pressed(ctx, BindableAction::SelectAll)
-            {
-                let secondary = self.colors_panel.get_secondary_color_f32();
-                let project_idx = self.active_project_index;
-                if let Some(project) = self.projects.get_mut(project_idx) {
-                    self.tools_panel
-                        .commit_active_tool_preview(&mut project.canvas_state, secondary);
-                    let w = project.canvas_state.width;
-                    let h = project.canvas_state.height;
-                    let sel_before = project.canvas_state.selection_mask.clone();
-                    let mask = image::GrayImage::from_pixel(w, h, image::Luma([255u8]));
-                    project.canvas_state.selection_mask = Some(mask.clone());
-                    project.canvas_state.invalidate_selection_overlay();
-                    project.canvas_state.mark_dirty(None);
-                    project.history.push(Box::new(SelectionCommand::new(
-                        "Select All",
-                        sel_before,
-                        Some(mask),
-                    )));
-                }
+            if !script_editor_open && kb.is_pressed(ctx, BindableAction::SelectAll) {
+                self.select_all_canvas();
             }
 
             // Ctrl+D — Deselect
@@ -3970,6 +3993,7 @@ impl eframe::App for PaintFEApp {
                         let has_sel = self
                             .active_project()
                             .is_some_and(|p| p.canvas_state.has_selection());
+                        let can_copy = has_sel || self.paste_overlay.is_some();
                         let has_clip = crate::ops::clipboard::has_clipboard_image();
 
                         if self
@@ -3984,8 +4008,9 @@ impl eframe::App for PaintFEApp {
                             )
                             .clicked()
                         {
+                            let transparent_cutout = self.settings.clipboard_copy_transparent_cutout;
                             self.do_snapshot_op("Cut Selection", |s| {
-                                crate::ops::clipboard::cut_selection(s);
+                                crate::ops::clipboard::cut_selection(s, transparent_cutout);
                             });
                             ui.close();
                         }
@@ -3995,15 +4020,13 @@ impl eframe::App for PaintFEApp {
                                 ui,
                                 Icon::MenuEditCopy,
                                 &t!("menu.edit.copy"),
-                                has_sel,
+                                can_copy,
                                 &menu_kb,
                                 BindableAction::Copy,
                             )
                             .clicked()
                         {
-                            if let Some(project) = self.active_project() {
-                                crate::ops::clipboard::copy_selection(&project.canvas_state);
-                            }
+                            self.copy_active_selection_or_overlay();
                             ui.close();
                         }
                         if self
@@ -4071,14 +4094,7 @@ impl eframe::App for PaintFEApp {
                             )
                             .clicked()
                         {
-                            if let Some(project) = self.active_project_mut() {
-                                let w = project.canvas_state.width;
-                                let h = project.canvas_state.height;
-                                let mask = image::GrayImage::from_pixel(w, h, image::Luma([255u8]));
-                                project.canvas_state.selection_mask = Some(mask);
-                                project.canvas_state.invalidate_selection_overlay();
-                                project.canvas_state.mark_dirty(None);
-                            }
+                            self.select_all_canvas();
                             ui.close();
                         }
                         if self
@@ -6117,15 +6133,13 @@ impl eframe::App for PaintFEApp {
         }
 
         // --- Floating Tool Shelf (replaces docked context bar) ---
-        // Uses a thin panel filled with the canvas background color so the
-        // rounded shelf frame visually floats on top of the canvas.
-        let shelf_panel_bg = self.theme.tool_shelf_bg;
+        // Keep the strip itself transparent so the canvas/app backdrop remains
+        // visible behind the floating shelf container.
         let shelf_margin = 6.0;
         #[allow(deprecated)]
         egui::Panel::top("tool_shelf_strip")
             .frame(
                 egui::Frame::NONE
-                    .fill(shelf_panel_bg)
                     .inner_margin(egui::Margin::same(shelf_margin as i8)),
             )
             .min_size(30.0) // Allow growth so controls don't get vertically clipped on newer egui metrics
@@ -6364,12 +6378,16 @@ impl eframe::App for PaintFEApp {
         }
 
         // Persist last non-trivial window content size for next launch.
-        if screen_w >= 640.0 && screen_h >= 480.0 {
-            self.settings.persist_window_width = screen_w;
-            self.settings.persist_window_height = screen_h;
-        }
-        if let Some(outer_rect) = ctx.input(|i| i.viewport().outer_rect) {
-            self.settings.persist_window_pos = Some((outer_rect.min.x, outer_rect.min.y));
+        let is_maximized = ctx.input(|i| i.viewport().maximized).unwrap_or(false);
+        self.settings.persist_window_maximized = is_maximized;
+        if !is_maximized {
+            if screen_w >= 640.0 && screen_h >= 480.0 {
+                self.settings.persist_window_width = screen_w;
+                self.settings.persist_window_height = screen_h;
+            }
+            if let Some(outer_rect) = ctx.input(|i| i.viewport().outer_rect) {
+                self.settings.persist_window_pos = Some((outer_rect.min.x, outer_rect.min.y));
+            }
         }
         self.persist_window_state_if_changed();
 
@@ -6693,7 +6711,7 @@ impl PaintFEApp {
         });
 
         for img in decoded_images {
-            self.queue_paste_image(img, cursor_canvas, None, false);
+            self.queue_paste_image(img, cursor_canvas, None, false, false);
         }
     }
 
@@ -7268,13 +7286,14 @@ impl PaintFEApp {
         original_flat: image::RgbaImage,
         filter_fn: impl FnOnce(&image::RgbaImage) -> image::RgbaImage + Send + 'static,
     ) {
-        self.spawn_filter_job_with_token(
+        self.spawn_filter_job_internal(
             current_time,
             description,
             layer_idx,
             original_pixels,
             original_flat,
             0,
+            None,
             filter_fn,
         );
     }
@@ -7290,15 +7309,20 @@ impl PaintFEApp {
         original_flat: image::RgbaImage,
         filter_fn: impl FnOnce(&image::RgbaImage) -> image::RgbaImage + Send + 'static,
     ) {
+        // Cancel any in-flight preview job before spawning the new one
+        self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.filter_cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel = std::sync::Arc::clone(&self.filter_cancel);
         self.preview_job_token = self.preview_job_token.wrapping_add(1);
         let token = self.preview_job_token;
-        self.spawn_filter_job_with_token(
+        self.spawn_filter_job_internal(
             current_time,
             description,
             layer_idx,
             original_pixels,
             original_flat,
             token,
+            Some(cancel),
             filter_fn,
         );
     }
@@ -7313,6 +7337,29 @@ impl PaintFEApp {
         preview_token: u64,
         filter_fn: impl FnOnce(&image::RgbaImage) -> image::RgbaImage + Send + 'static,
     ) {
+        self.spawn_filter_job_internal(
+            current_time,
+            description,
+            layer_idx,
+            original_pixels,
+            original_flat,
+            preview_token,
+            None,
+            filter_fn,
+        );
+    }
+
+    fn spawn_filter_job_internal(
+        &mut self,
+        current_time: f64,
+        description: String,
+        layer_idx: usize,
+        original_pixels: TiledImage,
+        original_flat: image::RgbaImage,
+        preview_token: u64,
+        cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        filter_fn: impl FnOnce(&image::RgbaImage) -> image::RgbaImage + Send + 'static,
+    ) {
         let sender = self.filter_sender.clone();
         let project_index = self.active_project_index;
         if self.pending_filter_jobs == 0 {
@@ -7322,6 +7369,10 @@ impl PaintFEApp {
         self.pending_filter_jobs += 1;
         rayon::spawn(move || {
             let result_flat = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                // Check cancellation before starting expensive work
+                if cancel.as_ref().is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
+                    return original_flat.clone();
+                }
                 filter_fn(&original_flat)
             }));
             match result_flat {
@@ -7430,6 +7481,38 @@ impl PaintFEApp {
             cmd.set_after(&project.canvas_state);
             project.history.push(Box::new(cmd));
             project.mark_dirty();
+        }
+    }
+
+    fn select_all_canvas(&mut self) {
+        let secondary = self.colors_panel.get_secondary_color_f32();
+        let project_idx = self.active_project_index;
+
+        if self.paste_overlay.is_some() {
+            self.commit_paste_overlay();
+        }
+
+        let tools_panel = &mut self.tools_panel;
+        if let Some(project) = self.projects.get_mut(project_idx) {
+            tools_panel.commit_active_tool_preview(&mut project.canvas_state, secondary);
+
+            let w = project.canvas_state.width;
+            let h = project.canvas_state.height;
+            let sel_before = project.canvas_state.selection_mask.clone();
+            let mask = image::GrayImage::from_pixel(w, h, image::Luma([255u8]));
+
+            if sel_before.as_ref() == Some(&mask) {
+                return;
+            }
+
+            project.canvas_state.selection_mask = Some(mask.clone());
+            project.canvas_state.invalidate_selection_overlay();
+            project.canvas_state.mark_dirty(None);
+            project.history.push(Box::new(SelectionCommand::new(
+                "Select All",
+                sel_before,
+                Some(mask),
+            )));
         }
     }
 
@@ -7740,6 +7823,7 @@ impl PaintFEApp {
                     return;
                 }
                 DialogResult::Cancel => {
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -7786,6 +7870,7 @@ impl PaintFEApp {
                     DialogResult::Ok(_sigma) => {
                         self.preview_job_token = self.preview_job_token.wrapping_add(1);
                         // Spawn full-resolution blur on background thread.
+                            self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                         let sigma = dlg.sigma;
                         let idx = dlg.layer_idx;
                         self.active_dialog = ActiveDialog::None;
@@ -7825,6 +7910,7 @@ impl PaintFEApp {
                         self.preview_job_token = self.preview_job_token.wrapping_add(1);
                         // Restore original pixels.
                         let idx = dlg.layer_idx;
+                            self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                         if let Some(original) = &dlg.original_pixels
                             && let Some(project) = self.active_project_mut()
                         {
@@ -7891,6 +7977,7 @@ impl PaintFEApp {
                     }
                     DialogResult::Cancel => {
                         // Restore original pixels.
+                        self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                         let idx = dlg.layer_idx;
                         if let Some(original) = &dlg.original_pixels
                             && let Some(project) = self.active_project_mut()
@@ -7952,6 +8039,7 @@ impl PaintFEApp {
                     return;
                 }
                 DialogResult::Cancel => {
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -8033,6 +8121,7 @@ impl PaintFEApp {
                     return;
                 }
                 DialogResult::Cancel => {
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -8089,6 +8178,7 @@ impl PaintFEApp {
                     return;
                 }
                 DialogResult::Cancel => {
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -8147,6 +8237,7 @@ impl PaintFEApp {
                     return;
                 }
                 DialogResult::Cancel => {
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -8206,6 +8297,7 @@ impl PaintFEApp {
                     return;
                 }
                 DialogResult::Cancel => {
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -8268,6 +8360,7 @@ impl PaintFEApp {
                     return;
                 }
                 DialogResult::Cancel => {
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -8326,6 +8419,7 @@ impl PaintFEApp {
                     return;
                 }
                 DialogResult::Cancel => {
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -8405,6 +8499,7 @@ impl PaintFEApp {
                     }
                     DialogResult::Cancel => {
                         self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                        self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                         let idx = dlg.layer_idx;
                         if let Some(original) = &dlg.original_pixels
                             && let Some(project) = self.active_project_mut()
@@ -8488,6 +8583,7 @@ impl PaintFEApp {
                     }
                     DialogResult::Cancel => {
                         self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                        self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                         let idx = dlg.layer_idx;
                         if let Some(original) = &dlg.original_pixels
                             && let Some(project) = self.active_project_mut()
@@ -8563,6 +8659,7 @@ impl PaintFEApp {
                     }
                     DialogResult::Cancel => {
                         self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                        self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                         let idx = dlg.layer_idx;
                         if let Some(original) = &dlg.original_pixels
                             && let Some(project) = self.active_project_mut()
@@ -8641,8 +8738,9 @@ impl PaintFEApp {
                     }
                     return;
                 }
-                DialogResult::Cancel => {
+DialogResult::Cancel => {
                     self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -8718,8 +8816,9 @@ impl PaintFEApp {
                     }
                     return;
                 }
-                DialogResult::Cancel => {
+DialogResult::Cancel => {
                     self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -8824,8 +8923,9 @@ impl PaintFEApp {
                     }
                     return;
                 }
-                DialogResult::Cancel => {
+DialogResult::Cancel => {
                     self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -8919,8 +9019,9 @@ impl PaintFEApp {
                     }
                     return;
                 }
-                DialogResult::Cancel => {
+DialogResult::Cancel => {
                     self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -9009,8 +9110,9 @@ impl PaintFEApp {
                     }
                     return;
                 }
-                DialogResult::Cancel => {
+DialogResult::Cancel => {
                     self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -9097,8 +9199,9 @@ impl PaintFEApp {
                     }
                     return;
                 }
-                DialogResult::Cancel => {
+DialogResult::Cancel => {
                     self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -9217,8 +9320,9 @@ impl PaintFEApp {
                     }
                     return;
                 }
-                DialogResult::Cancel => {
+DialogResult::Cancel => {
                     self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -9328,8 +9432,9 @@ impl PaintFEApp {
                     }
                     return;
                 }
-                DialogResult::Cancel => {
+DialogResult::Cancel => {
                     self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -9427,6 +9532,7 @@ impl PaintFEApp {
                     }
                     DialogResult::Cancel => {
                         self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                        self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                         let idx = dlg.layer_idx;
                         if let Some(original) = &dlg.original_pixels
                             && let Some(project) = self.active_project_mut()
@@ -9495,8 +9601,9 @@ impl PaintFEApp {
                     }
                     return;
                 }
-                DialogResult::Cancel => {
+DialogResult::Cancel => {
                     self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -9585,8 +9692,9 @@ impl PaintFEApp {
                     }
                     return;
                 }
-                DialogResult::Cancel => {
+DialogResult::Cancel => {
                     self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -9679,8 +9787,9 @@ impl PaintFEApp {
                     }
                     return;
                 }
-                DialogResult::Cancel => {
+DialogResult::Cancel => {
                     self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -9779,8 +9888,9 @@ impl PaintFEApp {
                     }
                     return;
                 }
-                DialogResult::Cancel => {
+DialogResult::Cancel => {
                     self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -9900,8 +10010,9 @@ impl PaintFEApp {
                     }
                     return;
                 }
-                DialogResult::Cancel => {
+DialogResult::Cancel => {
                     self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -10030,8 +10141,9 @@ impl PaintFEApp {
                     }
                     return;
                 }
-                DialogResult::Cancel => {
+DialogResult::Cancel => {
                     self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -10146,8 +10258,9 @@ impl PaintFEApp {
                     }
                     return;
                 }
-                DialogResult::Cancel => {
+DialogResult::Cancel => {
                     self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -10259,8 +10372,9 @@ impl PaintFEApp {
                     }
                     return;
                 }
-                DialogResult::Cancel => {
+DialogResult::Cancel => {
                     self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -10368,8 +10482,9 @@ impl PaintFEApp {
                     }
                     return;
                 }
-                DialogResult::Cancel => {
+DialogResult::Cancel => {
                     self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -10474,8 +10589,9 @@ impl PaintFEApp {
                     }
                     return;
                 }
-                DialogResult::Cancel => {
+DialogResult::Cancel => {
                     self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -10577,8 +10693,9 @@ impl PaintFEApp {
                     }
                     return;
                 }
-                DialogResult::Cancel => {
+DialogResult::Cancel => {
                     self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -10678,8 +10795,9 @@ impl PaintFEApp {
                     }
                     return;
                 }
-                DialogResult::Cancel => {
+DialogResult::Cancel => {
                     self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -10792,8 +10910,9 @@ impl PaintFEApp {
                     }
                     return;
                 }
-                DialogResult::Cancel => {
+DialogResult::Cancel => {
                     self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -10931,8 +11050,9 @@ impl PaintFEApp {
                     }
                     return;
                 }
-                DialogResult::Cancel => {
+DialogResult::Cancel => {
                     self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -11068,6 +11188,7 @@ impl PaintFEApp {
                     return;
                 }
                 DialogResult::Cancel => {
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -11124,6 +11245,7 @@ impl PaintFEApp {
                     return;
                 }
                 DialogResult::Cancel => {
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -11183,6 +11305,7 @@ impl PaintFEApp {
                     return;
                 }
                 DialogResult::Cancel => {
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -11240,6 +11363,7 @@ impl PaintFEApp {
                     return;
                 }
                 DialogResult::Cancel => {
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -11298,6 +11422,7 @@ impl PaintFEApp {
                     return;
                 }
                 DialogResult::Cancel => {
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -11354,6 +11479,7 @@ impl PaintFEApp {
                     return;
                 }
                 DialogResult::Cancel => {
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
                     if let Some(original) = &dlg.original_pixels
                         && let Some(project) = self.active_project_mut()
@@ -11392,6 +11518,7 @@ impl PaintFEApp {
                         return;
                     }
                     DialogResult::Cancel => {
+                        self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                         // Restore original selection
                         if let Some(project) = self.active_project_mut() {
                             project.canvas_state.selection_mask = dlg.original_selection.clone();

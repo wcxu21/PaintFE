@@ -338,102 +338,64 @@ fn sdf_arrow(px: f32, py: f32, hx: f32, hy: f32) -> f32 {
     }
 }
 
-/// SDF for a heart shape using the implicit curve (x²+y²-1)³ - x²y³ = 0.
-/// Bumps on top, point on bottom (standard heart orientation).
-/// Uses uniform scaling (like polygon shapes) so the heart never clips.
-fn sdf_heart(px: f32, py: f32, hx: f32, hy: f32) -> f32 {
-    // The implicit heart curve occupies roughly:
-    //   x ∈ [-1.0, 1.0],  y ∈ [-1.16, 1.05]
-    // Shift the heart downward ~30% so the top bumps don't clip.
-    const EXTENT_X: f32 = 1.0; // half-width of the curve
-    const EXTENT_Y: f32 = 1.20; // slightly enlarged to give headroom
-    const CENTRE_Y: f32 = 0.20; // push heart down in normalised space
+/// Signed distance to a simple polygon path (convex or concave).
+fn sdf_polygon_path(verts: &[(f32, f32)], px: f32, py: f32) -> f32 {
+    let mut min_dist = f32::MAX;
+    let mut inside = false;
+    let mut prev = *verts.last().unwrap_or(&(0.0, 0.0));
 
-    // Uniform scale: fit the full heart inside whichever axis is tighter
-    let scale = (hx / EXTENT_X).min(hy / EXTENT_Y);
+    for &curr in verts {
+        min_dist = min_dist.min(sdf_line_segment(px, py, prev.0, prev.1, curr.0, curr.1));
 
-    // Map pixel coords to heart-normalised space (uniform, no distortion)
-    let nx = px.abs() / scale;
-    let ny = -py / scale + CENTRE_Y; // flip y: screen-down → math-up; shift to heart centre
-
-    // Implicit heart: f(x,y) = (x²+y²-1)³ − x²y³
-    let r2 = nx * nx + ny * ny;
-    let a = r2 - 1.0;
-    let f = a * a * a - nx * nx * ny * ny * ny;
-
-    if f < 0.0 {
-        // Inside: gradient-based distance approximation
-        let a2 = a * a;
-        let df_dx = 6.0 * nx * a2 - 2.0 * nx * ny * ny * ny;
-        let df_dy = 6.0 * ny * a2 - 3.0 * nx * nx * ny * ny;
-        let grad_len = (df_dx * df_dx + df_dy * df_dy).sqrt();
-        if grad_len > 1e-10 {
-            (f / grad_len) * scale
-        } else {
-            -0.01 * scale
+        let crosses_scanline = (curr.1 > py) != (prev.1 > py);
+        if crosses_scanline {
+            let edge_dy = prev.1 - curr.1;
+            if edge_dy.abs() > f32::EPSILON {
+                let edge_x = (prev.0 - curr.0) * (py - curr.1) / edge_dy + curr.0;
+                if px < edge_x {
+                    inside = !inside;
+                }
+            }
         }
-    } else {
-        // Outside: sample the boundary parametrically to find closest point
-        let mut min_d2: f32 = f32::MAX;
-        let steps: u32 = 80;
-        for i in 0..=steps {
-            let t = std::f32::consts::PI * i as f32 / steps as f32;
-            let bx = t.sin().powi(3);
-            let by =
-                (13.0 * t.cos() - 5.0 * (2.0 * t).cos() - 2.0 * (3.0 * t).cos() - (4.0 * t).cos())
-                    / 16.0;
-            let ddx = nx - bx;
-            let ddy = ny - by;
-            min_d2 = min_d2.min(ddx * ddx + ddy * ddy);
-        }
-        min_d2.sqrt() * scale
+
+        prev = curr;
     }
+
+    if inside { -min_dist } else { min_dist }
+}
+
+/// SDF for a heart shape.
+fn sdf_heart(px: f32, py: f32, hx: f32, hy: f32) -> f32 {
+    // Higher-resolution parametric heart path for smoother lobes and side curves.
+    let mut verts = Vec::with_capacity(96);
+    let mut max_abs_x = 0.0f32;
+    let mut max_abs_y = 0.0f32;
+    let mut raw = Vec::with_capacity(96);
+    for i in 0..96 {
+        let t = i as f32 * std::f32::consts::TAU / 96.0;
+        let s = t.sin();
+        let c = t.cos();
+        let xr = 16.0 * s * s * s;
+        let yr = 13.0 * c - 5.0 * (2.0 * t).cos() - 2.0 * (3.0 * t).cos() - (4.0 * t).cos();
+        max_abs_x = max_abs_x.max(xr.abs());
+        max_abs_y = max_abs_y.max(yr.abs());
+        raw.push((xr, yr));
+    }
+    let sx = if max_abs_x > 0.0 { hx * 0.98 / max_abs_x } else { 1.0 };
+    let sy = if max_abs_y > 0.0 { hy * 0.98 / max_abs_y } else { 1.0 };
+    for (xr, yr) in raw {
+        verts.push((xr * sx, -yr * sy));
+    }
+    sdf_polygon_path(&verts, px, py)
 }
 
 // ---- New SDF functions for added shapes ----
 
 /// SDF for a trapezoid (wider at bottom).
-/// top_half_w = top edge half-width, bottom_half_w = bottom edge half-width.
 fn sdf_trapezoid(px: f32, py: f32, hx: f32, hy: f32) -> f32 {
-    // Trapezoid: top edge is narrower (60% of hx), bottom edge is full hx
-    let top_hw = hx * 0.6;
-    let bot_hw = hx;
-    // Interpolate half-width at this y
-    let t = (py + hy) / (2.0 * hy); // 0 at top, 1 at bottom
-    let t = t.clamp(0.0, 1.0);
-    let hw_at_y = top_hw + (bot_hw - top_hw) * t;
-
-    // Horizontal distance from slanted edge
-    let dx = px.abs() - hw_at_y;
-    let dy_top = -py - hy;
-    let dy_bot = py - hy;
-
-    if dx <= 0.0 && dy_top <= 0.0 && dy_bot <= 0.0 {
-        // Inside: return negative distance to nearest edge
-        // Slant edge normal
-        let slope_dx = bot_hw - top_hw;
-        let slope_dy = 2.0 * hy;
-        let slope_len = (slope_dx * slope_dx + slope_dy * slope_dy).sqrt();
-        let dist_to_slant =
-            (px.abs() * slope_dy - (py + hy) * slope_dx - top_hw * slope_dy) / slope_len;
-        dx.max(dy_top).max(dy_bot).max(dist_to_slant)
-    } else {
-        // Outside
-        let clamped_y = py.clamp(-hy, hy);
-        let t2 = (clamped_y + hy) / (2.0 * hy);
-        let hw_at_clamped = top_hw + (bot_hw - top_hw) * t2;
-        let _clamped_x = px.abs().min(hw_at_clamped);
-        let ex = px.abs() - hw_at_clamped.max(0.0);
-        let ey_top = (-py - hy).max(0.0);
-        let ey_bot = (py - hy).max(0.0);
-        if py < -hy || py > hy {
-            let ey = ey_top.max(ey_bot);
-            let ex2 = (px.abs() - if py < -hy { top_hw } else { bot_hw }).max(0.0);
-            (ex2 * ex2 + ey * ey).sqrt()
-        } else {
-            ex.max(0.0)
-        }
-    }
+    let top_hw = hx * 0.55;
+    let verts = [(-top_hw, -hy), (top_hw, -hy), (hx, hy), (-hx, hy)];
+    sdf_convex_polygon(&verts, px, py)
 }
 
 /// SDF for a parallelogram (skewed rectangle).
@@ -489,11 +451,11 @@ fn sdf_convex_polygon(verts: &[(f32, f32)], px: f32, py: f32) -> f32 {
 
 /// SDF for a cross / plus shape.
 fn sdf_cross(px: f32, py: f32, hx: f32, hy: f32) -> f32 {
-    // Cross = union of horizontal bar and vertical bar
-    let arm_ratio = 0.33; // arm thickness is 1/3 of full extent
-    let d_horiz = sdf_box(px, py, hx, hy * arm_ratio);
-    let d_vert = sdf_box(px, py, hx * arm_ratio, hy);
-    d_horiz.min(d_vert) // union
+    let arm_hw = hx * 0.34;
+    let arm_hh = hy * 0.34;
+    let vertical = sdf_box(px, py, arm_hw, hy);
+    let horizontal = sdf_box(px, py, hx, arm_hh);
+    vertical.min(horizontal)
 }
 
 /// SDF for a checkmark shape.
@@ -581,6 +543,92 @@ fn rectangle_outline_coverage(
     let inner_hy = (hy - outline_half).max(0.0);
     let inner_cov = if inner_hx > 0.0 && inner_hy > 0.0 {
         coverage_from_sdf(sdf_box(px, py, inner_hx, inner_hy), anti_alias)
+    } else {
+        0.0
+    };
+    (outer_cov - inner_cov).clamp(0.0, 1.0)
+}
+
+/// Outline for the Cross shape.
+/// Each arm of the cross is a box; we expand/shrink each box component
+/// individually by `outline_half` so all four sides have uniform thickness.
+#[inline]
+fn cross_outline_coverage(
+    px: f32,
+    py: f32,
+    hx: f32,
+    hy: f32,
+    outline_half: f32,
+    anti_alias: bool,
+) -> f32 {
+    let arm_hw = hx * 0.34;
+    let arm_hh = hy * 0.34;
+    let ol = outline_half;
+
+    // Outer cross: each box expanded by ol in all directions
+    let outer_sdf = sdf_box(px, py, arm_hw + ol, hy + ol).min(sdf_box(px, py, hx + ol, arm_hh + ol));
+    let outer_cov = coverage_from_sdf(outer_sdf, anti_alias);
+
+    // Inner cross: each box shrunk by ol
+    let i_arm_hw = (arm_hw - ol).max(0.0);
+    let i_hy    = (hy - ol).max(0.0);
+    let i_hx    = (hx - ol).max(0.0);
+    let i_arm_hh = (arm_hh - ol).max(0.0);
+    let inner_cov = if i_arm_hw > 0.0 || i_hy > 0.0 {
+        let inner_sdf = sdf_box(px, py, i_arm_hw, i_hy).min(sdf_box(px, py, i_hx, i_arm_hh));
+        coverage_from_sdf(inner_sdf, anti_alias)
+    } else {
+        0.0
+    };
+    (outer_cov - inner_cov).clamp(0.0, 1.0)
+}
+
+/// Outline for the Trapezoid shape using proper per-edge normal offset (miter joints).
+/// Offsets each edge by `outline_half` along its outward normal, then intersects
+/// adjacent offset lines to find the mitered corner vertices. This gives uniform
+/// outline width along all edges including the slanted sides.
+#[inline]
+fn trapezoid_outline_coverage(
+    px: f32,
+    py: f32,
+    hx: f32,
+    hy: f32,
+    outline_half: f32,
+    anti_alias: bool,
+) -> f32 {
+    let top_hw = hx * 0.55;
+    let s = hx * 0.45; // horizontal delta of right slanted edge: hx - top_hw
+    // Length of the right slanted edge (from top-right to bottom-right vertex)
+    let len = (4.0 * hy * hy + s * s).sqrt();
+    let ol = outline_half;
+
+    // Corner x-offsets derived from intersecting adjacent offset edges:
+    //   top corners:    expand by ol*(len - s)/(2*hy)
+    //   bottom corners: expand by ol*(len + s)/(2*hy)
+    let expand_top = ol * (len - s) / (2.0 * hy);
+    let expand_bot = ol * (len + s) / (2.0 * hy);
+
+    // Outer polygon vertices (CCW: top-left, top-right, bot-right, bot-left)
+    let outer_verts = [
+        (-(top_hw + expand_top), -(hy + ol)),
+        (  top_hw + expand_top,  -(hy + ol)),
+        (  hx + expand_bot,       hy + ol),
+        (-(hx + expand_bot),      hy + ol),
+    ];
+    let outer_cov = coverage_from_sdf(sdf_convex_polygon(&outer_verts, px, py), anti_alias);
+
+    // Inner polygon: shrink along the same normals
+    let inner_top_hw = (top_hw - expand_top).max(0.0);
+    let inner_hx     = (hx - expand_bot).max(0.0);
+    let inner_hy     = (hy - ol).max(0.0);
+    let inner_cov = if inner_top_hw > 0.0 && inner_hx > 0.0 && inner_hy > 0.0 {
+        let inner_verts = [
+            (-inner_top_hw, -inner_hy),
+            ( inner_top_hw, -inner_hy),
+            ( inner_hx,      inner_hy),
+            (-inner_hx,      inner_hy),
+        ];
+        coverage_from_sdf(sdf_convex_polygon(&inner_verts, px, py), anti_alias)
     } else {
         0.0
     };
@@ -678,6 +726,10 @@ pub fn rasterize_shape(
                     ShapeFillMode::Outline => {
                         let cov = if kind == ShapeKind::Rectangle {
                             rectangle_outline_coverage(lx, ly, hx, hy, outline_half, aa)
+                        } else if kind == ShapeKind::Cross {
+                            cross_outline_coverage(lx, ly, hx, hy, outline_half, aa)
+                        } else if kind == ShapeKind::Trapezoid {
+                            trapezoid_outline_coverage(lx, ly, hx, hy, outline_half, aa)
                         } else {
                             let band = d.abs() - outline_half;
                             coverage_from_sdf(band, aa)
@@ -689,6 +741,10 @@ pub fn rasterize_shape(
                         let fill_cov = coverage_from_sdf(d, aa);
                         let outline_cov = if kind == ShapeKind::Rectangle {
                             rectangle_outline_coverage(lx, ly, hx, hy, outline_half, aa)
+                        } else if kind == ShapeKind::Cross {
+                            cross_outline_coverage(lx, ly, hx, hy, outline_half, aa)
+                        } else if kind == ShapeKind::Trapezoid {
+                            trapezoid_outline_coverage(lx, ly, hx, hy, outline_half, aa)
                         } else {
                             let band = d.abs() - outline_half;
                             coverage_from_sdf(band, aa)
@@ -819,6 +875,10 @@ pub fn rasterize_shape_into(
                     ShapeFillMode::Outline => {
                         let cov = if kind == ShapeKind::Rectangle {
                             rectangle_outline_coverage(lx, ly, hx, hy, outline_half, aa)
+                        } else if kind == ShapeKind::Cross {
+                            cross_outline_coverage(lx, ly, hx, hy, outline_half, aa)
+                        } else if kind == ShapeKind::Trapezoid {
+                            trapezoid_outline_coverage(lx, ly, hx, hy, outline_half, aa)
                         } else {
                             let band = d.abs() - outline_half;
                             coverage_from_sdf(band, aa)
@@ -829,6 +889,10 @@ pub fn rasterize_shape_into(
                         let fill_cov = coverage_from_sdf(d, aa);
                         let outline_cov = if kind == ShapeKind::Rectangle {
                             rectangle_outline_coverage(lx, ly, hx, hy, outline_half, aa)
+                        } else if kind == ShapeKind::Cross {
+                            cross_outline_coverage(lx, ly, hx, hy, outline_half, aa)
+                        } else if kind == ShapeKind::Trapezoid {
+                            trapezoid_outline_coverage(lx, ly, hx, hy, outline_half, aa)
                         } else {
                             let band = d.abs() - outline_half;
                             coverage_from_sdf(band, aa)
@@ -875,4 +939,30 @@ pub fn rasterize_shape_into(
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ShapeKind, shape_sdf};
+
+    #[test]
+    fn trapezoid_signs_are_stable() {
+        assert!(shape_sdf(ShapeKind::Trapezoid, 0.0, 0.0, 40.0, 30.0, 0.0) < 0.0);
+        assert!(shape_sdf(ShapeKind::Trapezoid, 35.0, -25.0, 40.0, 30.0, 0.0) > 0.0);
+        assert!(shape_sdf(ShapeKind::Trapezoid, 30.0, 20.0, 40.0, 30.0, 0.0) < 0.0);
+    }
+
+    #[test]
+    fn cross_signs_are_stable() {
+        assert!(shape_sdf(ShapeKind::Cross, 0.0, 0.0, 40.0, 40.0, 0.0) < 0.0);
+        assert!(shape_sdf(ShapeKind::Cross, 34.0, 0.0, 40.0, 40.0, 0.0) < 0.0);
+        assert!(shape_sdf(ShapeKind::Cross, 30.0, 30.0, 40.0, 40.0, 0.0) > 0.0);
+    }
+
+    #[test]
+    fn heart_signs_are_stable() {
+        assert!(shape_sdf(ShapeKind::Heart, 0.0, 10.0, 40.0, 40.0, 0.0) < 0.0);
+        assert!(shape_sdf(ShapeKind::Heart, 0.0, -36.0, 40.0, 40.0, 0.0) > 0.0);
+        assert!(shape_sdf(ShapeKind::Heart, 0.0, 41.0, 40.0, 40.0, 0.0) > 0.0);
+    }
 }

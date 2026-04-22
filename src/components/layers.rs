@@ -864,7 +864,12 @@ impl LayersPanel {
                 if pad > 0.0 {
                     child_ui.add_space(pad);
                 }
-                child_ui.add(egui::Label::new(name_text).truncate());
+                child_ui.add(
+                    egui::Label::new(name_text)
+                        .selectable(false)
+                        .truncate()
+                        .sense(egui::Sense::hover()),
+                );
                 if is_text {
                     let accent = child_ui.visuals().selection.stroke.color;
                     child_ui.add(egui::Label::new(
@@ -872,7 +877,9 @@ impl LayersPanel {
                             .size(9.0)
                             .strong()
                             .color(accent),
-                    ));
+                    )
+                    .selectable(false)
+                    .sense(egui::Sense::hover()));
                 }
             }
 
@@ -2583,6 +2590,10 @@ impl LayersPanel {
         let visible = layer.visible;
         let opacity = layer.opacity;
         let content = layer.content.clone();
+        let clear_selection = canvas_state.active_layer_index == layer_idx
+            && canvas_state.selection_mask.is_some();
+        let snapshot_cmd = clear_selection
+            .then(|| SnapshotCommand::new(format!("Delete Layer: {}", name), canvas_state));
 
         canvas_state.layers.remove(layer_idx);
 
@@ -2592,20 +2603,29 @@ impl LayersPanel {
             canvas_state.active_layer_index -= 1;
         }
 
+        if clear_selection {
+            canvas_state.clear_selection();
+        }
+
         // Notify the deletion index so the UI can clean up GPU textures.
         self.pending_gpu_delete = Some(layer_idx);
 
         // Record history
-        history.push(Box::new(LayerOpCommand::new(LayerOperation::Delete {
-            index: layer_idx,
-            pixels,
-            mask,
-            mask_enabled,
-            name,
-            visible,
-            opacity,
-            content,
-        })));
+        if let Some(mut cmd) = snapshot_cmd {
+            cmd.set_after(canvas_state);
+            history.push(Box::new(cmd));
+        } else {
+            history.push(Box::new(LayerOpCommand::new(LayerOperation::Delete {
+                index: layer_idx,
+                pixels,
+                mask,
+                mask_enabled,
+                name,
+                visible,
+                opacity,
+                content,
+            })));
+        }
 
         self.thumbnail_cache.clear();
         self.mark_full_dirty(canvas_state);

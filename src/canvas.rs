@@ -2625,6 +2625,67 @@ impl CanvasState {
         })
     }
 
+    /// Composite only the visible layers BELOW `active_layer_index` against a
+    /// transparent background. Returns a premultiplied full-canvas image or
+    /// `None` when there are no visible layers below.
+    pub fn composite_layers_below_active(&mut self) -> Option<ColorImage> {
+        let has_any = self
+            .layers
+            .iter()
+            .take(self.active_layer_index)
+            .any(|l| l.visible);
+        if !has_any {
+            return None;
+        }
+
+        let w = self.width as usize;
+        let h = self.height as usize;
+        let needed = w * h;
+        self.composite_above_buffer
+            .resize(needed, Color32::TRANSPARENT);
+        self.composite_above_buffer.fill(Color32::TRANSPARENT);
+
+        self.composite_above_buffer
+            .par_chunks_mut(w)
+            .enumerate()
+            .for_each(|(y, row)| {
+                for (x, pixel) in row.iter_mut().enumerate() {
+                    let mut base = Rgba([0u8, 0, 0, 0]);
+                    for layer in self.layers.iter().take(self.active_layer_index) {
+                        if !layer.visible {
+                            continue;
+                        }
+                        let mut top = *layer.pixels.get_pixel(x as u32, y as u32);
+                        if layer.mask_enabled && let Some(mask) = &layer.mask {
+                            let conceal = mask.get_pixel(x as u32, y as u32)[3];
+                            if conceal > 0 {
+                                top[3] = ((top[3] as u32 * (255 - conceal as u32)) / 255) as u8;
+                            }
+                        }
+                        base = Self::blend_pixel_static(base, top, layer.blend_mode, layer.opacity);
+                    }
+                    let a = base[3];
+                    if a == 0 {
+                        *pixel = Color32::TRANSPARENT;
+                    } else if a == 255 {
+                        *pixel = Color32::from_rgba_premultiplied(base[0], base[1], base[2], 255);
+                    } else {
+                        let pm_r = ((base[0] as u16 * a as u16 + 127) / 255) as u8;
+                        let pm_g = ((base[1] as u16 * a as u16 + 127) / 255) as u8;
+                        let pm_b = ((base[2] as u16 * a as u16 + 127) / 255) as u8;
+                        *pixel = Color32::from_rgba_premultiplied(pm_r, pm_g, pm_b, a);
+                    }
+                }
+            });
+
+        let pixels = self.composite_above_buffer.clone();
+        Some(ColorImage {
+            size: [w, h],
+            source_size: egui::Vec2::new(w as f32, h as f32),
+            pixels,
+        })
+    }
+
     fn blend_pixel(
         &self,
         base: Rgba<u8>,
@@ -3240,6 +3301,10 @@ pub struct Canvas {
     /// Cached texture for layers above the active layer during paste preview.
     /// Rebuilt each frame while a paste overlay is active and layers above exist.
     paste_layers_above_cache: Option<egui::TextureHandle>,
+    /// Cached texture for layers below the active layer during overwrite-mode paste preview.
+    paste_layers_below_cache: Option<egui::TextureHandle>,
+    /// Cached texture for overwrite-mode paste preview of the active layer.
+    paste_overwrite_preview_cache: Option<egui::TextureHandle>,
     /// Cached texture for brush tip cursor overlay (reused across frames).
     brush_tip_cursor_tex: Option<egui::TextureHandle>,
     /// Second pass texture (inverted) for visibility on all backgrounds.
@@ -3280,6 +3345,8 @@ impl Canvas {
             tool_map_build_label: None,
             gradient_commit_active: false,
             paste_layers_above_cache: None,
+            paste_layers_below_cache: None,
+            paste_overwrite_preview_cache: None,
             brush_tip_cursor_tex: None,
             brush_tip_cursor_tex_inv: None,
             brush_tip_cursor_key: (String::new(), 0, 0),
@@ -3872,7 +3939,16 @@ impl Canvas {
             ui.ctx(),
         );
 
-        self.paint_composite_texture(&painter, image_rect, canvas_rect, state, Color32::WHITE);
+        // When in overwrite-paste preview mode we skip the GPU composite here;
+        // the paste overlay section below draws below-layers + replacement + above-layers
+        // directly over the checkerboard, correctly revealing transparency through
+        // transparent paste areas without the original active layer contaminating the view.
+        let is_overwrite_paste = paste_overlay
+            .as_ref()
+            .is_some_and(|o| o.overwrite_transparent_pixels);
+        if !is_overwrite_paste {
+            self.paint_composite_texture(&painter, image_rect, canvas_rect, state, Color32::WHITE);
+        }
 
         // ====================================================================
         // CPU PREVIEW OVERLAY  (brush / line / eraser strokes in progress)
@@ -4366,18 +4442,87 @@ impl Canvas {
         if let Some(ref mut overlay) = paste_overlay {
             let is_dark = ui.visuals().dark_mode;
             let accent = self.selection_stroke; // theme accent colour
-
-            // Upload/re-upload the source texture when scale changes (once).
-            // The GPU handles rotation + translation via a textured mesh.
-            // Pass interaction state so large images use a lower-res preview
-            // during drag to keep the UI responsive.
-            let is_interacting = overlay.active_handle.is_some();
-            overlay.ensure_gpu_texture(ui.ctx(), is_interacting);
-
-            // Draw the transformed paste image via GPU mesh, clipped to canvas bounds
-            // so pasted images larger than the canvas don't extend beyond it.
             let clipped_painter = painter.with_clip_rect(image_rect);
-            overlay.draw_gpu(&clipped_painter, image_rect, self.zoom);
+            if overlay.overwrite_transparent_pixels {
+                if let Some(below_image) = state.composite_layers_below_active() {
+                    let tex = if let Some(ref mut existing) = self.paste_layers_below_cache {
+                        existing.set(
+                            below_image,
+                            TextureOptions {
+                                magnification: TextureFilter::Nearest,
+                                minification: TextureFilter::Nearest,
+                                ..Default::default()
+                            },
+                        );
+                        existing.id()
+                    } else {
+                        let handle = ui.ctx().load_texture(
+                            "paste_layers_below",
+                            below_image,
+                            TextureOptions {
+                                magnification: TextureFilter::Nearest,
+                                minification: TextureFilter::Nearest,
+                                ..Default::default()
+                            },
+                        );
+                        let id = handle.id();
+                        self.paste_layers_below_cache = Some(handle);
+                        id
+                    };
+                    let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+                    clipped_painter.image(tex, image_rect, uv, Color32::WHITE);
+                } else {
+                    self.paste_layers_below_cache = None;
+                }
+
+                if let Some(active_layer) = state.layers.get(state.active_layer_index) {
+                    let base = active_layer.pixels.to_rgba_image();
+                    let preview = overlay.render_replacement_preview(&base);
+                    let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                        [state.width as usize, state.height as usize],
+                        preview.as_raw(),
+                    );
+                    let tex = if let Some(ref mut existing) = self.paste_overwrite_preview_cache {
+                        existing.set(
+                            color_image,
+                            TextureOptions {
+                                magnification: TextureFilter::Nearest,
+                                minification: TextureFilter::Nearest,
+                                ..Default::default()
+                            },
+                        );
+                        existing.id()
+                    } else {
+                        let handle = ui.ctx().load_texture(
+                            "paste_overwrite_preview",
+                            color_image,
+                            TextureOptions {
+                                magnification: TextureFilter::Nearest,
+                                minification: TextureFilter::Nearest,
+                                ..Default::default()
+                            },
+                        );
+                        let id = handle.id();
+                        self.paste_overwrite_preview_cache = Some(handle);
+                        id
+                    };
+                    let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+                    clipped_painter.image(tex, image_rect, uv, Color32::WHITE);
+                }
+            } else {
+                self.paste_layers_below_cache = None;
+                self.paste_overwrite_preview_cache = None;
+                // Upload/re-upload the source texture when scale changes (once).
+                // The GPU handles rotation + translation via a textured mesh.
+                // Pass interaction state so large images use a lower-res preview
+                // during drag to keep the UI responsive.
+                let is_interacting = overlay.active_handle.is_some();
+                overlay.ensure_gpu_texture(ui.ctx(), is_interacting);
+
+                // Draw the transformed paste image via GPU mesh, clipped to canvas bounds
+                // so pasted images larger than the canvas don't extend beyond it.
+                overlay.draw_gpu(&clipped_painter, image_rect, self.zoom);
+            }
 
             // If there are visible layers above the active layer, composite them
             // and overlay on top of the paste so those layers render correctly.
@@ -4483,6 +4628,8 @@ impl Canvas {
         } else {
             // No paste overlay — clear layers-above cache.
             self.paste_layers_above_cache = None;
+            self.paste_layers_below_cache = None;
+            self.paste_overwrite_preview_cache = None;
             // Close any orphaned paste context-menu popup.
             // If commit/cancel happened while the context menu was still open,
             // the popup ID remains registered in egui memory and permanently

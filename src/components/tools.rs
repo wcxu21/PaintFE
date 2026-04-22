@@ -249,6 +249,7 @@ pub struct LineOptions {
     pub cap_style: CapStyle,
     pub end_shape: LineEndShape,
     pub arrow_side: ArrowSide,
+    pub anti_alias: bool,
 }
 
 impl Default for LineOptions {
@@ -258,6 +259,7 @@ impl Default for LineOptions {
             cap_style: CapStyle::Round,
             end_shape: LineEndShape::None,
             arrow_side: ArrowSide::End,
+            anti_alias: true,
         }
     }
 }
@@ -279,6 +281,7 @@ pub struct LineToolState {
     pub last_cap_style: CapStyle,    // Track cap style for change detection
     pub last_end_shape: LineEndShape, // Track end shape for change detection
     pub last_arrow_side: ArrowSide,  // Track arrow side for change detection
+    pub last_anti_alias: bool,       // Track AA for change detection
 }
 
 impl Default for LineToolState {
@@ -299,6 +302,7 @@ impl Default for LineToolState {
             last_cap_style: CapStyle::Round,
             last_end_shape: LineEndShape::None,
             last_arrow_side: ArrowSide::End,
+            last_anti_alias: true,
         }
     }
 }
@@ -816,7 +820,7 @@ impl Default for FillToolState {
     fn default() -> Self {
         Self {
             tolerance: 5.0,
-            anti_aliased: true,
+            anti_aliased: false,
             distance_mode: WandDistanceMode::Perceptual,
             connectivity: FloodConnectivity::Four,
             active_fill: None,
@@ -1256,7 +1260,7 @@ impl Default for FontPreviewInk {
 impl Default for SavedRasterStyle {
     fn default() -> Self {
         Self {
-            font_family: "Arial".to_string(),
+            font_family: crate::ops::text::preferred_default_font_family(),
             font_size: 23.0,
             font_weight: 400,
             bold: false,
@@ -1426,7 +1430,7 @@ impl Default for TextToolState {
             cursor_pos: 0,
             origin: None,
             is_editing: false,
-            font_family: "Arial".to_string(),
+            font_family: crate::ops::text::preferred_default_font_family(),
             font_size: 23.0,
             font_weight: 400,
             bold: false,
@@ -3982,6 +3986,19 @@ impl ToolsPanel {
 
         ui.separator();
 
+        // Anti-aliasing toggle (matches brush/eraser style)
+        let aa_resp = ui.selectable_label(
+            self.line_state.line_tool.options.anti_alias,
+            t!("ctx.anti_alias"),
+        );
+        if aa_resp.clicked() {
+            self.line_state.line_tool.options.anti_alias =
+                !self.line_state.line_tool.options.anti_alias;
+        }
+        aa_resp.on_hover_text(t!("ctx.anti_alias_tooltip"));
+
+        ui.separator();
+
         // Blend Mode
         ui.label(t!("ctx.blend"));
         let current_mode = self.properties.blending_mode;
@@ -4597,50 +4614,6 @@ impl ToolsPanel {
             // Anti-alias setting changed, trigger preview refresh
             self.fill_state.tolerance_changed_at = Some(Instant::now());
             self.fill_state.recalc_pending = true;
-            ui.ctx().request_repaint();
-        }
-
-        ui.separator();
-
-        ui.label("Compare");
-        let prev_distance_mode = self.fill_state.distance_mode;
-        egui::ComboBox::from_id_salt("ctx_fill_distance_mode")
-            .selected_text(self.fill_state.distance_mode.label())
-            .width(120.0)
-            .show_ui(ui, |ui| {
-                for &mode in WandDistanceMode::all() {
-                    if ui
-                        .selectable_label(mode == self.fill_state.distance_mode, mode.label())
-                        .clicked()
-                    {
-                        self.fill_state.distance_mode = mode;
-                    }
-                }
-            });
-        if self.fill_state.distance_mode != prev_distance_mode {
-            self.clear_fill_preview_state();
-            ui.ctx().request_repaint();
-        }
-
-        ui.separator();
-
-        ui.label("Connectivity");
-        let prev_connectivity = self.fill_state.connectivity;
-        egui::ComboBox::from_id_salt("ctx_fill_connectivity")
-            .selected_text(self.fill_state.connectivity.label())
-            .width(120.0)
-            .show_ui(ui, |ui| {
-                for &mode in FloodConnectivity::all() {
-                    if ui
-                        .selectable_label(mode == self.fill_state.connectivity, mode.label())
-                        .clicked()
-                    {
-                        self.fill_state.connectivity = mode;
-                    }
-                }
-            });
-        if self.fill_state.connectivity != prev_connectivity {
-            self.clear_fill_preview_state();
             ui.ctx().request_repaint();
         }
     }
@@ -5323,14 +5296,35 @@ impl ToolsPanel {
                             for &mpos in positions_to_draw.iter() {
                                 // CPU-only paint step: lerp from last_precise_pos → pos
                                 let modified_rect = if self.active_tool == Tool::Pencil {
-                                    // Pencil: draw single pixel at each position (no line interpolation)
-                                    self.draw_pixel_and_get_bounds(
-                                        canvas_state,
-                                        mpos,
-                                        use_secondary,
-                                        primary_color_f32,
-                                        secondary_color_f32,
-                                    )
+                                    if let Some(start_p) = start_precise {
+                                        let start_mirrors =
+                                            mirror.mirror_positions(start_p.x, start_p.y, mw, mh);
+                                        let arm_idx = positions_to_draw
+                                            .iter()
+                                            .position(|p| *p == mpos)
+                                            .unwrap_or(0);
+                                        let start_m = if arm_idx < start_mirrors.len {
+                                            start_mirrors.data[arm_idx]
+                                        } else {
+                                            (start_p.x, start_p.y)
+                                        };
+                                        self.draw_pixel_line_and_get_bounds(
+                                            canvas_state,
+                                            start_m,
+                                            mpos,
+                                            use_secondary,
+                                            primary_color_f32,
+                                            secondary_color_f32,
+                                        )
+                                    } else {
+                                        self.draw_pixel_and_get_bounds(
+                                            canvas_state,
+                                            mpos,
+                                            use_secondary,
+                                            primary_color_f32,
+                                            secondary_color_f32,
+                                        )
+                                    }
                                 } else if let Some(start_p) = start_precise {
                                     // Mirror the start point to match this arm
                                     let start_mirrors =
@@ -5559,6 +5553,8 @@ impl ToolsPanel {
                                 self.line_state.line_tool.options.end_shape;
                             self.line_state.line_tool.last_arrow_side =
                                 self.line_state.line_tool.options.arrow_side;
+                            self.line_state.line_tool.last_anti_alias =
+                                self.line_state.line_tool.options.anti_alias;
 
                             // Start stroke tracking (line uses preview layer like Brush)
                             if line_editing_mask {
@@ -5597,7 +5593,9 @@ impl ToolsPanel {
                                 || self.line_state.line_tool.options.end_shape
                                     != self.line_state.line_tool.last_end_shape
                                 || self.line_state.line_tool.options.arrow_side
-                                    != self.line_state.line_tool.last_arrow_side;
+                                    != self.line_state.line_tool.last_arrow_side
+                                || self.line_state.line_tool.options.anti_alias
+                                    != self.line_state.line_tool.last_anti_alias;
 
                         if settings_changed {
                             // Update tracked values
@@ -5610,6 +5608,8 @@ impl ToolsPanel {
                                 self.line_state.line_tool.options.end_shape;
                             self.line_state.line_tool.last_arrow_side =
                                 self.line_state.line_tool.options.arrow_side;
+                            self.line_state.line_tool.last_anti_alias =
+                                self.line_state.line_tool.options.anti_alias;
 
                             // Re-calculate bounds
                             let current_bounds = self.get_bezier_bounds(
@@ -6084,13 +6084,15 @@ impl ToolsPanel {
                     }
                 }
 
-                // Commit on Enter or cancel on Escape
+                // Commit on Enter or clear selection on Escape.
+                // Escape should behave like deselect for selection tools and
+                // must not restore a prior mask from the wand session cache.
                 if enter_pressed || esc_pressed {
                     if esc_pressed {
-                        if self.magic_wand_has_session() {
-                            self.cancel_magic_wand_session(canvas_state);
-                            ui.ctx().request_repaint();
-                        }
+                        canvas_state.clear_selection();
+                        canvas_state.mark_dirty(None);
+                        self.clear_magic_wand_async_state();
+                        ui.ctx().request_repaint();
                     } else if self.magic_wand_has_session() {
                         self.finalize_magic_wand_session(canvas_state);
                         ui.ctx().request_repaint();
@@ -9016,14 +9018,13 @@ impl ToolsPanel {
                 let is_secondary_pressed =
                     ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary));
 
-                // Esc / Enter: deselect / cancel
+                // Esc / Enter: clear selection and cancel any in-progress lasso path.
                 if esc_pressed || enter_pressed {
                     if self.lasso_state.dragging {
                         self.lasso_state.dragging = false;
                         self.lasso_state.points.clear();
-                    } else {
-                        canvas_state.clear_selection();
                     }
+                    canvas_state.clear_selection();
                     canvas_state.mark_dirty(None);
                     ui.ctx().request_repaint();
                 }
@@ -9786,8 +9787,13 @@ impl ToolsPanel {
     }
 
     /// Compute alpha specifically for line tool with forced soft edges
-    fn compute_line_alpha(&self, dist: f32, radius: f32, forced_hardness: f32) -> f32 {
-        // Always use anti-aliasing for lines
+    fn compute_line_alpha(&self, dist: f32, radius: f32, forced_hardness: f32, anti_alias: bool) -> f32 {
+        // Hard-edge (no AA): binary cutoff
+        if !anti_alias {
+            return if dist < radius { 1.0 } else { 0.0 };
+        }
+
+        // Anti-aliased: smoothstep fade
         let safe_hardness = forced_hardness.clamp(0.0, 0.99);
 
         // For small brushes (radius < 3), force extra AA by extending beyond nominal radius
@@ -11480,7 +11486,8 @@ impl ToolsPanel {
         // If distance is too small, just draw one circle
         if distance < 0.1 {
             if (start.0 as u32) < preview.width() && (start.1 as u32) < preview.height() {
-                self.draw_bezier_circle_with_hardness(preview, start, color_f32, radius, 0.95);
+                let anti_alias = self.line_state.line_tool.options.anti_alias;
+                self.draw_bezier_circle_with_hardness(preview, start, color_f32, radius, 0.95, anti_alias);
             }
             return;
         }
@@ -11495,7 +11502,8 @@ impl ToolsPanel {
             let y = y0 + dy * t;
 
             if (x as u32) < preview.width() && (y as u32) < preview.height() {
-                self.draw_bezier_circle_with_hardness(preview, (x, y), color_f32, radius, 0.95);
+                let anti_alias = self.line_state.line_tool.options.anti_alias;
+                self.draw_bezier_circle_with_hardness(preview, (x, y), color_f32, radius, 0.95, anti_alias);
             }
         }
 
@@ -11505,8 +11513,9 @@ impl ToolsPanel {
     /// Draw a single dot for Bézier curve (sub-pixel position for smooth AA)
     fn draw_bezier_dot(&self, preview: &mut TiledImage, pos: (f32, f32), color_f32: [f32; 4]) {
         let radius = (self.properties.size / 2.0).max(1.0);
+        let anti_alias = self.line_state.line_tool.options.anti_alias;
         // High hardness for crisp edges with ~2px AA fade (matching arrow sharpness)
-        self.draw_bezier_circle_with_hardness(preview, pos, color_f32, radius, 0.95);
+        self.draw_bezier_circle_with_hardness(preview, pos, color_f32, radius, 0.95, anti_alias);
     }
 
     /// Draw a circle on the preview layer for Bézier curves with custom hardness override
@@ -11518,6 +11527,7 @@ impl ToolsPanel {
         color_f32: [f32; 4],
         radius: f32,
         forced_hardness: f32,
+        anti_alias: bool,
     ) {
         let (cx, cy) = pos;
 
@@ -11525,7 +11535,11 @@ impl ToolsPanel {
         // region actually gets drawn.  For softness 0.3 the fade extends ~70% of
         // radius beyond the solid core; we add a generous 2px on top for tiny
         // brushes.
-        let aa_pad = (radius * (1.0 - forced_hardness)).max(2.0) + 2.0;
+        let aa_pad = if anti_alias {
+            (radius * (1.0 - forced_hardness)).max(2.0) + 2.0
+        } else {
+            1.0
+        };
         let outer_radius = radius + aa_pad;
 
         let min_x = (cx - outer_radius).max(0.0) as u32;
@@ -11545,7 +11559,7 @@ impl ToolsPanel {
 
                 // Compute alpha — this returns 0.0 for pixels beyond the
                 // effective (soft) radius, so no explicit dist guard needed.
-                let alpha = self.compute_line_alpha(dist, radius, forced_hardness);
+                let alpha = self.compute_line_alpha(dist, radius, forced_hardness, anti_alias);
                 if alpha <= 0.0 {
                     continue;
                 }
@@ -12202,6 +12216,12 @@ impl ToolsPanel {
                 }
 
                 if total_neighbors > 0 && neighbor_fill_count < total_neighbors {
+                    // Keep thin/island pixel-art features fully covered. If we soften these,
+                    // 1px regions can fade out and look like "no fill happened".
+                    if neighbor_fill_count <= 2 {
+                        continue;
+                    }
+
                     let idx = span.y as usize * wu + x as usize;
                     let ratio = neighbor_fill_count as f32 / total_neighbors as f32;
                     let t = ratio * ratio * (3.0 - 2.0 * ratio);
@@ -12761,6 +12781,11 @@ impl ToolsPanel {
             (fill_color[2] * 255.0) as u8,
             (fill_color[3] * 255.0) as u8,
         ]);
+
+        // Fill tool keeps a single production behavior: perceptual matching with 4-connected
+        // flood. This avoids legacy mode combinations that hurt predictability.
+        self.fill_state.distance_mode = WandDistanceMode::Perceptual;
+        self.fill_state.connectivity = FloodConnectivity::Four;
 
         self.fill_state.active_fill = Some(ActiveFillRegion {
             start_x: start_pos.0,
@@ -16959,13 +16984,20 @@ impl ToolsPanel {
     fn commit_liquify(&mut self, canvas_state: &mut CanvasState) {
         let displacement = match &self.liquify_state.displacement {
             Some(d) => d,
-            None => return,
+            None => {
+                self.stroke_tracker.cancel();
+                return;
+            }
         };
         let source = match &self.liquify_state.source_snapshot {
             Some(s) => s,
-            None => return,
+            None => {
+                self.stroke_tracker.cancel();
+                return;
+            }
         };
         let Some(target_layer_idx) = self.liquify_state.source_layer_index else {
+            self.stroke_tracker.cancel();
             return;
         };
         if target_layer_idx >= canvas_state.layers.len() {
@@ -16975,20 +17007,21 @@ impl ToolsPanel {
             self.liquify_state.source_layer_index = None;
             self.liquify_state.warp_buffer.clear();
             self.liquify_state.dirty_rect = None;
+            self.stroke_tracker.cancel();
             canvas_state.clear_preview_state();
             return;
         }
-
-        // Expand undo/redo bounds to cover the full canvas (liquify affects everything)
-        self.stroke_tracker.expand_bounds(egui::Rect::from_min_max(
-            egui::pos2(0.0, 0.0),
-            egui::pos2(displacement.width as f32, displacement.height as f32),
-        ));
-
-        let stroke_event = self.stroke_tracker.finish(canvas_state);
         let warped = crate::ops::transform::warp_displacement_full(source, displacement);
+        let mut history_cmd = crate::components::history::SingleLayerSnapshotCommand::new_for_layer(
+            "Liquify".to_string(),
+            canvas_state,
+            target_layer_idx,
+        );
+        let changed = warped.as_raw() != source.as_raw();
 
-        if let Some(active_layer) = canvas_state.layers.get_mut(target_layer_idx) {
+        if changed
+            && let Some(active_layer) = canvas_state.layers.get_mut(target_layer_idx)
+        {
             let w = canvas_state.width.min(warped.width());
             let h = canvas_state.height.min(warped.height());
             for y in 0..h {
@@ -17006,12 +17039,15 @@ impl ToolsPanel {
         self.liquify_state.source_layer_index = None;
         self.liquify_state.warp_buffer.clear();
         self.liquify_state.dirty_rect = None;
+        self.stroke_tracker.cancel();
         canvas_state.clear_preview_state();
-        canvas_state.mark_dirty(None);
-
-        if stroke_event.is_some() {
-            self.pending_stroke_event = stroke_event;
+        if changed {
+            canvas_state.mark_dirty(None);
+            history_cmd.set_after(canvas_state);
+            self.pending_history_commands.push(Box::new(history_cmd));
         }
+
+        self.pending_stroke_event = None;
     }
 
     fn render_liquify_preview(

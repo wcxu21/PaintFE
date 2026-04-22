@@ -490,7 +490,10 @@ impl ColorsPanel {
             let dist = delta.length();
 
             // decide zone on first contact
-            if response.drag_started() || (response.clicked() && drag_zone == DragZone::None) {
+            if response.drag_started()
+                || (response.is_pointer_button_down_on() && drag_zone == DragZone::None)
+                || (response.clicked() && drag_zone == DragZone::None)
+            {
                 if dist >= (inner_r - 6.0) && dist <= (outer_r + 6.0) {
                     drag_zone = DragZone::HueRing;
                 } else if point_in_triangle(mp, vert_a, vert_b, vert_c) || dist < inner_r {
@@ -498,7 +501,7 @@ impl ColorsPanel {
                 }
             }
 
-            if response.dragged() || response.clicked() {
+            if response.dragged() || response.clicked() || response.is_pointer_button_down_on() {
                 match drag_zone {
                     DragZone::HueRing => {
                         let mut new_h = delta.y.atan2(delta.x) / TAU;
@@ -638,7 +641,7 @@ impl ColorsPanel {
                 ));
             }
 
-            if (resp.dragged() || resp.clicked())
+            if (resp.dragged() || resp.clicked() || resp.is_pointer_button_down_on())
                 && let Some(mp) = resp.interact_pointer_pos()
             {
                 a = ((mp.x - bar.min.x) / bar.width()).clamp(0.0, 1.0);
@@ -1088,7 +1091,7 @@ impl ColorsPanel {
             ));
         }
 
-        if (resp.dragged() || resp.clicked())
+        if (resp.dragged() || resp.clicked() || resp.is_pointer_button_down_on())
             && let Some(mp) = resp.interact_pointer_pos()
         {
             *value = ((mp.x - bar.min.x) / bar.width()).clamp(0.0, 1.0);

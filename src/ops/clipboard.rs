@@ -43,6 +43,7 @@ pub struct ClipboardImageForPaste {
     pub image: RgbaImage,
     pub source: ClipboardImageSource,
     pub origin_center: Option<Pos2>,
+    pub overwrite_transparent_pixels: bool,
 }
 
 /// Store an image in the app clipboard.
@@ -53,6 +54,11 @@ fn set_clipboard_image(img: RgbaImage, origin_center: Option<Pos2>) {
         origin_center,
         copied_at: Instant::now(),
     });
+}
+
+fn copy_image_to_clipboard(img: RgbaImage, origin_center: Option<Pos2>) {
+    set_clipboard_image(img.clone(), origin_center);
+    copy_to_system_clipboard(&img);
 }
 
 /// Retrieve a clone from the app clipboard.
@@ -95,12 +101,14 @@ pub fn get_clipboard_image_for_paste() -> Option<ClipboardImageForPaste> {
                 image: internal_payload.image.clone(),
                 source: internal_payload.source,
                 origin_center: internal_payload.origin_center,
+                overwrite_transparent_pixels: true,
             });
         }
         return Some(ClipboardImageForPaste {
             image: system_img,
             source: ClipboardImageSource::External,
             origin_center: None,
+            overwrite_transparent_pixels: false,
         });
     }
 
@@ -108,6 +116,7 @@ pub fn get_clipboard_image_for_paste() -> Option<ClipboardImageForPaste> {
         image: payload.image,
         source: payload.source,
         origin_center: payload.origin_center,
+        overwrite_transparent_pixels: true,
     })
 }
 
@@ -489,7 +498,7 @@ fn read_image_from_clipboard_file_list() -> Option<RgbaImage> {
 
 /// Copy selected pixels from the active layer into the clipboard.
 /// Returns true if anything was copied.
-pub fn copy_selection(state: &CanvasState) -> bool {
+pub fn copy_selection(state: &CanvasState, transparent_cutout: bool) -> bool {
     let mask = match &state.selection_mask {
         Some(m) => m,
         None => return false,
@@ -530,7 +539,7 @@ pub fn copy_selection(state: &CanvasState) -> bool {
     for y in min_y..=max_y {
         let mask_row = y as usize * mw as usize;
         for x in min_x..=max_x {
-            if mask_raw[mask_row + x as usize] > 0 {
+            if !transparent_cutout || mask_raw[mask_row + x as usize] > 0 {
                 let px = layer.pixels.get_pixel(x, y);
                 clip.put_pixel(x - min_x, y - min_y, *px);
             }
@@ -539,15 +548,21 @@ pub fn copy_selection(state: &CanvasState) -> bool {
 
     let center_x = min_x as f32 + w as f32 / 2.0;
     let center_y = min_y as f32 + h as f32 / 2.0;
-    set_clipboard_image(clip.clone(), Some(Pos2::new(center_x, center_y)));
-    // Also write to the OS clipboard so other apps can paste.
-    copy_to_system_clipboard(&clip);
+    copy_image_to_clipboard(clip, Some(Pos2::new(center_x, center_y)));
+    true
+}
+
+pub fn copy_overlay(overlay: &PasteOverlay) -> bool {
+    let Some((img, origin_center)) = overlay.rasterize_for_clipboard() else {
+        return false;
+    };
+    copy_image_to_clipboard(img, Some(origin_center));
     true
 }
 
 /// Cut = copy + delete selected pixels.
-pub fn cut_selection(state: &mut CanvasState) -> bool {
-    if !copy_selection(state) {
+pub fn cut_selection(state: &mut CanvasState, transparent_cutout: bool) -> bool {
+    if !copy_selection(state, transparent_cutout) {
         return false;
     }
     state.delete_selected_pixels();
@@ -660,6 +675,8 @@ pub struct PasteOverlay {
     pub interpolation: Interpolation,
     /// Anti-aliasing toggle for rotation pass.
     pub anti_aliasing: bool,
+    /// When true, transparent source pixels overwrite destination pixels.
+    pub overwrite_transparent_pixels: bool,
 
     // --- Interaction state ---
     /// Which handle is being dragged, if any.
@@ -719,6 +736,7 @@ impl PasteOverlay {
             anchor_offset: Vec2::ZERO,
             interpolation: Interpolation::Nearest,
             anti_aliasing: false,
+            overwrite_transparent_pixels: false,
             active_handle: None,
             drag_start_mouse: None,
             drag_start_center: Pos2::ZERO,
@@ -752,6 +770,191 @@ impl PasteOverlay {
         let mut overlay = Self::new(img, canvas_w, canvas_h);
         overlay.center = center;
         overlay
+    }
+
+    pub fn rasterize_for_clipboard(&self) -> Option<(RgbaImage, Pos2)> {
+        let src_w = self.source.width() as f32;
+        let src_h = self.source.height() as f32;
+        let scaled_w = (src_w * self.scale_x).round().max(1.0) as u32;
+        let scaled_h = (src_h * self.scale_y).round().max(1.0) as u32;
+        let scaled = imageops::resize(&self.source, scaled_w, scaled_h, self.interpolation.to_filter());
+
+        let corners = self.corners_canvas();
+        let mut min_x = f32::MAX;
+        let mut min_y = f32::MAX;
+        let mut max_x = f32::MIN;
+        let mut max_y = f32::MIN;
+        for corner in &corners {
+            min_x = min_x.min(corner.x);
+            min_y = min_y.min(corner.y);
+            max_x = max_x.max(corner.x);
+            max_y = max_y.max(corner.y);
+        }
+
+        let col_start = min_x.floor() as i32;
+        let row_start = min_y.floor() as i32;
+        let col_end = max_x.ceil() as i32;
+        let row_end = max_y.ceil() as i32;
+        if col_end < col_start || row_end < row_start {
+            return None;
+        }
+
+        let out_w = (col_end - col_start + 1) as u32;
+        let out_h = (row_end - row_start + 1) as u32;
+        let mut out = RgbaImage::new(out_w, out_h);
+
+        let anchor = self.anchor_canvas();
+        let cos = self.rotation.cos();
+        let sin = self.rotation.sin();
+        let origin_x = self.center.x - scaled_w as f32 / 2.0;
+        let origin_y = self.center.y - scaled_h as f32 / 2.0;
+        let use_aa = self.anti_aliasing;
+
+        for out_y in 0..out_h {
+            let py = row_start as f32 + out_y as f32 + 0.5;
+            let ry = py - anchor.y;
+            for out_x in 0..out_w {
+                let px = col_start as f32 + out_x as f32 + 0.5;
+                let rx = px - anchor.x;
+                let ur_x = rx * cos + ry * sin + anchor.x;
+                let ur_y = -rx * sin + ry * cos + anchor.y;
+
+                let local_x = ur_x - origin_x;
+                let local_y = ur_y - origin_y;
+                if local_x < -0.5
+                    || local_y < -0.5
+                    || local_x >= scaled_w as f32 + 0.5
+                    || local_y >= scaled_h as f32 + 0.5
+                {
+                    continue;
+                }
+
+                if !use_aa
+                    && (local_x < 0.0
+                        || local_y < 0.0
+                        || local_x >= scaled_w as f32
+                        || local_y >= scaled_h as f32)
+                {
+                    continue;
+                }
+
+                let src_px = if use_aa {
+                    sample_bilinear(&scaled, local_x - 0.5, local_y - 0.5, scaled_w, scaled_h)
+                } else {
+                    let ix = (local_x as u32).min(scaled_w - 1);
+                    let iy = (local_y as u32).min(scaled_h - 1);
+                    *scaled.get_pixel(ix, iy)
+                };
+                if src_px[3] > 0 {
+                    out.put_pixel(out_x, out_y, src_px);
+                }
+            }
+        }
+
+        let has_pixels = out.pixels().any(|px| px[3] > 0);
+        if !has_pixels {
+            return None;
+        }
+
+        let origin_center = Pos2::new(
+            col_start as f32 + out_w as f32 / 2.0,
+            row_start as f32 + out_h as f32 / 2.0,
+        );
+        Some((out, origin_center))
+    }
+
+    pub fn render_replacement_preview(&self, base_layer: &RgbaImage) -> RgbaImage {
+        let mut out = base_layer.clone();
+        self.apply_transformed_pixels_to_image(&mut out, self.overwrite_transparent_pixels);
+        out
+    }
+
+    fn apply_transformed_pixels_to_image(&self, out: &mut RgbaImage, overwrite_transparent: bool) {
+        let src_w = self.source.width() as f32;
+        let src_h = self.source.height() as f32;
+        let scaled_w = (src_w * self.scale_x).round().max(1.0) as u32;
+        let scaled_h = (src_h * self.scale_y).round().max(1.0) as u32;
+        let scaled = imageops::resize(
+            &self.source,
+            scaled_w,
+            scaled_h,
+            self.interpolation.to_filter(),
+        );
+
+        let cw = out.width();
+        let ch = out.height();
+        if cw == 0 || ch == 0 {
+            return;
+        }
+
+        let corners = self.corners_canvas();
+        let mut bb_min_x = cw as f32;
+        let mut bb_min_y = ch as f32;
+        let mut bb_max_x = 0.0f32;
+        let mut bb_max_y = 0.0f32;
+        for c in &corners {
+            bb_min_x = bb_min_x.min(c.x);
+            bb_min_y = bb_min_y.min(c.y);
+            bb_max_x = bb_max_x.max(c.x);
+            bb_max_y = bb_max_y.max(c.y);
+        }
+        let row_start = (bb_min_y.floor().max(0.0)) as u32;
+        let row_end = (bb_max_y.ceil().min(ch as f32 - 1.0)) as u32;
+        let col_start = (bb_min_x.floor().max(0.0)) as u32;
+        let col_end = (bb_max_x.ceil().min(cw as f32 - 1.0)) as u32;
+
+        let anchor = self.anchor_canvas();
+        let cos = self.rotation.cos();
+        let sin = self.rotation.sin();
+        let origin_x = self.center.x - scaled_w as f32 / 2.0;
+        let origin_y = self.center.y - scaled_h as f32 / 2.0;
+        let use_aa = self.anti_aliasing;
+
+        for dy in row_start..=row_end {
+            let py = dy as f32 + 0.5;
+            let ry = py - anchor.y;
+            for dx in col_start..=col_end {
+                let px = dx as f32 + 0.5;
+                let rx = px - anchor.x;
+                let ur_x = rx * cos + ry * sin + anchor.x;
+                let ur_y = -rx * sin + ry * cos + anchor.y;
+
+                let local_x = ur_x - origin_x;
+                let local_y = ur_y - origin_y;
+
+                if local_x < -0.5
+                    || local_y < -0.5
+                    || local_x >= scaled_w as f32 + 0.5
+                    || local_y >= scaled_h as f32 + 0.5
+                {
+                    continue;
+                }
+
+                if !use_aa
+                    && (local_x < 0.0
+                        || local_y < 0.0
+                        || local_x >= scaled_w as f32
+                        || local_y >= scaled_h as f32)
+                {
+                    continue;
+                }
+
+                let src_px = if use_aa {
+                    sample_bilinear(&scaled, local_x - 0.5, local_y - 0.5, scaled_w, scaled_h)
+                } else {
+                    let ix = (local_x as u32).min(scaled_w - 1);
+                    let iy = (local_y as u32).min(scaled_h - 1);
+                    *scaled.get_pixel(ix, iy)
+                };
+
+                if overwrite_transparent {
+                    out.put_pixel(dx, dy, src_px);
+                } else if src_px[3] > 0 {
+                    let dst = *out.get_pixel(dx, dy);
+                    out.put_pixel(dx, dy, alpha_blend(dst, src_px));
+                }
+            }
+        }
     }
 
     /// Half-size of the source image in canvas coords (unscaled).
@@ -1515,6 +1718,7 @@ impl PasteOverlay {
         let origin_x = self.center.x - scaled_w as f32 / 2.0;
         let origin_y = self.center.y - scaled_h as f32 / 2.0;
         let use_aa = self.anti_aliasing;
+        let overwrite_transparent = self.overwrite_transparent_pixels;
 
         // Flatten layer for fast reads, compute source pixels in parallel,
         // then apply patches back to the tiled layer.
@@ -1563,13 +1767,13 @@ impl PasteOverlay {
                         let iy = (local_y as u32).min(scaled_h - 1);
                         *scaled.get_pixel(ix, iy)
                     };
-                    if src_px[3] == 0 {
-                        continue;
+                    if overwrite_transparent {
+                        row_patches.push((dx, dy, src_px));
+                    } else if src_px[3] > 0 {
+                        let dst = *flat.get_pixel(dx, dy);
+                        let blended = alpha_blend(dst, src_px);
+                        row_patches.push((dx, dy, blended));
                     }
-
-                    let dst = *flat.get_pixel(dx, dy);
-                    let blended = alpha_blend(dst, src_px);
-                    row_patches.push((dx, dy, blended));
                 }
                 row_patches
             })

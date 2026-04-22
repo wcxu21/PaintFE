@@ -335,12 +335,14 @@ pub(crate) fn dialog_slider(
         if ui.is_rect_visible(rect) {
             let p = ui.painter();
             let vis = ui.visuals();
-            let track_col = if vis.dark_mode {
-                egui::Color32::from_gray(55)
-            } else {
-                egui::Color32::from_gray(200)
-            };
+            let track_col = vis.extreme_bg_color;
             let filled_col = vis.selection.bg_fill;
+            let border_col = if vis.widgets.inactive.bg_stroke.color == egui::Color32::TRANSPARENT
+            {
+                egui::Color32::from_black_alpha(40)
+            } else {
+                vis.widgets.inactive.bg_stroke.color
+            };
 
             // Filled portion (left of thumb)
             let t = (*value - range_start) / (range_end - range_start).max(f32::EPSILON);
@@ -363,7 +365,7 @@ pub(crate) fn dialog_slider(
             p.rect_stroke(
                 bar,
                 egui::CornerRadius::same(2),
-                egui::Stroke::new(1.0, egui::Color32::from_black_alpha(40)),
+                egui::Stroke::new(1.0, border_col),
                 egui::StrokeKind::Middle,
             );
 

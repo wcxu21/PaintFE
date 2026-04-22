@@ -503,7 +503,7 @@ pub struct LineInfo {
 impl Default for TextStyle {
     fn default() -> Self {
         Self {
-            font_family: "Arial".to_string(),
+            font_family: crate::ops::text::preferred_default_font_family(),
             font_weight: 400,
             font_size: 48.0,
             italic: false,
