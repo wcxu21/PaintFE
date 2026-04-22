@@ -539,10 +539,42 @@ pub(crate) struct ThresholdRegionIndex {
     cumulative_bboxes: Arc<Vec<Option<(u32, u32, u32, u32)>>>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MagicWandScope {
+    Contiguous,
+    Global,
+}
+
+#[derive(Clone, Debug)]
+struct MagicWandOperation {
+    start_x: u32,
+    start_y: u32,
+    target_color: Rgba<u8>,
+    combine_mode: SelectionMode,
+    scope: MagicWandScope,
+    distance_mode: WandDistanceMode,
+    connectivity: FloodConnectivity,
+    region_index: ThresholdRegionIndex,
+}
+
+#[derive(Clone, Debug)]
+struct PendingMagicWandOperation {
+    request_id: u64,
+    start_x: u32,
+    start_y: u32,
+    target_color: Rgba<u8>,
+    combine_mode: SelectionMode,
+    scope: MagicWandScope,
+    distance_mode: WandDistanceMode,
+    connectivity: FloodConnectivity,
+}
+
 /// Async distance map result delivered from rayon background thread.
 enum MagicWandAsyncResult {
-    Flood(ThresholdRegionIndex),
-    Global(ThresholdRegionIndex),
+    Ready {
+        request_id: u64,
+        index: ThresholdRegionIndex,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -666,26 +698,22 @@ impl ThresholdRegionIndex {
 #[derive(Debug)]
 pub struct MagicWandState {
     pub tolerance: f32,
-    /// Seeded threshold-query index computed once per click.
-    region_index: Option<ThresholdRegionIndex>,
     pub anti_aliased: bool,
     pub distance_mode: WandDistanceMode,
     pub connectivity: FloodConnectivity,
-    /// Effective selection mode for the current/pending click.
-    pub effective_mode: SelectionMode,
     pub global_select: bool,
-    pub base_selection_mask: Option<GrayImage>,
-    raw_mask: Option<Vec<u8>>,
-    final_mask: Option<Vec<u8>>,
+    pub session_before_mask: Option<GrayImage>,
+    operations: Vec<MagicWandOperation>,
+    pending_operation: Option<PendingMagicWandOperation>,
     /// Tracks the last tolerance + anti-alias that was applied, to skip no-op updates.
     pub last_applied_tolerance: f32,
     pub last_applied_aa: bool,
     /// Channel receiver for async Dijkstra/global distance map computation.
     async_rx: Option<std::sync::mpsc::Receiver<MagicWandAsyncResult>>,
-    /// True while an async computation is in flight (blocks new clicks).
     pub computing: bool,
     preview_pending: bool,
     tolerance_changed_at: Option<Instant>,
+    next_request_id: u64,
     /// Cached flat RGBA snapshot of the active layer, keyed by layer generation.
     cached_flat_rgba: Option<FlatLayerCache>,
 }
@@ -694,21 +722,20 @@ impl Clone for MagicWandState {
     fn clone(&self) -> Self {
         Self {
             tolerance: self.tolerance,
-            region_index: self.region_index.clone(),
             anti_aliased: self.anti_aliased,
             distance_mode: self.distance_mode,
             connectivity: self.connectivity,
-            effective_mode: self.effective_mode,
             global_select: self.global_select,
-            base_selection_mask: self.base_selection_mask.clone(),
-            raw_mask: self.raw_mask.clone(),
-            final_mask: self.final_mask.clone(),
+            session_before_mask: self.session_before_mask.clone(),
+            operations: self.operations.clone(),
+            pending_operation: self.pending_operation.clone(),
             last_applied_tolerance: self.last_applied_tolerance,
             last_applied_aa: self.last_applied_aa,
             async_rx: None,
             computing: false,
             preview_pending: false,
             tolerance_changed_at: self.tolerance_changed_at,
+            next_request_id: self.next_request_id,
             cached_flat_rgba: self.cached_flat_rgba.clone(),
         }
     }
@@ -718,21 +745,20 @@ impl Default for MagicWandState {
     fn default() -> Self {
         Self {
             tolerance: 5.0,
-            region_index: None,
             anti_aliased: true,
             distance_mode: WandDistanceMode::Perceptual,
             connectivity: FloodConnectivity::Four,
-            effective_mode: SelectionMode::Replace,
             global_select: false,
-            base_selection_mask: None,
-            raw_mask: None,
-            final_mask: None,
+            session_before_mask: None,
+            operations: Vec::new(),
+            pending_operation: None,
             last_applied_tolerance: -1.0,
             last_applied_aa: false,
             async_rx: None,
             computing: false,
             preview_pending: false,
             tolerance_changed_at: None,
+            next_request_id: 0,
             cached_flat_rgba: None,
         }
     }
@@ -4892,11 +4918,8 @@ impl ToolsPanel {
         }
 
         // Auto-commit Magic Wand if tool changed away from Magic Wand tool
-        if self.active_tool != Tool::MagicWand
-            && (self.magic_wand_state.region_index.is_some() || self.magic_wand_state.computing)
-        {
-            // Selection is already in canvas_state.selection_mask, just clear state
-            self.clear_magic_wand_async_state();
+        if self.active_tool != Tool::MagicWand && self.magic_wand_has_session() {
+            self.finalize_magic_wand_session(canvas_state);
             canvas_state.mark_dirty(None);
         }
 
@@ -6002,34 +6025,50 @@ impl ToolsPanel {
                 let shift_held_mw = ui.input(|i| i.modifiers.shift);
                 let alt_held_mw = ui.input(|i| i.modifiers.alt);
                 let ctrl_held_mw = ui.input(|i| i.modifiers.command);
-                // Ctrl+Shift = global select (all matching pixels across entire canvas)
-                let global_select = ctrl_held_mw && shift_held_mw;
-                // Determine click-time SelectionMode from modifier keys
+                let click_scope = if (ctrl_held_mw && shift_held_mw)
+                    || self.magic_wand_state.global_select
+                {
+                    MagicWandScope::Global
+                } else {
+                    MagicWandScope::Contiguous
+                };
                 let click_mode = if is_primary_clicked || is_secondary_clicked {
                     if is_secondary_clicked {
                         SelectionMode::Subtract
+                    } else if ctrl_held_mw && shift_held_mw {
+                        SelectionMode::Add
                     } else if shift_held_mw && alt_held_mw {
                         SelectionMode::Intersect
-                    } else if shift_held_mw {
+                    } else if ctrl_held_mw {
                         SelectionMode::Add
                     } else if alt_held_mw {
                         SelectionMode::Subtract
                     } else {
-                        self.magic_wand_state.effective_mode
+                        self.selection_state.mode
                     }
                 } else {
-                    self.magic_wand_state.effective_mode
+                    self.selection_state.mode
                 };
 
                 // Poll async distance map computation
                 if let Some(rx) = &self.magic_wand_state.async_rx {
                     if let Ok(result) = rx.try_recv() {
                         match result {
-                            MagicWandAsyncResult::Flood(index)
-                            | MagicWandAsyncResult::Global(index) => {
-                                self.magic_wand_state.region_index = Some(index);
-                                self.magic_wand_state.raw_mask = None;
-                                self.magic_wand_state.final_mask = None;
+                            MagicWandAsyncResult::Ready { request_id, index } => {
+                                if let Some(pending) = self.magic_wand_state.pending_operation.take()
+                                    && pending.request_id == request_id
+                                {
+                                    self.magic_wand_state.operations.push(MagicWandOperation {
+                                        start_x: pending.start_x,
+                                        start_y: pending.start_y,
+                                        target_color: pending.target_color,
+                                        combine_mode: pending.combine_mode,
+                                        scope: pending.scope,
+                                        distance_mode: pending.distance_mode,
+                                        connectivity: pending.connectivity,
+                                        region_index: index,
+                                    });
+                                }
                             }
                         }
                         self.magic_wand_state.async_rx = None;
@@ -6047,38 +6086,46 @@ impl ToolsPanel {
 
                 // Commit on Enter or cancel on Escape
                 if enter_pressed || esc_pressed {
-                    if self.magic_wand_state.region_index.is_some()
-                        || self.magic_wand_state.computing
-                    {
-                        self.clear_magic_wand_async_state();
-                        canvas_state.mark_dirty(None);
-                        ui.ctx().request_repaint();
-                    }
                     if esc_pressed {
-                        canvas_state.clear_selection();
+                        if self.magic_wand_has_session() {
+                            self.cancel_magic_wand_session(canvas_state);
+                            ui.ctx().request_repaint();
+                        }
+                    } else if self.magic_wand_has_session() {
+                        self.finalize_magic_wand_session(canvas_state);
+                        ui.ctx().request_repaint();
                     }
                 }
 
                 // Click to start new selection (or commit current + start new)
                 if (is_primary_clicked || is_secondary_clicked)
-                    && !self.magic_wand_state.computing
                     && let Some(pos) = canvas_pos
                 {
-                    // Clear any existing distance map before computing a new one
-                    self.clear_magic_wand_async_state();
-                    // Perform new selection (async, or sync on GPU)
-                    self.magic_wand_state.global_select = global_select;
+                    if click_mode == SelectionMode::Replace && self.magic_wand_has_session() {
+                        self.finalize_magic_wand_session(canvas_state);
+                    }
+                    if click_mode == SelectionMode::Replace {
+                        self.clear_magic_wand_async_state();
+                        self.begin_magic_wand_session_if_needed(canvas_state);
+                        canvas_state.selection_mask = None;
+                        canvas_state.invalidate_selection_overlay();
+                        canvas_state.mark_dirty(None);
+                    } else {
+                        self.begin_magic_wand_session_if_needed(canvas_state);
+                    }
+
                     self.perform_magic_wand_selection(
                         canvas_state,
                         pos,
                         click_mode,
+                        click_scope,
                         gpu_renderer.as_deref_mut(),
                     );
                     ui.ctx().request_repaint();
                 }
 
                 // Re-threshold the distance map only when tolerance or anti-alias changed
-                let has_map = self.magic_wand_state.region_index.is_some();
+                let has_map = !self.magic_wand_state.operations.is_empty();
                 if has_map
                     && self.active_tool == Tool::MagicWand
                     && (self.magic_wand_state.preview_pending
@@ -11568,17 +11615,50 @@ impl ToolsPanel {
     }
 
     fn clear_magic_wand_async_state(&mut self) {
-        self.magic_wand_state.region_index = None;
+        self.magic_wand_state.operations.clear();
+        self.magic_wand_state.session_before_mask = None;
+        self.magic_wand_state.pending_operation = None;
         self.magic_wand_state.async_rx = None;
         self.magic_wand_state.computing = false;
         self.magic_wand_state.preview_pending = false;
         self.magic_wand_state.tolerance_changed_at = None;
         self.magic_wand_state.last_applied_tolerance = -1.0;
-        self.magic_wand_state.raw_mask = None;
-        self.magic_wand_state.final_mask = None;
         // Force a fresh texture upload on the next click so stale GPU state
         // cannot cause the wand to seed from the wrong pixel.
         self.magic_wand_state.cached_flat_rgba = None;
+    }
+
+    fn magic_wand_has_session(&self) -> bool {
+        self.magic_wand_state.computing
+            || self.magic_wand_state.pending_operation.is_some()
+            || !self.magic_wand_state.operations.is_empty()
+    }
+
+    fn begin_magic_wand_session_if_needed(&mut self, canvas_state: &CanvasState) {
+        if self.magic_wand_state.session_before_mask.is_none() {
+            self.magic_wand_state.session_before_mask = canvas_state.selection_mask.clone();
+        }
+    }
+
+    fn finalize_magic_wand_session(&mut self, canvas_state: &mut CanvasState) {
+        let before = self.magic_wand_state.session_before_mask.clone();
+        let after = canvas_state.selection_mask.clone();
+        if before != after {
+            self.pending_history_commands
+                .push(Box::new(SelectionCommand::new(
+                    "Magic Wand Select",
+                    before,
+                    after,
+                )));
+        }
+        self.clear_magic_wand_async_state();
+    }
+
+    fn cancel_magic_wand_session(&mut self, canvas_state: &mut CanvasState) {
+        canvas_state.selection_mask = self.magic_wand_state.session_before_mask.clone();
+        canvas_state.invalidate_selection_overlay();
+        canvas_state.mark_dirty(None);
+        self.clear_magic_wand_async_state();
     }
 
     #[inline]
@@ -11976,164 +12056,51 @@ impl ToolsPanel {
     }
 
     #[inline]
-    fn merge_magic_wand_value(
-        effective_mode: SelectionMode,
-        base_mask: Option<&[u8]>,
-        idx: usize,
-        raw_value: u8,
-    ) -> u8 {
-        match effective_mode {
+    fn merge_magic_wand_masks(base_value: u8, raw_value: u8, combine_mode: SelectionMode) -> u8 {
+        match combine_mode {
             SelectionMode::Replace => raw_value,
-            SelectionMode::Add => base_mask
-                .map(|base| base[idx].max(raw_value))
-                .unwrap_or(raw_value),
-            SelectionMode::Subtract => base_mask
-                .map(|base| base[idx].saturating_sub(raw_value))
-                .unwrap_or(0),
-            SelectionMode::Intersect => base_mask
-                .map(|base| ((base[idx] as u16 * raw_value as u16) / 255) as u8)
-                .unwrap_or(0),
+            SelectionMode::Add => base_value.max(raw_value),
+            SelectionMode::Subtract => base_value.saturating_sub(raw_value),
+            SelectionMode::Intersect => ((base_value as u16 * raw_value as u16) / 255) as u8,
         }
+    }
+
+    fn replay_magic_wand_selection(&self, threshold: u8, anti_aliased: bool) -> Option<GrayImage> {
+        let first = self.magic_wand_state.operations.first()?;
+        let n = (first.region_index.width * first.region_index.height) as usize;
+        let mut final_mask = vec![0u8; n];
+
+        for op in &self.magic_wand_state.operations {
+            let raw_mask = Self::build_threshold_mask(&op.region_index, threshold, anti_aliased);
+            for (idx, raw_value) in raw_mask.into_iter().enumerate() {
+                final_mask[idx] = Self::merge_magic_wand_masks(
+                    final_mask[idx],
+                    raw_value,
+                    op.combine_mode,
+                );
+            }
+        }
+
+        GrayImage::from_raw(first.region_index.width, first.region_index.height, final_mask)
     }
 
     fn apply_magic_wand_preview(
         &mut self,
         canvas_state: &mut CanvasState,
-        gpu_renderer: Option<&mut crate::gpu::GpuRenderer>,
+        _gpu_renderer: Option<&mut crate::gpu::GpuRenderer>,
     ) {
-        let Some(index) = self.magic_wand_state.region_index.as_ref() else {
+        if self.magic_wand_state.operations.is_empty() {
             return;
-        };
+        }
         let threshold = Self::tolerance_threshold_u8(self.magic_wand_state.tolerance);
-        let previous_threshold = if self.magic_wand_state.last_applied_tolerance >= 0.0 {
-            Some(Self::tolerance_threshold_u8(
-                self.magic_wand_state.last_applied_tolerance,
-            ))
-        } else {
-            None
-        };
-        let n = (index.width * index.height) as usize;
-        let base_raw = self
-            .magic_wand_state
-            .base_selection_mask
-            .as_ref()
-            .map(|base| base.as_raw().as_slice());
-
-        if let Some(gpu) = gpu_renderer {
-            let n = (index.width * index.height) as usize;
-            let final_mask = self
-                .magic_wand_state
-                .final_mask
-                .get_or_insert_with(|| vec![0u8; n]);
-            let distance_key = index.distances.as_ref().as_ptr() as usize;
-            let base_key = self
-                .magic_wand_state
-                .base_selection_mask
-                .as_ref()
-                .map(|base| base.as_raw().as_ptr() as usize);
-
-            gpu.magic_wand_pipeline.generate_into(
-                &gpu.ctx,
-                index.distances.as_ref(),
-                distance_key,
-                base_raw,
-                base_key,
-                index.width,
-                index.height,
-                threshold,
-                self.magic_wand_state.anti_aliased,
-                Self::selection_mode_to_gpu(self.magic_wand_state.effective_mode),
-                final_mask,
-            );
-
-            canvas_state.selection_mask =
-                GrayImage::from_raw(index.width, index.height, final_mask.clone());
-            canvas_state.invalidate_selection_overlay();
-            canvas_state.mark_dirty(None);
-            self.magic_wand_state.last_applied_tolerance = self.magic_wand_state.tolerance;
-            self.magic_wand_state.last_applied_aa = self.magic_wand_state.anti_aliased;
-            self.magic_wand_state.preview_pending = false;
-            self.magic_wand_state.tolerance_changed_at = None;
-            self.magic_wand_state.raw_mask = None;
-            // Record for undo/redo (after snapshot already captured before any
-            // tolerances were applied, reuse base_selection_mask as "before").
-            let before = self
-                .magic_wand_state
-                .base_selection_mask
-                .clone()
-                .or_else(|| canvas_state.selection_mask.clone());
-            let after = canvas_state.selection_mask.clone();
-            if before != after {
-                self.pending_history_commands
-                    .push(Box::new(SelectionCommand::new(
-                        "Magic Wand Select",
-                        before,
-                        after,
-                    )));
-            }
-            return;
-        }
-
-        let raw_mask = self
-            .magic_wand_state
-            .raw_mask
-            .get_or_insert_with(|| vec![0u8; n]);
-        let final_mask = self.magic_wand_state.final_mask.get_or_insert_with(|| {
-            match (self.magic_wand_state.effective_mode, base_raw) {
-                (SelectionMode::Add | SelectionMode::Subtract, Some(base)) => base.to_vec(),
-                _ => vec![0u8; n],
-            }
-        });
-
-        if previous_threshold.is_none() {
-            match (self.magic_wand_state.effective_mode, base_raw) {
-                (SelectionMode::Add | SelectionMode::Subtract, Some(base)) => {
-                    final_mask.copy_from_slice(base);
-                }
-                _ => final_mask.fill(0),
-            }
-        }
-
-        Self::apply_threshold_delta(
-            index,
-            raw_mask,
-            previous_threshold,
-            self.magic_wand_state.last_applied_aa,
-            threshold,
-            self.magic_wand_state.anti_aliased,
-            |idx, raw_value| {
-                final_mask[idx] = Self::merge_magic_wand_value(
-                    self.magic_wand_state.effective_mode,
-                    base_raw,
-                    idx,
-                    raw_value,
-                );
-            },
-        );
-
         canvas_state.selection_mask =
-            GrayImage::from_raw(index.width, index.height, final_mask.clone());
+            self.replay_magic_wand_selection(threshold, self.magic_wand_state.anti_aliased);
         canvas_state.invalidate_selection_overlay();
         canvas_state.mark_dirty(None);
         self.magic_wand_state.last_applied_tolerance = self.magic_wand_state.tolerance;
         self.magic_wand_state.last_applied_aa = self.magic_wand_state.anti_aliased;
         self.magic_wand_state.preview_pending = false;
         self.magic_wand_state.tolerance_changed_at = None;
-        // Record undo/redo entry for the CPU path (base_selection_mask is the pre-click state).
-        let before = self
-            .magic_wand_state
-            .base_selection_mask
-            .clone()
-            .or_else(|| canvas_state.selection_mask.clone());
-        let after = canvas_state.selection_mask.clone();
-        if before != after {
-            self.pending_history_commands
-                .push(Box::new(SelectionCommand::new(
-                    "Magic Wand Select",
-                    before,
-                    after,
-                )));
-        }
     }
 
     fn maybe_spawn_magic_wand_preview(
@@ -12499,7 +12466,8 @@ impl ToolsPanel {
         &mut self,
         canvas_state: &mut CanvasState,
         start_pos: (u32, u32),
-        mode: SelectionMode,
+        combine_mode: SelectionMode,
+        scope: MagicWandScope,
         gpu_renderer: Option<&mut crate::gpu::GpuRenderer>,
     ) {
         // Bounds check
@@ -12515,14 +12483,6 @@ impl ToolsPanel {
 
         let target_color = *active_layer.pixels.get_pixel(start_pos.0, start_pos.1);
 
-        // Save mode and base mask for merging
-        self.magic_wand_state.effective_mode = mode;
-        if mode != SelectionMode::Replace {
-            self.magic_wand_state.base_selection_mask = canvas_state.selection_mask.clone();
-        } else {
-            self.magic_wand_state.base_selection_mask = None;
-        }
-
         let Some(flat_rgba) = Self::cached_active_layer_rgba(
             &mut self.magic_wand_state.cached_flat_rgba,
             canvas_state,
@@ -12532,15 +12492,28 @@ impl ToolsPanel {
 
         let w = canvas_state.width;
         let h = canvas_state.height;
-        let global = self.magic_wand_state.global_select;
         let distance_mode = self.magic_wand_state.distance_mode;
         let connectivity = self.magic_wand_state.connectivity;
+        let request_id = self.magic_wand_state.next_request_id.wrapping_add(1);
+        self.magic_wand_state.next_request_id = request_id;
+        self.magic_wand_state.pending_operation = Some(PendingMagicWandOperation {
+            request_id,
+            start_x: start_pos.0,
+            start_y: start_pos.1,
+            target_color,
+            combine_mode,
+            scope,
+            distance_mode,
+            connectivity,
+        });
+        self.magic_wand_state.async_rx = None;
+        self.magic_wand_state.computing = false;
 
         // GPU path: compute distances synchronously on GPU
         if let Some(gpu) = gpu_renderer {
             let input_key = flat_rgba.as_ref().as_ptr() as usize;
             let mut distances = Vec::new();
-            let ok = if global {
+            let ok = if scope == MagicWandScope::Global {
                 gpu.flood_fill_pipeline.compute_global_distances(
                     &gpu.ctx,
                     flat_rgba.as_ref(),
@@ -12568,12 +12541,20 @@ impl ToolsPanel {
             };
             if ok {
                 let region_index = ThresholdRegionIndex::from_distances(distances, w, h);
-                self.magic_wand_state.region_index = Some(region_index);
+                self.magic_wand_state.operations.push(MagicWandOperation {
+                    start_x: start_pos.0,
+                    start_y: start_pos.1,
+                    target_color,
+                    combine_mode,
+                    scope,
+                    distance_mode,
+                    connectivity,
+                    region_index,
+                });
+                self.magic_wand_state.pending_operation = None;
                 self.magic_wand_state.computing = false;
                 self.magic_wand_state.preview_pending = true;
                 self.magic_wand_state.last_applied_tolerance = -1.0;
-                self.magic_wand_state.raw_mask = None;
-                self.magic_wand_state.final_mask = None;
                 self.apply_magic_wand_preview(canvas_state, Some(gpu));
                 return;
             }
@@ -12586,17 +12567,16 @@ impl ToolsPanel {
         self.magic_wand_state.computing = true;
 
         rayon::spawn(move || {
-            let result = if global {
-                let map = Self::compute_global_distance_map(
+            let index = if scope == MagicWandScope::Global {
+                Self::compute_global_distance_map(
                     &flat_rgba,
                     &target_color,
                     w,
                     h,
                     distance_mode,
-                );
-                MagicWandAsyncResult::Global(map)
+                )
             } else {
-                let map = Self::compute_flood_distance_map(
+                Self::compute_flood_distance_map(
                     &flat_rgba,
                     start_pos,
                     &target_color,
@@ -12604,10 +12584,9 @@ impl ToolsPanel {
                     h,
                     distance_mode,
                     connectivity,
-                );
-                MagicWandAsyncResult::Flood(map)
+                )
             };
-            let _ = tx.send(result);
+            let _ = tx.send(MagicWandAsyncResult::Ready { request_id, index });
         });
     }
 

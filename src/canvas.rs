@@ -4548,6 +4548,9 @@ impl Canvas {
         let fill_active = tools
             .as_ref()
             .is_some_and(|t| t.active_tool == crate::components::tools::Tool::Fill);
+        let magic_wand_active = tools
+            .as_ref()
+            .is_some_and(|t| t.active_tool == crate::components::tools::Tool::MagicWand);
         // Check if Color Picker tool is active before consuming tools
         let color_picker_active = tools
             .as_ref()
@@ -4999,6 +5002,37 @@ impl Canvas {
             // FILL CURSOR OVERLAY (shows exact pixel that will be flood-filled)
             // ====================================================================
             if fill_active
+                && let Some(pos) = mouse_pos
+                && canvas_rect.contains(pos)
+                && let Some((canvas_x_f32, canvas_y_f32)) =
+                    self.screen_to_canvas_f32(pos, canvas_rect, state)
+            {
+                let canvas_x = canvas_x_f32.floor() as u32;
+                let canvas_y = canvas_y_f32.floor() as u32;
+                let pixel_screen_x = image_rect.min.x + canvas_x as f32 * self.zoom;
+                let pixel_screen_y = image_rect.min.y + canvas_y as f32 * self.zoom;
+                let pixel_rect = Rect::from_min_size(
+                    Pos2::new(pixel_screen_x, pixel_screen_y),
+                    Vec2::new(self.zoom.max(1.0), self.zoom.max(1.0)),
+                );
+                painter.rect_stroke(
+                    pixel_rect,
+                    0.0,
+                    egui::Stroke::new(1.0, Color32::from_black_alpha(180)),
+                    egui::StrokeKind::Middle,
+                );
+                painter.rect_stroke(
+                    pixel_rect,
+                    0.0,
+                    egui::Stroke::new(0.5, Color32::from_white_alpha(200)),
+                    egui::StrokeKind::Middle,
+                );
+            }
+
+            // ====================================================================
+            // MAGIC WAND CURSOR OVERLAY (shows exact seed pixel)
+            // ====================================================================
+            if magic_wand_active
                 && let Some(pos) = mouse_pos
                 && canvas_rect.contains(pos)
                 && let Some((canvas_x_f32, canvas_y_f32)) =

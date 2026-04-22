@@ -6,6 +6,19 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## [1.2.7] - 2026-04-22
+
+### Changed
+- **Magic Wand accuracy update**: Reworked selection behavior for better precision and predictability, including improved click-mode semantics and whole-canvas color matching with Ctrl+Shift.
+- **Magic Wand additive workflow**: Subsequent additive clicks now behave as independent selection origins for tolerance-driven updates, improving disconnected region targeting.
+- **Magic Wand hover targeting**: Added hovered pixel indicator to make seed-pixel selection clearer before clicking.
+
+### Fixed
+- **Magic Wand mode behavior**: Normal mode now correctly replaces prior selections instead of unintentionally accumulating regions.
+- **Magic Wand selection finalization**: Improved session finalization and history consistency for wand-driven selection edits.
+
+---
+
 ## [1.2.0] - 2026-04-20
 
 ### Added
