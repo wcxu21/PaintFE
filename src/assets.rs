@@ -6852,17 +6852,17 @@ impl SettingsWindow {
                                 }
                             }
                             egui::Event::Key {
-                                key, pressed: true, ..
-                            } => {
-                                if *key != egui::Key::Escape && key_name(*key) != "?" {
-                                    key_combo = Some(KeyCombo {
-                                            ctrl,
-                                            shift,
-                                            alt,
-                                            key: Some(*key),
-                                            text_char: None,
-                                        });
-                                }
+                                key,
+                                pressed: true,
+                                ..
+                            } if *key != egui::Key::Escape && key_name(*key) != "?" => {
+                                key_combo = Some(KeyCombo {
+                                    ctrl,
+                                    shift,
+                                    alt,
+                                    key: Some(*key),
+                                    text_char: None,
+                                });
                             }
                             _ => {}
                         }
