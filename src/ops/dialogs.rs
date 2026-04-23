@@ -337,8 +337,7 @@ pub(crate) fn dialog_slider(
             let vis = ui.visuals();
             let track_col = vis.extreme_bg_color;
             let filled_col = vis.selection.bg_fill;
-            let border_col = if vis.widgets.inactive.bg_stroke.color == egui::Color32::TRANSPARENT
-            {
+            let border_col = if vis.widgets.inactive.bg_stroke.color == egui::Color32::TRANSPARENT {
                 egui::Color32::from_black_alpha(40)
             } else {
                 vis.widgets.inactive.bg_stroke.color
@@ -2147,7 +2146,8 @@ impl AlignLayerDialog {
                     .show(ui, |ui| {
                         for (y, row) in labels.iter().enumerate() {
                             for (x, label) in row.iter().enumerate() {
-                                let selected = self.anchor_x == x as u32 && self.anchor_y == y as u32;
+                                let selected =
+                                    self.anchor_x == x as u32 && self.anchor_y == y as u32;
                                 let mut btn = egui::Button::new(
                                     egui::RichText::new(*label).size(18.0).strong(),
                                 )
@@ -2174,11 +2174,8 @@ impl AlignLayerDialog {
 
                 let (ok, cancel, reset) = dialog_footer_with_reset(ui, &colors);
                 if ok {
-                    result = DialogResult::Ok((
-                        self.anchor_x,
-                        self.anchor_y,
-                        self.align_to_selection,
-                    ));
+                    result =
+                        DialogResult::Ok((self.anchor_x, self.anchor_y, self.align_to_selection));
                 }
                 if cancel {
                     result = DialogResult::Cancel;

@@ -1859,12 +1859,7 @@ pub fn grid_core(
     })
 }
 
-pub fn canvas_border(
-    state: &mut CanvasState,
-    layer_idx: usize,
-    width: u32,
-    color: [u8; 4],
-) {
+pub fn canvas_border(state: &mut CanvasState, layer_idx: usize, width: u32, color: [u8; 4]) {
     if layer_idx >= state.layers.len() {
         return;
     }
@@ -1920,10 +1915,8 @@ pub fn canvas_border_core(
 
                 let x_u = x as u32;
                 let y_u = y as u32;
-                let is_border = x_u < border_w
-                    || y_u < border_w
-                    || x_u >= w - border_w
-                    || y_u >= h - border_w;
+                let is_border =
+                    x_u < border_w || y_u < border_w || x_u >= w - border_w || y_u >= h - border_w;
                 if !is_border {
                     continue;
                 }

@@ -3632,19 +3632,19 @@ pub struct AppSettings {
     pub persisted_shapes_corner_radius: f32,
 
     // --- Advanced Customization (Phase 10) ---
-        // --- Text tool persistence ---
-        /// Persisted font family for the text tool.
-        pub persisted_text_font_family: String,
+    // --- Text tool persistence ---
+    /// Persisted font family for the text tool.
+    pub persisted_text_font_family: String,
 
-        // --- Clipboard behaviour ---
-        /// When true, pasting cuts out transparent pixels (holes) from the destination layer.
-        pub clipboard_copy_transparent_cutout: bool,
+    // --- Clipboard behaviour ---
+    /// When true, pasting cuts out transparent pixels (holes) from the destination layer.
+    pub clipboard_copy_transparent_cutout: bool,
 
-        // --- Window state ---
-        /// Whether the main window was maximized on last exit.
-        pub persist_window_maximized: bool,
+    // --- Window state ---
+    /// Whether the main window was maximized on last exit.
+    pub persist_window_maximized: bool,
 
-        // --- Advanced Customization (Phase 10) ---
+    // --- Advanced Customization (Phase 10) ---
     /// Master toggle — when false, all overrides are ignored.
     pub advanced_customization: bool,
     /// UI density (Compact / Normal / Spacious).
@@ -3784,11 +3784,11 @@ impl Default for AppSettings {
             persisted_shapes_corner_radius: 10.0,
 
             // Advanced Customization defaults
-                persisted_text_font_family: String::new(),
-                clipboard_copy_transparent_cutout: false,
-                persist_window_maximized: false,
+            persisted_text_font_family: String::new(),
+            clipboard_copy_transparent_cutout: false,
+            persist_window_maximized: false,
 
-                // Advanced Customization defaults
+            // Advanced Customization defaults
             advanced_customization: false,
             ui_density: UiDensity::Normal,
             canvas_grid_visible: true,
@@ -4486,18 +4486,18 @@ impl AppSettings {
             "persisted_shapes_corner_radius={}\n",
             self.persisted_shapes_corner_radius
         ));
-            content.push_str(&format!(
-                "persisted_text_font_family={}\n",
-                self.persisted_text_font_family
-            ));
-            content.push_str(&format!(
-                "clipboard_copy_transparent_cutout={}\n",
-                self.clipboard_copy_transparent_cutout
-            ));
-            content.push_str(&format!(
-                "persist_window_maximized={}\n",
-                self.persist_window_maximized
-            ));
+        content.push_str(&format!(
+            "persisted_text_font_family={}\n",
+            self.persisted_text_font_family
+        ));
+        content.push_str(&format!(
+            "clipboard_copy_transparent_cutout={}\n",
+            self.clipboard_copy_transparent_cutout
+        ));
+        content.push_str(&format!(
+            "persist_window_maximized={}\n",
+            self.persist_window_maximized
+        ));
         for line in self.keybindings.to_config_lines() {
             content.push_str(&line);
             content.push('\n');
@@ -4832,15 +4832,15 @@ impl AppSettings {
                 "persisted_shapes_corner_radius" => {
                     s.persisted_shapes_corner_radius = val.parse().unwrap_or(10.0);
                 }
-                    "persisted_text_font_family" => {
-                        s.persisted_text_font_family = val.to_string();
-                    }
-                    "clipboard_copy_transparent_cutout" => {
-                        s.clipboard_copy_transparent_cutout = val == "true";
-                    }
-                    "persist_window_maximized" => {
-                        s.persist_window_maximized = val == "true";
-                    }
+                "persisted_text_font_family" => {
+                    s.persisted_text_font_family = val.to_string();
+                }
+                "clipboard_copy_transparent_cutout" => {
+                    s.clipboard_copy_transparent_cutout = val == "true";
+                }
+                "persist_window_maximized" => {
+                    s.persist_window_maximized = val == "true";
+                }
                 "default_canvas_width" => {
                     s.default_canvas_width = val.parse().unwrap_or(800u32).clamp(1, 65535);
                 }
@@ -5124,6 +5124,8 @@ impl SettingsWindow {
             .default_height(540.0)
             .min_width(600.0)
             .min_height(400.0)
+            .max_width(ctx.content_rect().width() * 0.9)
+            .max_height(ctx.content_rect().height() * 0.9)
             .show(ctx, |ui| {
                 // ── Custom header strip ─────────────────────────────────────
                 {
@@ -6852,9 +6854,7 @@ impl SettingsWindow {
                                 }
                             }
                             egui::Event::Key {
-                                key,
-                                pressed: true,
-                                ..
+                                key, pressed: true, ..
                             } if *key != egui::Key::Escape && key_name(*key) != "?" => {
                                 key_combo = Some(KeyCombo {
                                     ctrl,
@@ -6900,9 +6900,7 @@ impl SettingsWindow {
                             .staged_keybindings
                             .get(*action)
                             .cloned()
-                            .unwrap_or_else(|| {
-                                KeyCombo::modifiers_only(false, true, false)
-                            });
+                            .unwrap_or_else(|| KeyCombo::modifiers_only(false, true, false));
                         egui::ComboBox::from_id_salt("brush_resize_drag_modifier")
                             .selected_text(current.display())
                             .show_ui(ui, |ui| {
@@ -6951,9 +6949,8 @@ impl SettingsWindow {
                                 .unwrap_or_else(|| "—".to_string());
                             egui::RichText::new(combo_text).monospace()
                         };
-                        let btn = ui.add(
-                            egui::Button::new(btn_text).min_size(egui::vec2(100.0, 20.0)),
-                        );
+                        let btn =
+                            ui.add(egui::Button::new(btn_text).min_size(egui::vec2(100.0, 20.0)));
                         if btn.clicked() && !is_rebinding {
                             self.rebinding_action = Some(*action);
                         }

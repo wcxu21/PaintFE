@@ -112,13 +112,7 @@ fn matches_font_family(candidate: &str, requested: &str) -> bool {
 
 fn pick_preferred_font_family(families: &[String]) -> String {
     #[cfg(target_os = "windows")]
-    const PREFERRED: &[&str] = &[
-        "Segoe UI",
-        "Arial",
-        "Tahoma",
-        "Verdana",
-        "Noto Sans",
-    ];
+    const PREFERRED: &[&str] = &["Segoe UI", "Arial", "Tahoma", "Verdana", "Noto Sans"];
     #[cfg(target_os = "macos")]
     const PREFERRED: &[&str] = &[
         "SF Pro",

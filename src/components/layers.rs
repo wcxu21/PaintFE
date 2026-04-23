@@ -874,14 +874,16 @@ impl LayersPanel {
                 );
                 if is_text {
                     let accent = child_ui.visuals().selection.stroke.color;
-                    child_ui.add(egui::Label::new(
-                        egui::RichText::new("TEXT LAYER")
-                            .size(9.0)
-                            .strong()
-                            .color(accent),
-                    )
-                    .selectable(false)
-                    .sense(egui::Sense::hover()));
+                    child_ui.add(
+                        egui::Label::new(
+                            egui::RichText::new("TEXT LAYER")
+                                .size(9.0)
+                                .strong()
+                                .color(accent),
+                        )
+                        .selectable(false)
+                        .sense(egui::Sense::hover()),
+                    );
                 }
             }
 
@@ -953,7 +955,11 @@ impl LayersPanel {
             let has_mask = canvas_state.layers[layer_idx].has_live_mask();
             if !has_mask
                 && assets
-                    .menu_item(ui, Icon::AddLayerMaskRevealAll, "Add Layer Mask (Reveal All)")
+                    .menu_item(
+                        ui,
+                        Icon::AddLayerMaskRevealAll,
+                        "Add Layer Mask (Reveal All)",
+                    )
                     .clicked()
             {
                 context_action = Some(ContextAction::AddLayerMaskRevealAll);
@@ -2592,8 +2598,8 @@ impl LayersPanel {
         let visible = layer.visible;
         let opacity = layer.opacity;
         let content = layer.content.clone();
-        let clear_selection = canvas_state.active_layer_index == layer_idx
-            && canvas_state.selection_mask.is_some();
+        let clear_selection =
+            canvas_state.active_layer_index == layer_idx && canvas_state.selection_mask.is_some();
         let snapshot_cmd = clear_selection
             .then(|| SnapshotCommand::new(format!("Delete Layer: {}", name), canvas_state));
 

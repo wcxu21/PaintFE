@@ -867,26 +867,32 @@ impl SingleLayerSnapshotCommand {
         } else {
             layer_idx.min(state.layers.len() - 1)
         };
-        let (before_pixels, before_mask, before_mask_enabled, before_opacity, before_blend_mode, before_content) =
-            if let Some(layer) = state.layers.get(safe_idx) {
-                (
-                    layer.pixels.clone(),
-                    layer.mask.clone(),
-                    layer.mask_enabled,
-                    layer.opacity,
-                    layer.blend_mode,
-                    layer.content.clone(),
-                )
-            } else {
-                (
-                    TiledImage::new(1, 1),
-                    None,
-                    true,
-                    1.0,
-                    crate::canvas::BlendMode::Normal,
-                    LayerContent::Raster,
-                )
-            };
+        let (
+            before_pixels,
+            before_mask,
+            before_mask_enabled,
+            before_opacity,
+            before_blend_mode,
+            before_content,
+        ) = if let Some(layer) = state.layers.get(safe_idx) {
+            (
+                layer.pixels.clone(),
+                layer.mask.clone(),
+                layer.mask_enabled,
+                layer.opacity,
+                layer.blend_mode,
+                layer.content.clone(),
+            )
+        } else {
+            (
+                TiledImage::new(1, 1),
+                None,
+                true,
+                1.0,
+                crate::canvas::BlendMode::Normal,
+                LayerContent::Raster,
+            )
+        };
         Self {
             description,
             layer_index: safe_idx,
@@ -1158,24 +1164,22 @@ impl HistoryPanel {
         }
 
         // Show recent history entries
-        egui::ScrollArea::vertical()
-            .max_height(150.0)
-            .show(ui, |ui| {
-                let history_items = history.undo_history();
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            let history_items = history.undo_history();
 
-                if history_items.is_empty() {
-                    ui.label("No history");
-                } else {
-                    for (i, desc) in history_items.iter().enumerate() {
-                        let label = if i == 0 {
-                            format!("▶ {}", desc) // Current state indicator
-                        } else {
-                            format!("  {}", desc)
-                        };
-                        ui.label(label);
-                    }
+            if history_items.is_empty() {
+                ui.label("No history");
+            } else {
+                for (i, desc) in history_items.iter().enumerate() {
+                    let label = if i == 0 {
+                        format!("▶ {}", desc) // Current state indicator
+                    } else {
+                        format!("  {}", desc)
+                    };
+                    ui.label(label);
                 }
-            });
+            }
+        });
     }
 
     /// Show with mutable history (for interactive undo in the panel)
@@ -1188,7 +1192,6 @@ impl HistoryPanel {
     ) {
         // Show history list (no undo/redo buttons - they're in the toolbar)
         egui::ScrollArea::vertical()
-            .max_height(180.0)
             .auto_shrink(false)
             .show(ui, |ui| {
                 let items = history.undo_history();

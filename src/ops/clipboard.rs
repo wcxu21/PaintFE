@@ -177,9 +177,7 @@ pub fn copy_to_system_clipboard(img: &RgbaImage) {
             copied = copy_to_wayland_clipboard(img);
         }
 
-        if !copied
-            && let Ok(mut clip) = arboard::Clipboard::new()
-        {
+        if !copied && let Ok(mut clip) = arboard::Clipboard::new() {
             let data = arboard::ImageData {
                 width: img.width() as usize,
                 height: img.height() as usize,
@@ -566,7 +564,7 @@ pub fn cut_selection(state: &mut CanvasState, transparent_cutout: bool) -> bool 
         return false;
     }
     state.delete_selected_pixels();
-    state.clear_selection();  // Auto-deselect after cut
+    state.clear_selection(); // Auto-deselect after cut
     state.mark_dirty(None);
     true
 }
@@ -778,7 +776,12 @@ impl PasteOverlay {
         let src_h = self.source.height() as f32;
         let scaled_w = (src_w * self.scale_x).round().max(1.0) as u32;
         let scaled_h = (src_h * self.scale_y).round().max(1.0) as u32;
-        let scaled = imageops::resize(&self.source, scaled_w, scaled_h, self.interpolation.to_filter());
+        let scaled = imageops::resize(
+            &self.source,
+            scaled_w,
+            scaled_h,
+            self.interpolation.to_filter(),
+        );
 
         let corners = self.corners_canvas();
         let mut min_x = f32::MAX;

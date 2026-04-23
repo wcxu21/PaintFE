@@ -213,7 +213,8 @@ fn try_transform_selected_region(
             }
             let dst_x = dst_min_x + x as i32;
             let dst_y = dst_min_y + y as i32;
-            if dst_x < 0 || dst_y < 0 || dst_x >= state.width as i32 || dst_y >= state.height as i32 {
+            if dst_x < 0 || dst_y < 0 || dst_x >= state.width as i32 || dst_y >= state.height as i32
+            {
                 continue;
             }
             new_mask.put_pixel(dst_x as u32, dst_y as u32, Luma([value]));
@@ -461,7 +462,7 @@ fn flip_layer_selected_region_horizontal(state: &mut CanvasState, layer_idx: usi
     if layer_idx >= state.layers.len() {
         return false;
     }
-    
+
     if selection_covers_full_canvas(state) {
         return false;
     }
@@ -493,7 +494,9 @@ fn flip_layer_selected_region_horizontal(state: &mut CanvasState, layer_idx: usi
                 continue;
             }
             cutout.put_pixel(x, y, *flat.get_pixel(min_x + x, min_y + y));
-            state.layers[layer_idx].pixels.put_pixel(min_x + x, min_y + y, Rgba([0, 0, 0, 0]));
+            state.layers[layer_idx]
+                .pixels
+                .put_pixel(min_x + x, min_y + y, Rgba([0, 0, 0, 0]));
         }
     }
 
@@ -523,7 +526,7 @@ fn flip_layer_selected_region_vertical(state: &mut CanvasState, layer_idx: usize
     if layer_idx >= state.layers.len() {
         return false;
     }
-    
+
     if selection_covers_full_canvas(state) {
         return false;
     }
@@ -555,7 +558,9 @@ fn flip_layer_selected_region_vertical(state: &mut CanvasState, layer_idx: usize
                 continue;
             }
             cutout.put_pixel(x, y, *flat.get_pixel(min_x + x, min_y + y));
-            state.layers[layer_idx].pixels.put_pixel(min_x + x, min_y + y, Rgba([0, 0, 0, 0]));
+            state.layers[layer_idx]
+                .pixels
+                .put_pixel(min_x + x, min_y + y, Rgba([0, 0, 0, 0]));
         }
     }
 
@@ -1685,12 +1690,7 @@ mod tests {
 
     fn transparent_state(width: u32, height: u32, layer_count: usize) -> CanvasState {
         let mut state = CanvasState::new(width, height);
-        state.layers[0] = Layer::new(
-            "Layer 1".to_string(),
-            width,
-            height,
-            Rgba([0, 0, 0, 0]),
-        );
+        state.layers[0] = Layer::new("Layer 1".to_string(), width, height, Rgba([0, 0, 0, 0]));
         while state.layers.len() < layer_count {
             state.layers.push(Layer::new(
                 format!("Layer {}", state.layers.len() + 1),
@@ -1705,9 +1705,15 @@ mod tests {
     #[test]
     fn flip_canvas_horizontal_moves_selected_pixels_on_all_layers() {
         let mut state = transparent_state(4, 4, 2);
-        state.layers[0].pixels.put_pixel(0, 1, Rgba([255, 0, 0, 255]));
-        state.layers[0].pixels.put_pixel(0, 2, Rgba([0, 255, 0, 255]));
-        state.layers[1].pixels.put_pixel(0, 1, Rgba([0, 0, 255, 255]));
+        state.layers[0]
+            .pixels
+            .put_pixel(0, 1, Rgba([255, 0, 0, 255]));
+        state.layers[0]
+            .pixels
+            .put_pixel(0, 2, Rgba([0, 255, 0, 255]));
+        state.layers[1]
+            .pixels
+            .put_pixel(0, 1, Rgba([0, 0, 255, 255]));
 
         let mut mask = GrayImage::new(4, 4);
         mask.put_pixel(0, 1, Luma([255]));
@@ -1718,11 +1724,22 @@ mod tests {
         flip_canvas_horizontal(&mut state);
 
         assert_eq!(*state.layers[0].pixels.get_pixel(0, 1), Rgba([0, 0, 0, 0]));
-        assert_eq!(*state.layers[0].pixels.get_pixel(1, 1), Rgba([255, 0, 0, 255]));
-        assert_eq!(*state.layers[0].pixels.get_pixel(1, 2), Rgba([0, 255, 0, 255]));
-        assert_eq!(*state.layers[1].pixels.get_pixel(1, 1), Rgba([0, 0, 255, 255]));
+        assert_eq!(
+            *state.layers[0].pixels.get_pixel(1, 1),
+            Rgba([255, 0, 0, 255])
+        );
+        assert_eq!(
+            *state.layers[0].pixels.get_pixel(1, 2),
+            Rgba([0, 255, 0, 255])
+        );
+        assert_eq!(
+            *state.layers[1].pixels.get_pixel(1, 1),
+            Rgba([0, 0, 255, 255])
+        );
 
-        let mask = state.selection_mask.expect("selection mask should remain active");
+        let mask = state
+            .selection_mask
+            .expect("selection mask should remain active");
         assert_eq!(*mask.get_pixel(0, 1), Luma([255]));
         assert_eq!(*mask.get_pixel(1, 1), Luma([255]));
         assert_eq!(*mask.get_pixel(1, 2), Luma([255]));
@@ -1732,9 +1749,15 @@ mod tests {
     #[test]
     fn rotate_canvas_90cw_rotates_selected_region_and_mask() {
         let mut state = transparent_state(5, 5, 2);
-        state.layers[0].pixels.put_pixel(1, 1, Rgba([255, 0, 0, 255]));
-        state.layers[0].pixels.put_pixel(1, 2, Rgba([0, 255, 0, 255]));
-        state.layers[1].pixels.put_pixel(1, 1, Rgba([0, 0, 255, 255]));
+        state.layers[0]
+            .pixels
+            .put_pixel(1, 1, Rgba([255, 0, 0, 255]));
+        state.layers[0]
+            .pixels
+            .put_pixel(1, 2, Rgba([0, 255, 0, 255]));
+        state.layers[1]
+            .pixels
+            .put_pixel(1, 1, Rgba([0, 0, 255, 255]));
 
         let mut mask = GrayImage::new(5, 5);
         mask.put_pixel(1, 1, Luma([255]));
@@ -1745,12 +1768,23 @@ mod tests {
 
         rotate_canvas_90cw(&mut state);
 
-        assert_eq!(*state.layers[0].pixels.get_pixel(2, 1), Rgba([255, 0, 0, 255]));
-        assert_eq!(*state.layers[0].pixels.get_pixel(1, 1), Rgba([0, 255, 0, 255]));
-        assert_eq!(*state.layers[1].pixels.get_pixel(2, 1), Rgba([0, 0, 255, 255]));
+        assert_eq!(
+            *state.layers[0].pixels.get_pixel(2, 1),
+            Rgba([255, 0, 0, 255])
+        );
+        assert_eq!(
+            *state.layers[0].pixels.get_pixel(1, 1),
+            Rgba([0, 255, 0, 255])
+        );
+        assert_eq!(
+            *state.layers[1].pixels.get_pixel(2, 1),
+            Rgba([0, 0, 255, 255])
+        );
         assert_eq!(*state.layers[0].pixels.get_pixel(1, 2), Rgba([0, 0, 0, 0]));
 
-        let mask = state.selection_mask.expect("selection mask should remain active");
+        let mask = state
+            .selection_mask
+            .expect("selection mask should remain active");
         assert_eq!(*mask.get_pixel(1, 1), Luma([255]));
         assert_eq!(*mask.get_pixel(2, 1), Luma([255]));
         assert_eq!(*mask.get_pixel(2, 2), Luma([255]));

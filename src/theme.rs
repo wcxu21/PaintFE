@@ -796,14 +796,14 @@ impl Theme {
         };
 
         // Hover: accent-tinted fill + accent border for clear feedback.
-    visuals.widgets.hovered.bg_fill = self.button_hover;
+        visuals.widgets.hovered.bg_fill = self.button_hover;
         visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, self.text_color);
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, self.border_lit);
+        visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, self.border_lit);
         visuals.widgets.hovered.corner_radius = CornerRadius::same(self.widget_rounding as u8);
         visuals.widgets.hovered.expansion = 1.0; // subtle grow on hover (Phase 9)
 
         // Active/selected: stronger accent-tinted fill
-    visuals.widgets.active.bg_fill = self.button_active;
+        visuals.widgets.active.bg_fill = self.button_active;
         visuals.widgets.active.fg_stroke = Stroke::new(1.0, self.text_color);
         visuals.widgets.active.bg_stroke = Stroke::new(1.0, self.accent_strong);
         visuals.widgets.active.corner_radius = CornerRadius::same(self.widget_rounding as u8);
@@ -879,7 +879,10 @@ impl Theme {
                 egui::Id::new("paintfe_icon_button_disabled"),
                 self.icon_button_disabled,
             );
-            d.insert_persisted(egui::Id::new("paintfe_stepper_button_bg"), self.stepper_button_bg);
+            d.insert_persisted(
+                egui::Id::new("paintfe_stepper_button_bg"),
+                self.stepper_button_bg,
+            );
         });
 
         // Smooth transitions — slightly longer animation time for polished feel.
@@ -1048,19 +1051,17 @@ impl Theme {
     /// Rounded container with subtle shadow, matching website `.card` pattern.
     pub fn tool_shelf_frame(&self) -> egui::Frame {
         match self.mode {
-            ThemeMode::Dark => {
-                egui::Frame::NONE
-                    .fill(self.tool_shelf_bg)
-                    .corner_radius(CornerRadius::same(8))
-                    .stroke(Stroke::new(1.0, self.border_color))
-                    .shadow(Shadow {
-                        offset: [0, 0],
-                        blur: self.scaled_shadow_blur(6),
-                        spread: 0,
-                        color: Color32::from_black_alpha(self.scaled_shadow_alpha(40)),
-                    })
-                    .inner_margin(egui::Margin::symmetric(10, 5))
-            }
+            ThemeMode::Dark => egui::Frame::NONE
+                .fill(self.tool_shelf_bg)
+                .corner_radius(CornerRadius::same(8))
+                .stroke(Stroke::new(1.0, self.border_color))
+                .shadow(Shadow {
+                    offset: [0, 0],
+                    blur: self.scaled_shadow_blur(6),
+                    spread: 0,
+                    color: Color32::from_black_alpha(self.scaled_shadow_alpha(40)),
+                })
+                .inner_margin(egui::Margin::symmetric(10, 5)),
             ThemeMode::Light => egui::Frame::NONE
                 .fill(self.tool_shelf_bg)
                 .corner_radius(CornerRadius::same(8))

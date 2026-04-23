@@ -2240,7 +2240,8 @@ impl CanvasState {
                             }
                             if layer.blend_mode == BlendMode::Normal && layer.opacity >= 1.0 {
                                 let mut effective_a = layer.pixels.get_pixel(x, y)[3];
-                                if effective_a == 255 && layer.mask_enabled
+                                if effective_a == 255
+                                    && layer.mask_enabled
                                     && let Some(mask) = &layer.mask
                                 {
                                     let conceal = mask.get_pixel(x, y)[3];
@@ -2441,15 +2442,16 @@ impl CanvasState {
                                     && let Some(raw) = chunk_raws[idx]
                                 {
                                     let mut effective_a = raw[px_off + 3];
-                                    if effective_a == 255 && layer.mask_enabled
+                                    if effective_a == 255
+                                        && layer.mask_enabled
                                         && let Some(mask) = &layer.mask
                                     {
                                         let conceal = mask.get_pixel(x, y)[3];
                                         if conceal > 0 {
-                                            effective_a =
-                                                ((effective_a as u32 * (255 - conceal as u32))
-                                                    / 255)
-                                                    as u8;
+                                            effective_a = ((effective_a as u32
+                                                * (255 - conceal as u32))
+                                                / 255)
+                                                as u8;
                                         }
                                     }
                                     if effective_a == 255 {
@@ -2595,7 +2597,9 @@ impl CanvasState {
                             continue;
                         }
                         let mut top = *layer.pixels.get_pixel(x as u32, y as u32);
-                        if layer.mask_enabled && let Some(mask) = &layer.mask {
+                        if layer.mask_enabled
+                            && let Some(mask) = &layer.mask
+                        {
                             let conceal = mask.get_pixel(x as u32, y as u32)[3];
                             if conceal > 0 {
                                 top[3] = ((top[3] as u32 * (255 - conceal as u32)) / 255) as u8;
@@ -2656,7 +2660,9 @@ impl CanvasState {
                             continue;
                         }
                         let mut top = *layer.pixels.get_pixel(x as u32, y as u32);
-                        if layer.mask_enabled && let Some(mask) = &layer.mask {
+                        if layer.mask_enabled
+                            && let Some(mask) = &layer.mask
+                        {
                             let conceal = mask.get_pixel(x as u32, y as u32)[3];
                             if conceal > 0 {
                                 top[3] = ((top[3] as u32 * (255 - conceal as u32)) / 255) as u8;

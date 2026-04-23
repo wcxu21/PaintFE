@@ -381,8 +381,16 @@ fn sdf_heart(px: f32, py: f32, hx: f32, hy: f32) -> f32 {
         max_abs_y = max_abs_y.max(yr.abs());
         raw.push((xr, yr));
     }
-    let sx = if max_abs_x > 0.0 { hx * 0.98 / max_abs_x } else { 1.0 };
-    let sy = if max_abs_y > 0.0 { hy * 0.98 / max_abs_y } else { 1.0 };
+    let sx = if max_abs_x > 0.0 {
+        hx * 0.98 / max_abs_x
+    } else {
+        1.0
+    };
+    let sy = if max_abs_y > 0.0 {
+        hy * 0.98 / max_abs_y
+    } else {
+        1.0
+    };
     for (xr, yr) in raw {
         verts.push((xr * sx, -yr * sy));
     }
@@ -715,13 +723,14 @@ fn cross_outline_coverage(
     let ol = outline_half;
 
     // Outer cross: each box expanded by ol in all directions
-    let outer_sdf = sdf_box(px, py, arm_hw + ol, hy + ol).min(sdf_box(px, py, hx + ol, arm_hh + ol));
+    let outer_sdf =
+        sdf_box(px, py, arm_hw + ol, hy + ol).min(sdf_box(px, py, hx + ol, arm_hh + ol));
     let outer_cov = coverage_from_sdf(outer_sdf, anti_alias);
 
     // Inner cross: each box shrunk by ol
     let i_arm_hw = (arm_hw - ol).max(0.0);
-    let i_hy    = (hy - ol).max(0.0);
-    let i_hx    = (hx - ol).max(0.0);
+    let i_hy = (hy - ol).max(0.0);
+    let i_hx = (hx - ol).max(0.0);
     let i_arm_hh = (arm_hh - ol).max(0.0);
     let inner_cov = if i_arm_hw > 0.0 || i_hy > 0.0 {
         let inner_sdf = sdf_box(px, py, i_arm_hw, i_hy).min(sdf_box(px, py, i_hx, i_arm_hh));
@@ -760,22 +769,22 @@ fn trapezoid_outline_coverage(
     // Outer polygon vertices (CCW: top-left, top-right, bot-right, bot-left)
     let outer_verts = [
         (-(top_hw + expand_top), -(hy + ol)),
-        (  top_hw + expand_top,  -(hy + ol)),
-        (  hx + expand_bot,       hy + ol),
-        (-(hx + expand_bot),      hy + ol),
+        (top_hw + expand_top, -(hy + ol)),
+        (hx + expand_bot, hy + ol),
+        (-(hx + expand_bot), hy + ol),
     ];
     let outer_cov = coverage_from_sdf(sdf_convex_polygon(&outer_verts, px, py), anti_alias);
 
     // Inner polygon: shrink along the same normals
     let inner_top_hw = (top_hw - expand_top).max(0.0);
-    let inner_hx     = (hx - expand_bot).max(0.0);
-    let inner_hy     = (hy - ol).max(0.0);
+    let inner_hx = (hx - expand_bot).max(0.0);
+    let inner_hy = (hy - ol).max(0.0);
     let inner_cov = if inner_top_hw > 0.0 && inner_hx > 0.0 && inner_hy > 0.0 {
         let inner_verts = [
             (-inner_top_hw, -inner_hy),
-            ( inner_top_hw, -inner_hy),
-            ( inner_hx,      inner_hy),
-            (-inner_hx,      inner_hy),
+            (inner_top_hw, -inner_hy),
+            (inner_hx, inner_hy),
+            (-inner_hx, inner_hy),
         ];
         coverage_from_sdf(sdf_convex_polygon(&inner_verts, px, py), anti_alias)
     } else {
@@ -829,7 +838,7 @@ fn parallelogram_outline_coverage(
 ) -> f32 {
     let ol = outline_half;
     let skew = hx * 0.3;
-    
+
     // Outer vertices (expanding by outline width along normals)
     let outer_verts = [
         (-hx - ol, -hy - ol),
@@ -838,7 +847,7 @@ fn parallelogram_outline_coverage(
         (-hx - ol, hy + ol),
     ];
     let outer_cov = coverage_from_sdf(sdf_polygon_path(&outer_verts, px, py), anti_alias);
-    
+
     // Inner vertices (contracting by outline width)
     let inner_verts = [
         (-hx + ol, -hy + ol),
@@ -847,44 +856,42 @@ fn parallelogram_outline_coverage(
         (-hx + ol, hy - ol),
     ];
     let inner_cov = coverage_from_sdf(sdf_polygon_path(&inner_verts, px, py), anti_alias);
-    
+
     (outer_cov - inner_cov).clamp(0.0, 1.0)
 }
 
-    #[inline]
-    fn shape_outline_coverage(
-        kind: ShapeKind,
-        px: f32,
-        py: f32,
-        hx: f32,
-        hy: f32,
-        outline_half: f32,
-        anti_alias: bool,
-        base_distance: f32,
-    ) -> f32 {
-        match kind {
-            ShapeKind::Rectangle => {
-                rectangle_outline_coverage(px, py, hx, hy, outline_half, anti_alias)
-            }
-            ShapeKind::Cross => cross_outline_coverage(px, py, hx, hy, outline_half, anti_alias),
-            ShapeKind::Trapezoid => {
-                trapezoid_outline_coverage(px, py, hx, hy, outline_half, anti_alias)
-            }
-            ShapeKind::Triangle => {
-                triangle_outline_coverage(px, py, hx, hy, outline_half, anti_alias)
-            }
-            ShapeKind::RightTriangle => {
-                right_angle_triangle_outline_coverage(px, py, hx, hy, outline_half, anti_alias)
-            }
-            ShapeKind::Parallelogram => {
-                parallelogram_outline_coverage(px, py, hx, hy, outline_half, anti_alias)
-            }
-            _ => {
-                let band = base_distance.abs() - outline_half;
-                coverage_from_sdf(band, anti_alias)
-            }
+#[inline]
+fn shape_outline_coverage(
+    kind: ShapeKind,
+    px: f32,
+    py: f32,
+    hx: f32,
+    hy: f32,
+    outline_half: f32,
+    anti_alias: bool,
+    base_distance: f32,
+) -> f32 {
+    match kind {
+        ShapeKind::Rectangle => {
+            rectangle_outline_coverage(px, py, hx, hy, outline_half, anti_alias)
+        }
+        ShapeKind::Cross => cross_outline_coverage(px, py, hx, hy, outline_half, anti_alias),
+        ShapeKind::Trapezoid => {
+            trapezoid_outline_coverage(px, py, hx, hy, outline_half, anti_alias)
+        }
+        ShapeKind::Triangle => triangle_outline_coverage(px, py, hx, hy, outline_half, anti_alias),
+        ShapeKind::RightTriangle => {
+            right_angle_triangle_outline_coverage(px, py, hx, hy, outline_half, anti_alias)
+        }
+        ShapeKind::Parallelogram => {
+            parallelogram_outline_coverage(px, py, hx, hy, outline_half, anti_alias)
+        }
+        _ => {
+            let band = base_distance.abs() - outline_half;
+            coverage_from_sdf(band, anti_alias)
         }
     }
+}
 
 /// Rasterize a shape into an RGBA buffer.
 ///
@@ -975,8 +982,7 @@ pub fn rasterize_shape(
                         (primary, cov)
                     }
                     ShapeFillMode::Outline => {
-                        let cov =
-                            shape_outline_coverage(kind, lx, ly, hx, hy, outline_half, aa, d);
+                        let cov = shape_outline_coverage(kind, lx, ly, hx, hy, outline_half, aa, d);
                         (primary, cov)
                     }
                     ShapeFillMode::Both => {
@@ -1108,8 +1114,7 @@ pub fn rasterize_shape_into(
                         (primary, cov)
                     }
                     ShapeFillMode::Outline => {
-                        let cov =
-                            shape_outline_coverage(kind, lx, ly, hx, hy, outline_half, aa, d);
+                        let cov = shape_outline_coverage(kind, lx, ly, hx, hy, outline_half, aa, d);
                         (primary, cov)
                     }
                     ShapeFillMode::Both => {

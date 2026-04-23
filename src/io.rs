@@ -1032,8 +1032,10 @@ impl FileHandler {
         self.current_path.is_some()
     }
 
-    /// Show native file dialog to pick a file path (without loading it)
-    pub fn pick_file_path(&self) -> Option<PathBuf> {
+    /// Show native file dialog to pick one or more file paths (without loading them).
+    /// Returns a Vec of selected paths — empty if the dialog was cancelled.
+    /// Supports multi-select so Linux/Wayland users can open multiple files without drag-and-drop.
+    pub fn pick_file_paths(&self) -> Vec<PathBuf> {
         FileDialog::new()
             .add_filter(
                 "All Supported",
@@ -1060,7 +1062,8 @@ impl FileHandler {
                 ],
             )
             .add_filter("All Files", &["*"])
-            .pick_file()
+            .pick_files()
+            .unwrap_or_default()
     }
 
     /// Open an image file using native file dialog

@@ -6,6 +6,27 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## [1.2.9] - 2026-04-23
+
+### Added
+- **Multi-file open dialog**: The native Open flow can now select multiple files at once and opens each file into its own project tab.
+- **Fill reseed regression coverage**: Added a focused test for the Fill tool's commit-and-reseed-on-next-press behavior.
+
+### Changed
+- **Fill tool interaction**: The next Fill click now commits the current preview and immediately starts previewing the newly clicked region in the same interaction.
+- **History and settings window sizing**: Relaxed fixed-size limits so the History panel and Settings window can be resized more comfortably.
+- **Selection-aware tool behavior**: Tool operations now honor active selections more consistently, producing tighter, more predictable edits inside isolated regions.
+- **Keyboard shortcut expressiveness**: Keybinding capture and display are clearer, with broader support for character input and more readable shortcut definitions.
+- **Outline rendering quality**: Outline-based effects now render with improved edge fidelity, including anti-aliased output for smoother contours.
+- **Shape rasterization crispness**: Shape output has been refined for cleaner, sharper geometry with more deliberate edge handling.
+
+### Fixed
+- **Tab close button hover flicker**: Non-active tabs now keep a stable close button instead of flickering when the pointer moves onto the button.
+- **Selection history fidelity**: Selection changes now round-trip through undo/redo more reliably, preserving editing context across history operations.
+- **Text layer deletion cleanup**: The Text tool now clears its active-layer editing state correctly when the currently edited layer is deleted.
+
+---
+
 ## [1.2.8] - 2026-04-22
 
 ### Added

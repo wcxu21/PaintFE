@@ -4978,6 +4978,8 @@ impl ToolsPanel {
                 })
         }); // Just pressed this frame
         let is_secondary_down = ui.input(|i| i.pointer.secondary_down());
+        let is_secondary_pressed =
+            ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary));
         let is_secondary_released = ui.input(|i| i.pointer.secondary_released());
         let is_secondary_clicked = ui.input(|i| i.pointer.secondary_clicked());
         let shift_held = ui.input(|i| i.modifiers.shift);
@@ -6029,13 +6031,12 @@ impl ToolsPanel {
                 let shift_held_mw = ui.input(|i| i.modifiers.shift);
                 let alt_held_mw = ui.input(|i| i.modifiers.alt);
                 let ctrl_held_mw = ui.input(|i| i.modifiers.command);
-                let click_scope = if (ctrl_held_mw && shift_held_mw)
-                    || self.magic_wand_state.global_select
-                {
-                    MagicWandScope::Global
-                } else {
-                    MagicWandScope::Contiguous
-                };
+                let click_scope =
+                    if (ctrl_held_mw && shift_held_mw) || self.magic_wand_state.global_select {
+                        MagicWandScope::Global
+                    } else {
+                        MagicWandScope::Contiguous
+                    };
                 let click_mode = if is_primary_clicked || is_secondary_clicked {
                     if is_secondary_clicked {
                         SelectionMode::Subtract
@@ -6059,7 +6060,8 @@ impl ToolsPanel {
                     if let Ok(result) = rx.try_recv() {
                         match result {
                             MagicWandAsyncResult::Ready { request_id, index } => {
-                                if let Some(pending) = self.magic_wand_state.pending_operation.take()
+                                if let Some(pending) =
+                                    self.magic_wand_state.pending_operation.take()
                                     && pending.request_id == request_id
                                 {
                                     self.magic_wand_state.operations.push(MagicWandOperation {
@@ -6151,9 +6153,10 @@ impl ToolsPanel {
             // Fill tool - flood fill with live preview
             Tool::Fill => {
                 let esc_pressed = escape_pressed_global;
+                let fill_pressed = is_primary_pressed || is_secondary_pressed;
 
                 // Guard: auto-rasterize text layers before destructive fill
-                if (is_primary_clicked || is_secondary_clicked)
+                if fill_pressed
                     && let Some(layer) = canvas_state.layers.get(canvas_state.active_layer_index)
                     && layer.is_text_layer()
                 {
@@ -6233,22 +6236,14 @@ impl ToolsPanel {
                     }
                 }
 
-                // Click to fill: commit current fill (if any) then start new one
-                if (is_primary_clicked || is_secondary_clicked)
-                    && let Some(pos) = canvas_pos
-                {
-                    // If there's an active fill, commit it first
-                    if self.fill_state.active_fill.is_some() {
-                        self.commit_fill_preview(canvas_state);
-                    }
-                    // Start new fill; Shift+click fills ALL pixels of matching color
-                    let use_secondary = is_secondary_clicked;
-                    let global_fill = shift_held;
-                    self.perform_flood_fill(
+                // Fill on button press so the pending preview commits and reseeds
+                // immediately within the same click instead of waiting for release.
+                if fill_pressed && let Some(pos) = canvas_pos {
+                    self.handle_fill_click(
                         canvas_state,
                         pos,
-                        use_secondary,
-                        global_fill,
+                        is_secondary_pressed,
+                        shift_held,
                         primary_color_f32,
                         secondary_color_f32,
                         gpu_renderer.as_deref_mut(),
@@ -8361,7 +8356,8 @@ impl ToolsPanel {
                                                     };
                                                     p.cx = ax + center_local.0 * cos_r
                                                         - center_local.1 * sin_r;
-                                                    p.cy = ay + center_local.0 * sin_r
+                                                    p.cy = ay
+                                                        + center_local.0 * sin_r
                                                         + center_local.1 * cos_r;
                                                     p.hh = new_hh;
                                                 }
@@ -8374,7 +8370,8 @@ impl ToolsPanel {
                                                     };
                                                     p.cx = ax + center_local.0 * cos_r
                                                         - center_local.1 * sin_r;
-                                                    p.cy = ay + center_local.0 * sin_r
+                                                    p.cy = ay
+                                                        + center_local.0 * sin_r
                                                         + center_local.1 * cos_r;
                                                     p.hw = new_hw;
                                                 }
@@ -8431,7 +8428,8 @@ impl ToolsPanel {
                             self.shapes_state.is_drawing = true;
                             self.shapes_state.draw_start = Some([pos_f.0, pos_f.1]);
                             self.shapes_state.draw_end = Some([pos_f.0, pos_f.1]);
-                            self.shapes_state.source_layer_index = Some(canvas_state.active_layer_index);
+                            self.shapes_state.source_layer_index =
+                                Some(canvas_state.active_layer_index);
                             self.stroke_tracker
                                 .start_preview_tool(canvas_state.active_layer_index, "Shape");
                         }
@@ -9806,7 +9804,13 @@ impl ToolsPanel {
     }
 
     /// Compute alpha specifically for line tool with forced soft edges
-    fn compute_line_alpha(&self, dist: f32, radius: f32, forced_hardness: f32, anti_alias: bool) -> f32 {
+    fn compute_line_alpha(
+        &self,
+        dist: f32,
+        radius: f32,
+        forced_hardness: f32,
+        anti_alias: bool,
+    ) -> f32 {
         // Hard-edge (no AA): binary cutoff
         if !anti_alias {
             return if dist < radius { 1.0 } else { 0.0 };
@@ -11517,13 +11521,7 @@ impl ToolsPanel {
             if (start.0 as u32) < preview.width() && (start.1 as u32) < preview.height() {
                 let anti_alias = self.line_state.line_tool.options.anti_alias;
                 self.draw_bezier_circle_with_hardness(
-                    preview,
-                    start,
-                    color_f32,
-                    radius,
-                    0.95,
-                    anti_alias,
-                    None,
+                    preview, start, color_f32, radius, 0.95, anti_alias, None,
                 );
             }
             return;
@@ -12201,15 +12199,16 @@ impl ToolsPanel {
         for op in &self.magic_wand_state.operations {
             let raw_mask = Self::build_threshold_mask(&op.region_index, threshold, anti_aliased);
             for (idx, raw_value) in raw_mask.into_iter().enumerate() {
-                final_mask[idx] = Self::merge_magic_wand_masks(
-                    final_mask[idx],
-                    raw_value,
-                    op.combine_mode,
-                );
+                final_mask[idx] =
+                    Self::merge_magic_wand_masks(final_mask[idx], raw_value, op.combine_mode);
             }
         }
 
-        GrayImage::from_raw(first.region_index.width, first.region_index.height, final_mask)
+        GrayImage::from_raw(
+            first.region_index.width,
+            first.region_index.height,
+            final_mask,
+        )
     }
 
     fn apply_magic_wand_preview(
@@ -12702,13 +12701,7 @@ impl ToolsPanel {
 
         rayon::spawn(move || {
             let index = if scope == MagicWandScope::Global {
-                Self::compute_global_distance_map(
-                    &flat_rgba,
-                    &target_color,
-                    w,
-                    h,
-                    distance_mode,
-                )
+                Self::compute_global_distance_map(&flat_rgba, &target_color, w, h, distance_mode)
             } else {
                 Self::compute_flood_distance_map(
                     &flat_rgba,
@@ -12857,6 +12850,31 @@ impl ToolsPanel {
         let da = u8::abs_diff(a, target.0[3]);
 
         dr.max(dg).max(db).max(da)
+    }
+
+    fn handle_fill_click(
+        &mut self,
+        canvas_state: &mut CanvasState,
+        pos: (u32, u32),
+        use_secondary: bool,
+        global_fill: bool,
+        primary_color_f32: [f32; 4],
+        secondary_color_f32: [f32; 4],
+        gpu_renderer: Option<&mut crate::gpu::GpuRenderer>,
+    ) {
+        if self.fill_state.active_fill.is_some() {
+            self.commit_fill_preview(canvas_state);
+        }
+
+        self.perform_flood_fill(
+            canvas_state,
+            pos,
+            use_secondary,
+            global_fill,
+            primary_color_f32,
+            secondary_color_f32,
+            gpu_renderer,
+        );
     }
 
     /// Fill tool - flood fill with preview
@@ -15503,7 +15521,12 @@ impl ToolsPanel {
                 .text_state
                 .available_fonts
                 .iter()
-                .filter(|name| !self.text_state.font_preview_cache.contains_key(name.as_str()))
+                .filter(|name| {
+                    !self
+                        .text_state
+                        .font_preview_cache
+                        .contains_key(name.as_str())
+                })
                 .cloned()
                 .collect();
             if !missing.is_empty() {
@@ -15567,274 +15590,260 @@ impl ToolsPanel {
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show(|ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                            const FONT_LIST_HEIGHT: f32 = 300.0;
-                            const FONT_POPUP_WIDTH: f32 = 360.0;
-                            const FONT_LIST_WIDTH: f32 = FONT_POPUP_WIDTH - 18.0;
-                            let preview_ink = {
-                                let color = contrast_text_color(ui.visuals().window_fill());
-                                [color.r(), color.g(), color.b(), color.a()]
-                            };
-                            if self.text_state.font_preview_ink.0 != preview_ink {
-                                self.text_state.font_preview_ink = FontPreviewInk(preview_ink);
-                                self.text_state.font_preview_textures.0.clear();
-                            }
-                            ui.set_min_width(FONT_POPUP_WIDTH);
-                            ui.set_max_width(FONT_POPUP_WIDTH);
-                            // Keep popup height stable so clearing search restores a tall list.
-                            ui.set_min_height(FONT_LIST_HEIGHT + 38.0);
-                            let te_resp = ui.add(
-                                egui::TextEdit::singleline(&mut self.text_state.font_search)
-                                    .hint_text(t!("ctx.text.search"))
-                                    .desired_width(FONT_LIST_WIDTH - 6.0),
-                            );
-                            if !te_resp.has_focus() && self.text_state.font_search.is_empty() {
-                                te_resp.request_focus();
-                            }
-                            let search = self.text_state.font_search.to_lowercase();
-                            let fonts: Vec<&String> = self
-                                .text_state
-                                .available_fonts
-                                .iter()
-                                .filter(|f| search.is_empty() || f.to_lowercase().contains(&search))
-                                .collect();
+                    const FONT_LIST_HEIGHT: f32 = 300.0;
+                    const FONT_POPUP_WIDTH: f32 = 360.0;
+                    const FONT_LIST_WIDTH: f32 = FONT_POPUP_WIDTH - 18.0;
+                    let preview_ink = {
+                        let color = contrast_text_color(ui.visuals().window_fill());
+                        [color.r(), color.g(), color.b(), color.a()]
+                    };
+                    if self.text_state.font_preview_ink.0 != preview_ink {
+                        self.text_state.font_preview_ink = FontPreviewInk(preview_ink);
+                        self.text_state.font_preview_textures.0.clear();
+                    }
+                    ui.set_min_width(FONT_POPUP_WIDTH);
+                    ui.set_max_width(FONT_POPUP_WIDTH);
+                    // Keep popup height stable so clearing search restores a tall list.
+                    ui.set_min_height(FONT_LIST_HEIGHT + 38.0);
+                    let te_resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.text_state.font_search)
+                            .hint_text(t!("ctx.text.search"))
+                            .desired_width(FONT_LIST_WIDTH - 6.0),
+                    );
+                    if !te_resp.has_focus() && self.text_state.font_search.is_empty() {
+                        te_resp.request_focus();
+                    }
+                    let search = self.text_state.font_search.to_lowercase();
+                    let fonts: Vec<&String> = self
+                        .text_state
+                        .available_fonts
+                        .iter()
+                        .filter(|f| search.is_empty() || f.to_lowercase().contains(&search))
+                        .collect();
 
-                            let row_height = 22.0;
-                            let total_rows = fonts.len().min(200);
-                            let list_width = FONT_LIST_WIDTH;
-                            egui::ScrollArea::vertical()
-                                .auto_shrink([false, false])
-                                .min_scrolled_width(list_width)
-                                .max_height(FONT_LIST_HEIGHT)
-                                .show_rows(
-                                ui,
-                                row_height,
-                                total_rows,
-                                |ui, row_range| {
-                                    for idx in row_range {
-                                        if idx >= fonts.len() {
-                                            break;
-                                        }
-                                        let font_name = &fonts[idx];
-                                        let is_selected =
-                                            self.text_state.font_family == **font_name;
-                                        let preview_text = "Abc";
-                                        let row_width = list_width;
-                                        let preview_width = 118.0;
-                                        let gap = 8.0;
-                                        let name_width = (row_width - preview_width - gap).max(120.0);
+                    let row_height = 22.0;
+                    let total_rows = fonts.len().min(200);
+                    let list_width = FONT_LIST_WIDTH;
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .min_scrolled_width(list_width)
+                        .max_height(FONT_LIST_HEIGHT)
+                        .show_rows(ui, row_height, total_rows, |ui, row_range| {
+                            for idx in row_range {
+                                if idx >= fonts.len() {
+                                    break;
+                                }
+                                let font_name = &fonts[idx];
+                                let is_selected = self.text_state.font_family == **font_name;
+                                let preview_text = "Abc";
+                                let row_width = list_width;
+                                let preview_width = 118.0;
+                                let gap = 8.0;
+                                let name_width = (row_width - preview_width - gap).max(120.0);
 
-                                        let (row_rect, row_resp) = ui.allocate_exact_size(
-                                            egui::vec2(row_width, row_height),
-                                            egui::Sense::click(),
-                                        );
-                                        let name_rect = egui::Rect::from_min_max(
-                                            row_rect.min,
-                                            egui::pos2(row_rect.min.x + name_width, row_rect.max.y),
-                                        );
-                                        let preview_rect = egui::Rect::from_min_max(
-                                            egui::pos2(name_rect.max.x + gap, row_rect.min.y),
-                                            row_rect.max,
-                                        );
-                                        let row_clip = row_rect.intersect(ui.clip_rect());
-                                        let painter = ui.painter().with_clip_rect(row_clip);
-                                        let row_fully_visible = row_clip.height() >= (row_height - 0.5);
+                                let (row_rect, row_resp) = ui.allocate_exact_size(
+                                    egui::vec2(row_width, row_height),
+                                    egui::Sense::click(),
+                                );
+                                let name_rect = egui::Rect::from_min_max(
+                                    row_rect.min,
+                                    egui::pos2(row_rect.min.x + name_width, row_rect.max.y),
+                                );
+                                let preview_rect = egui::Rect::from_min_max(
+                                    egui::pos2(name_rect.max.x + gap, row_rect.min.y),
+                                    row_rect.max,
+                                );
+                                let row_clip = row_rect.intersect(ui.clip_rect());
+                                let painter = ui.painter().with_clip_rect(row_clip);
+                                let row_fully_visible = row_clip.height() >= (row_height - 0.5);
 
-                                        if row_resp.hovered() && row_fully_visible {
-                                            painter.rect_filled(
-                                                row_rect.shrink2(egui::vec2(1.0, 1.0)),
-                                                0.0,
-                                                ui.visuals().widgets.hovered.weak_bg_fill,
-                                            );
-                                        }
+                                if row_resp.hovered() && row_fully_visible {
+                                    painter.rect_filled(
+                                        row_rect.shrink2(egui::vec2(1.0, 1.0)),
+                                        0.0,
+                                        ui.visuals().widgets.hovered.weak_bg_fill,
+                                    );
+                                }
 
-                                        if is_selected && row_fully_visible {
-                                            painter.rect_filled(
-                                                name_rect.shrink2(egui::vec2(2.0, 2.0)),
-                                                0.0,
-                                                ui.visuals().selection.bg_fill,
-                                            );
-                                        }
+                                if is_selected && row_fully_visible {
+                                    painter.rect_filled(
+                                        name_rect.shrink2(egui::vec2(2.0, 2.0)),
+                                        0.0,
+                                        ui.visuals().selection.bg_fill,
+                                    );
+                                }
 
-                                        let display_name = if font_name.len() > 22 {
-                                            format!("{}…", &font_name[..21])
-                                        } else {
-                                            (*font_name).clone()
-                                        };
-                                        painter.text(
-                                            egui::pos2(name_rect.min.x + 6.0, name_rect.center().y),
-                                            egui::Align2::LEFT_CENTER,
-                                            display_name,
-                                            egui::FontId::default(),
-                                            ui.visuals().text_color(),
-                                        );
+                                let display_name = if font_name.len() > 22 {
+                                    format!("{}…", &font_name[..21])
+                                } else {
+                                    (*font_name).clone()
+                                };
+                                painter.text(
+                                    egui::pos2(name_rect.min.x + 6.0, name_rect.center().y),
+                                    egui::Align2::LEFT_CENTER,
+                                    display_name,
+                                    egui::FontId::default(),
+                                    ui.visuals().text_color(),
+                                );
 
-                                        match self
+                                match self.text_state.font_preview_cache.get(font_name.as_str()) {
+                                    Some(Some(preview_font)) => {
+                                        if !self
                                             .text_state
-                                            .font_preview_cache
+                                            .font_preview_textures
+                                            .0
+                                            .contains_key(font_name.as_str())
+                                        {
+                                            let mut preview_coverage = Vec::new();
+                                            let mut preview_glyph_cache =
+                                                crate::ops::text::GlyphPixelCache::default();
+                                            let preview = crate::ops::text::rasterize_text(
+                                                preview_font,
+                                                preview_text,
+                                                18.0,
+                                                crate::ops::text::TextAlignment::Left,
+                                                0.0,
+                                                0.0,
+                                                self.text_state.font_preview_ink.0,
+                                                true,
+                                                false,
+                                                false,
+                                                false,
+                                                false,
+                                                256,
+                                                64,
+                                                &mut preview_coverage,
+                                                &mut preview_glyph_cache,
+                                                None,
+                                                0.0,
+                                                1.0,
+                                                1.0,
+                                                1.0,
+                                            );
+                                            if preview.buf_w > 0 && preview.buf_h > 0 {
+                                                let color_image =
+                                                    egui::ColorImage::from_rgba_unmultiplied(
+                                                        [
+                                                            preview.buf_w as usize,
+                                                            preview.buf_h as usize,
+                                                        ],
+                                                        &preview.buf,
+                                                    );
+                                                let texture = ui.ctx().load_texture(
+                                                    format!("font_preview_tex::{}", font_name),
+                                                    color_image,
+                                                    egui::TextureOptions::LINEAR,
+                                                );
+                                                self.text_state
+                                                    .font_preview_textures
+                                                    .0
+                                                    .insert((*font_name).clone(), texture);
+                                            }
+                                        }
+
+                                        if let Some(texture) = self
+                                            .text_state
+                                            .font_preview_textures
+                                            .0
                                             .get(font_name.as_str())
                                         {
-                                            Some(Some(preview_font)) => {
-                                                if !self
-                                                    .text_state
-                                                    .font_preview_textures
-                                                    .0
-                                                    .contains_key(font_name.as_str())
-                                                {
-                                                    let mut preview_coverage = Vec::new();
-                                                    let mut preview_glyph_cache =
-                                                        crate::ops::text::GlyphPixelCache::default();
-                                                    let preview = crate::ops::text::rasterize_text(
-                                                        preview_font,
-                                                        preview_text,
-                                                        18.0,
-                                                        crate::ops::text::TextAlignment::Left,
-                                                        0.0,
-                                                        0.0,
-                                                        self.text_state.font_preview_ink.0,
-                                                        true,
-                                                        false,
-                                                        false,
-                                                        false,
-                                                        false,
-                                                        256,
-                                                        64,
-                                                        &mut preview_coverage,
-                                                        &mut preview_glyph_cache,
-                                                        None,
-                                                        0.0,
-                                                        1.0,
-                                                        1.0,
-                                                        1.0,
-                                                    );
-                                                    if preview.buf_w > 0 && preview.buf_h > 0 {
-                                                        let color_image =
-                                                            egui::ColorImage::from_rgba_unmultiplied(
-                                                                [
-                                                                    preview.buf_w as usize,
-                                                                    preview.buf_h as usize,
-                                                                ],
-                                                                &preview.buf,
-                                                            );
-                                                        let texture = ui.ctx().load_texture(
-                                                            format!(
-                                                                "font_preview_tex::{}",
-                                                                font_name
-                                                            ),
-                                                            color_image,
-                                                            egui::TextureOptions::LINEAR,
-                                                        );
-                                                        self.text_state
-                                                            .font_preview_textures
-                                                            .0
-                                                            .insert((*font_name).clone(), texture);
-                                                    }
-                                                }
-
-                                                if let Some(texture) = self
-                                                    .text_state
-                                                    .font_preview_textures
-                                                    .0
-                                                    .get(font_name.as_str())
-                                                {
-                                                    let tex_size = texture.size_vec2();
-                                                    let max_w = (preview_rect.width() - 24.0).max(8.0);
-                                                    let max_h = (preview_rect.height() - 4.0).max(8.0);
-                                                    let scale = (max_w / tex_size.x)
-                                                        .min(max_h / tex_size.y)
-                                                        .max(0.01);
-                                                    let draw_size = tex_size * scale;
-                                                    let image_rect = egui::Rect::from_min_size(
-                                                        egui::pos2(
-                                                            preview_rect.min.x + 4.0,
-                                                            preview_rect.center().y
-                                                                - draw_size.y * 0.5,
-                                                        ),
-                                                        draw_size,
-                                                    );
-                                                    painter.image(
-                                                        texture.id(),
-                                                        image_rect,
-                                                        egui::Rect::from_min_max(
-                                                            egui::pos2(0.0, 0.0),
-                                                            egui::pos2(1.0, 1.0),
-                                                        ),
-                                                        Color32::WHITE,
-                                                    );
-                                                } else {
-                                                    painter.text(
-                                                        egui::pos2(
-                                                            preview_rect.min.x + 4.0,
-                                                            preview_rect.center().y,
-                                                        ),
-                                                        egui::Align2::LEFT_CENTER,
-                                                        "No preview",
-                                                        egui::FontId::default(),
-                                                        ui.visuals().weak_text_color(),
-                                                    );
-                                                }
-                                            }
-                                            Some(None) => {
-                                                painter.text(
-                                                    egui::pos2(
-                                                        preview_rect.min.x + 4.0,
-                                                        preview_rect.center().y,
-                                                    ),
-                                                    egui::Align2::LEFT_CENTER,
-                                                    "No preview",
-                                                    egui::FontId::default(),
-                                                    ui.visuals().weak_text_color(),
-                                                );
-                                            }
-                                            None => {
-                                                let pending = self
-                                                    .text_state
-                                                    .font_preview_pending
-                                                    .contains(font_name.as_str());
-                                                painter.text(
-                                                    egui::pos2(
-                                                        preview_rect.min.x + 4.0,
-                                                        preview_rect.center().y,
-                                                    ),
-                                                    egui::Align2::LEFT_CENTER,
-                                                    if pending { "Loading" } else { "Queued" },
-                                                    egui::FontId::default(),
-                                                    ui.visuals().weak_text_color(),
-                                                );
-                                            }
-                                        }
-
-                                        if row_resp.clicked() {
-                                            self.text_state.font_family = (*font_name).clone();
-                                            self.text_state.loaded_font = None;
-                                            self.text_state.preview_dirty = true;
-                                            self.text_state.ctx_bar_style_dirty = true;
-                                            self.text_state.cached_raster_key.clear();
-                                            // Refresh available weights for new family
-                                            self.text_state.available_weights =
-                                                crate::ops::text::enumerate_font_weights(
-                                                    &self.text_state.font_family,
-                                                );
-                                            if !self
-                                                .text_state
-                                                .available_weights
-                                                .iter()
-                                                .any(|w| w.1 == self.text_state.font_weight)
-                                            {
-                                                self.text_state.font_weight = 400;
-                                            }
-                                            egui::Popup::close_id(ui.ctx(), popup_id);
+                                            let tex_size = texture.size_vec2();
+                                            let max_w = (preview_rect.width() - 24.0).max(8.0);
+                                            let max_h = (preview_rect.height() - 4.0).max(8.0);
+                                            let scale = (max_w / tex_size.x)
+                                                .min(max_h / tex_size.y)
+                                                .max(0.01);
+                                            let draw_size = tex_size * scale;
+                                            let image_rect = egui::Rect::from_min_size(
+                                                egui::pos2(
+                                                    preview_rect.min.x + 4.0,
+                                                    preview_rect.center().y - draw_size.y * 0.5,
+                                                ),
+                                                draw_size,
+                                            );
+                                            painter.image(
+                                                texture.id(),
+                                                image_rect,
+                                                egui::Rect::from_min_max(
+                                                    egui::pos2(0.0, 0.0),
+                                                    egui::pos2(1.0, 1.0),
+                                                ),
+                                                Color32::WHITE,
+                                            );
+                                        } else {
+                                            painter.text(
+                                                egui::pos2(
+                                                    preview_rect.min.x + 4.0,
+                                                    preview_rect.center().y,
+                                                ),
+                                                egui::Align2::LEFT_CENTER,
+                                                "No preview",
+                                                egui::FontId::default(),
+                                                ui.visuals().weak_text_color(),
+                                            );
                                         }
                                     }
-                                },
-                            );
+                                    Some(None) => {
+                                        painter.text(
+                                            egui::pos2(
+                                                preview_rect.min.x + 4.0,
+                                                preview_rect.center().y,
+                                            ),
+                                            egui::Align2::LEFT_CENTER,
+                                            "No preview",
+                                            egui::FontId::default(),
+                                            ui.visuals().weak_text_color(),
+                                        );
+                                    }
+                                    None => {
+                                        let pending = self
+                                            .text_state
+                                            .font_preview_pending
+                                            .contains(font_name.as_str());
+                                        painter.text(
+                                            egui::pos2(
+                                                preview_rect.min.x + 4.0,
+                                                preview_rect.center().y,
+                                            ),
+                                            egui::Align2::LEFT_CENTER,
+                                            if pending { "Loading" } else { "Queued" },
+                                            egui::FontId::default(),
+                                            ui.visuals().weak_text_color(),
+                                        );
+                                    }
+                                }
 
-                            if !self.text_state.font_preview_pending.is_empty() && total_rows > 0 {
-                                ui.ctx()
-                                    .request_repaint_after(std::time::Duration::from_millis(16));
+                                if row_resp.clicked() {
+                                    self.text_state.font_family = (*font_name).clone();
+                                    self.text_state.loaded_font = None;
+                                    self.text_state.preview_dirty = true;
+                                    self.text_state.ctx_bar_style_dirty = true;
+                                    self.text_state.cached_raster_key.clear();
+                                    // Refresh available weights for new family
+                                    self.text_state.available_weights =
+                                        crate::ops::text::enumerate_font_weights(
+                                            &self.text_state.font_family,
+                                        );
+                                    if !self
+                                        .text_state
+                                        .available_weights
+                                        .iter()
+                                        .any(|w| w.1 == self.text_state.font_weight)
+                                    {
+                                        self.text_state.font_weight = 400;
+                                    }
+                                    egui::Popup::close_id(ui.ctx(), popup_id);
+                                }
                             }
                         });
+
+                    if !self.text_state.font_preview_pending.is_empty() && total_rows > 0 {
+                        ui.ctx()
+                            .request_repaint_after(std::time::Duration::from_millis(16));
+                    }
+                });
             });
-                    self.text_state.font_popup_open = egui::Popup::is_id_open(ui.ctx(), popup_id);
+            self.text_state.font_popup_open = egui::Popup::is_id_open(ui.ctx(), popup_id);
         }
 
         // Weight dropdown (only show if more than one weight available)
@@ -17166,9 +17175,7 @@ impl ToolsPanel {
         );
         let changed = warped.as_raw() != source.as_raw();
 
-        if changed
-            && let Some(active_layer) = canvas_state.layers.get_mut(target_layer_idx)
-        {
+        if changed && let Some(active_layer) = canvas_state.layers.get_mut(target_layer_idx) {
             let w = canvas_state.width.min(warped.width());
             let h = canvas_state.height.min(warped.height());
             for y in 0..h {
@@ -17685,7 +17692,11 @@ impl ToolsPanel {
             let icon_size = egui::Vec2::splat(28.0);
             let accent = ui.visuals().hyperlink_color;
             let selected_stroke = egui::Stroke::new(1.0, contrast_text_color(accent));
-            let selected_alpha = if color_luminance(accent) > 0.6 { 34 } else { 70 };
+            let selected_alpha = if color_luminance(accent) > 0.6 {
+                34
+            } else {
+                70
+            };
 
             egui::Grid::new("shapes_icon_grid")
                 .spacing(egui::Vec2::splat(2.0))
@@ -18194,3 +18205,54 @@ fn contrast_text_color(fill: Color32) -> Color32 {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::canvas::{CanvasState, TiledImage};
+    use image::Rgba;
+
+    #[test]
+    fn fill_press_commits_previous_preview_and_starts_new_fill() {
+        let mut tools = ToolsPanel::default();
+        let mut canvas_state = CanvasState::new(4, 4);
+        let committed_color = Rgba([255, 0, 0, 255]);
+
+        let mut preview = TiledImage::new(canvas_state.width, canvas_state.height);
+        *preview.get_pixel_mut(0, 0) = committed_color;
+        canvas_state.preview_layer = Some(preview);
+
+        tools.fill_state.active_fill = Some(ActiveFillRegion {
+            start_x: 0,
+            start_y: 0,
+            layer_idx: canvas_state.active_layer_index,
+            target_color: *canvas_state.layers[canvas_state.active_layer_index]
+                .pixels
+                .get_pixel(0, 0),
+            region_index: None,
+            fill_mask: Vec::new(),
+            fill_bbox: None,
+            last_threshold: None,
+        });
+
+        tools.handle_fill_click(
+            &mut canvas_state,
+            (3, 3),
+            false,
+            false,
+            [0.0, 0.0, 1.0, 1.0],
+            [0.0, 1.0, 0.0, 1.0],
+            None,
+        );
+
+        assert_eq!(
+            *canvas_state.layers[canvas_state.active_layer_index]
+                .pixels
+                .get_pixel(0, 0),
+            committed_color
+        );
+
+        let active_fill = tools.fill_state.active_fill.as_ref().unwrap();
+        assert_eq!((active_fill.start_x, active_fill.start_y), (3, 3));
+        assert!(canvas_state.preview_layer.is_some());
+    }
+}

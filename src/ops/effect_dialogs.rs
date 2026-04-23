@@ -15,9 +15,8 @@ use image::RgbaImage;
 
 use super::dialogs::{
     DialogColors, DialogResult, accent_separator, contrast_text_color, dialog_footer,
-    dialog_footer_with_reset,
-    dialog_slider, numeric_field_with_buttons, paint_dialog_header, preview_controls,
-    section_label,
+    dialog_footer_with_reset, dialog_slider, numeric_field_with_buttons, paint_dialog_header,
+    preview_controls, section_label,
 };
 use super::effects::{ColorFilterMode, GridStyle, HalftoneShape, NoiseType, OutlineMode};
 use crate::canvas::{CanvasState, TiledImage};
@@ -308,12 +307,9 @@ impl MotionBlurDialog {
                         ui.label("Direction");
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
-                            for &(label, val) in &[
-                                ("→", 0.0),
-                                ("↗", -45.0),
-                                ("↑", -90.0),
-                                ("↖", -135.0),
-                            ] {
+                            for &(label, val) in
+                                &[("→", 0.0), ("↗", -45.0), ("↑", -90.0), ("↖", -135.0)]
+                            {
                                 let btn = if (self.angle - val).abs() < 1.0 {
                                     egui::Button::new(egui::RichText::new(label).strong())
                                         .fill(colors.accent_faint)
@@ -2145,7 +2141,10 @@ impl OutlineDialog {
                         ui.end_row();
 
                         ui.label(t!("ctx.anti_alias"));
-                        if ui.checkbox(&mut self.anti_alias, t!("ctx.anti_alias")).changed() {
+                        if ui
+                            .checkbox(&mut self.anti_alias, t!("ctx.anti_alias"))
+                            .changed()
+                        {
                             changed = true;
                         }
                         ui.end_row();

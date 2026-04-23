@@ -40,13 +40,13 @@ mod imp {
             return;
         };
 
-            // Skip X11 connection attempt if DISPLAY is not set — avoids printing
-            // "No protocol specified" / "Cannot open display" errors on pure Wayland.
-            if std::env::var_os("DISPLAY").is_none() {
-                return;
-            }
+        // Skip X11 connection attempt if DISPLAY is not set — avoids printing
+        // "No protocol specified" / "Cannot open display" errors on pure Wayland.
+        if std::env::var_os("DISPLAY").is_none() {
+            return;
+        }
 
-            // SAFETY: null display name means use DISPLAY env var.
+        // SAFETY: null display name means use DISPLAY env var.
         let display = unsafe { (xlib.XOpenDisplay)(std::ptr::null()) };
         if display.is_null() {
             return;

@@ -321,10 +321,20 @@ fn align_layer_to_bottom_right_anchor() {
     // 2x2 block should end at bottom-right: (8,8)..(9,9)
     for y in 8..=9 {
         for x in 8..=9 {
-            assert_eq!(out.get_pixel(x, y)[3], 255, "expected opaque at ({},{})", x, y);
+            assert_eq!(
+                out.get_pixel(x, y)[3],
+                255,
+                "expected opaque at ({},{})",
+                x,
+                y
+            );
         }
     }
-    assert_eq!(out.get_pixel(1, 1)[3], 0, "expected source position to be empty");
+    assert_eq!(
+        out.get_pixel(1, 1)[3],
+        0,
+        "expected source position to be empty"
+    );
 }
 
 // =============================================================================
