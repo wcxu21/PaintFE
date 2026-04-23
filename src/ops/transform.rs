@@ -429,20 +429,154 @@ pub fn flatten_image(state: &mut CanvasState) {
 //  Single-layer transforms
 // ---------------------------------------------------------------------------
 
-/// Flip a single layer horizontally.
+/// Flip a single layer horizontally, respecting selection if present.
 pub fn flip_layer_horizontal(state: &mut CanvasState, layer_idx: usize) {
+    // Try selection-aware flip first
+    if flip_layer_selected_region_horizontal(state, layer_idx) {
+        return;
+    }
+    // Fall back to full layer flip
     if let Some(layer) = state.layers.get_mut(layer_idx) {
         layer.pixels.flip_horizontal_chunked();
     }
     state.mark_dirty(None);
 }
 
-/// Flip a single layer vertically.
+/// Flip a single layer vertically, respecting selection if present.
 pub fn flip_layer_vertical(state: &mut CanvasState, layer_idx: usize) {
+    // Try selection-aware flip first
+    if flip_layer_selected_region_vertical(state, layer_idx) {
+        return;
+    }
+    // Fall back to full layer flip
     if let Some(layer) = state.layers.get_mut(layer_idx) {
         layer.pixels.flip_vertical_chunked();
     }
     state.mark_dirty(None);
+}
+
+/// Flip only the selected region in a single layer horizontally.
+/// Returns true if selection was applied, false if no selection or full canvas selected.
+fn flip_layer_selected_region_horizontal(state: &mut CanvasState, layer_idx: usize) -> bool {
+    if layer_idx >= state.layers.len() {
+        return false;
+    }
+    
+    if selection_covers_full_canvas(state) {
+        return false;
+    }
+
+    let Some((min_x, min_y, max_x, max_y)) = state.selection_mask_bounds() else {
+        return false;
+    };
+    let Some(selection_mask) = state.selection_mask.clone() else {
+        return false;
+    };
+
+    let region_w = max_x - min_x + 1;
+    let region_h = max_y - min_y + 1;
+    let mut region_mask = GrayImage::new(region_w, region_h);
+    for y in 0..region_h {
+        for x in 0..region_w {
+            let src = *selection_mask.get_pixel(min_x + x, min_y + y);
+            region_mask.put_pixel(x, y, src);
+        }
+    }
+
+    let transformed_mask = imageops::flip_horizontal(&region_mask);
+    let flat = state.layers[layer_idx].pixels.to_rgba_image();
+    let mut cutout = RgbaImage::from_pixel(region_w, region_h, Rgba([0, 0, 0, 0]));
+
+    for y in 0..region_h {
+        for x in 0..region_w {
+            if region_mask.get_pixel(x, y)[0] == 0 {
+                continue;
+            }
+            cutout.put_pixel(x, y, *flat.get_pixel(min_x + x, min_y + y));
+            state.layers[layer_idx].pixels.put_pixel(min_x + x, min_y + y, Rgba([0, 0, 0, 0]));
+        }
+    }
+
+    let transformed_cutout = imageops::flip_horizontal(&cutout);
+    for y in 0..transformed_mask.height() {
+        for x in 0..transformed_mask.width() {
+            if transformed_mask.get_pixel(x, y)[0] == 0 {
+                continue;
+            }
+            state.layers[layer_idx].pixels.put_pixel(
+                min_x + x,
+                min_y + y,
+                *transformed_cutout.get_pixel(x, y),
+            );
+        }
+    }
+
+    state.composite_cache = None;
+    state.clear_preview_state();
+    state.mark_dirty(None);
+    true
+}
+
+/// Flip only the selected region in a single layer vertically.
+/// Returns true if selection was applied, false if no selection or full canvas selected.
+fn flip_layer_selected_region_vertical(state: &mut CanvasState, layer_idx: usize) -> bool {
+    if layer_idx >= state.layers.len() {
+        return false;
+    }
+    
+    if selection_covers_full_canvas(state) {
+        return false;
+    }
+
+    let Some((min_x, min_y, max_x, max_y)) = state.selection_mask_bounds() else {
+        return false;
+    };
+    let Some(selection_mask) = state.selection_mask.clone() else {
+        return false;
+    };
+
+    let region_w = max_x - min_x + 1;
+    let region_h = max_y - min_y + 1;
+    let mut region_mask = GrayImage::new(region_w, region_h);
+    for y in 0..region_h {
+        for x in 0..region_w {
+            let src = *selection_mask.get_pixel(min_x + x, min_y + y);
+            region_mask.put_pixel(x, y, src);
+        }
+    }
+
+    let transformed_mask = imageops::flip_vertical(&region_mask);
+    let flat = state.layers[layer_idx].pixels.to_rgba_image();
+    let mut cutout = RgbaImage::from_pixel(region_w, region_h, Rgba([0, 0, 0, 0]));
+
+    for y in 0..region_h {
+        for x in 0..region_w {
+            if region_mask.get_pixel(x, y)[0] == 0 {
+                continue;
+            }
+            cutout.put_pixel(x, y, *flat.get_pixel(min_x + x, min_y + y));
+            state.layers[layer_idx].pixels.put_pixel(min_x + x, min_y + y, Rgba([0, 0, 0, 0]));
+        }
+    }
+
+    let transformed_cutout = imageops::flip_vertical(&cutout);
+    for y in 0..transformed_mask.height() {
+        for x in 0..transformed_mask.width() {
+            if transformed_mask.get_pixel(x, y)[0] == 0 {
+                continue;
+            }
+            state.layers[layer_idx].pixels.put_pixel(
+                min_x + x,
+                min_y + y,
+                *transformed_cutout.get_pixel(x, y),
+            );
+        }
+    }
+
+    state.composite_cache = None;
+    state.clear_preview_state();
+    state.mark_dirty(None);
+    true
 }
 
 /// Align a layer's non-transparent bounds to a 3x3 canvas anchor.

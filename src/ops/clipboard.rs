@@ -566,6 +566,7 @@ pub fn cut_selection(state: &mut CanvasState, transparent_cutout: bool) -> bool 
         return false;
     }
     state.delete_selected_pixels();
+    state.clear_selection();  // Auto-deselect after cut
     state.mark_dirty(None);
     true
 }

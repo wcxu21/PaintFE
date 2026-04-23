@@ -449,6 +449,155 @@ fn sdf_convex_polygon(verts: &[(f32, f32)], px: f32, py: f32) -> f32 {
     s * d.sqrt()
 }
 
+#[inline]
+fn polygon_signed_area(verts: &[(f32, f32)]) -> f32 {
+    let mut area = 0.0;
+    for i in 0..verts.len() {
+        let j = (i + 1) % verts.len();
+        area += verts[i].0 * verts[j].1 - verts[j].0 * verts[i].1;
+    }
+    area * 0.5
+}
+
+#[inline]
+fn offset_line_intersection(
+    p0: (f32, f32),
+    d0: (f32, f32),
+    p1: (f32, f32),
+    d1: (f32, f32),
+) -> Option<(f32, f32)> {
+    let det = d0.0 * d1.1 - d0.1 * d1.0;
+    if det.abs() <= 1e-5 {
+        return None;
+    }
+    let dx = p1.0 - p0.0;
+    let dy = p1.1 - p0.1;
+    let t = (dx * d1.1 - dy * d1.0) / det;
+    Some((p0.0 + d0.0 * t, p0.1 + d0.1 * t))
+}
+
+#[inline]
+fn offset_convex_polygon(verts: &[(f32, f32)], offset: f32) -> Option<Vec<(f32, f32)>> {
+    if verts.len() < 3 {
+        return None;
+    }
+
+    let centroid = {
+        let mut sum_x = 0.0;
+        let mut sum_y = 0.0;
+        for (x, y) in verts {
+            sum_x += *x;
+            sum_y += *y;
+        }
+        (sum_x / verts.len() as f32, sum_y / verts.len() as f32)
+    };
+
+    let mut out = Vec::with_capacity(verts.len());
+    for i in 0..verts.len() {
+        let prev = verts[(i + verts.len() - 1) % verts.len()];
+        let curr = verts[i];
+        let next = verts[(i + 1) % verts.len()];
+
+        let edge0 = (curr.0 - prev.0, curr.1 - prev.1);
+        let edge1 = (next.0 - curr.0, next.1 - curr.1);
+        let len0 = (edge0.0 * edge0.0 + edge0.1 * edge0.1).sqrt();
+        let len1 = (edge1.0 * edge1.0 + edge1.1 * edge1.1).sqrt();
+        if len0 <= 1e-5 || len1 <= 1e-5 {
+            return None;
+        }
+
+        let mut normal0 = (edge0.1 / len0, -edge0.0 / len0);
+        let mut normal1 = (edge1.1 / len1, -edge1.0 / len1);
+
+        let mid0 = ((prev.0 + curr.0) * 0.5, (prev.1 + curr.1) * 0.5);
+        let mid1 = ((curr.0 + next.0) * 0.5, (curr.1 + next.1) * 0.5);
+        if (centroid.0 - mid0.0) * normal0.0 + (centroid.1 - mid0.1) * normal0.1 > 0.0 {
+            normal0 = (-normal0.0, -normal0.1);
+        }
+        if (centroid.0 - mid1.0) * normal1.0 + (centroid.1 - mid1.1) * normal1.1 > 0.0 {
+            normal1 = (-normal1.0, -normal1.1);
+        }
+
+        let line0 = (curr.0 + normal0.0 * offset, curr.1 + normal0.1 * offset);
+        let line1 = (curr.0 + normal1.0 * offset, curr.1 + normal1.1 * offset);
+        let intersection = offset_line_intersection(line0, edge0, line1, edge1)?;
+        out.push(intersection);
+    }
+
+    if polygon_signed_area(&out).abs() <= 1e-3 {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+#[inline]
+fn convex_polygon_miter_distance(verts: &[(f32, f32)], px: f32, py: f32) -> f32 {
+    if verts.len() < 3 {
+        return f32::MAX;
+    }
+
+    let centroid = {
+        let mut sum_x = 0.0;
+        let mut sum_y = 0.0;
+        for (x, y) in verts {
+            sum_x += *x;
+            sum_y += *y;
+        }
+        (sum_x / verts.len() as f32, sum_y / verts.len() as f32)
+    };
+
+    let mut max_signed = f32::NEG_INFINITY;
+    for i in 0..verts.len() {
+        let curr = verts[i];
+        let next = verts[(i + 1) % verts.len()];
+        let edge = (next.0 - curr.0, next.1 - curr.1);
+        let len = (edge.0 * edge.0 + edge.1 * edge.1).sqrt();
+        if len <= 1e-5 {
+            continue;
+        }
+
+        let mut normal = (edge.1 / len, -edge.0 / len);
+        let mid = ((curr.0 + next.0) * 0.5, (curr.1 + next.1) * 0.5);
+        if (centroid.0 - mid.0) * normal.0 + (centroid.1 - mid.1) * normal.1 > 0.0 {
+            normal = (-normal.0, -normal.1);
+        }
+
+        let signed = (px - curr.0) * normal.0 + (py - curr.1) * normal.1;
+        max_signed = max_signed.max(signed);
+    }
+
+    if max_signed.is_finite() {
+        max_signed
+    } else {
+        f32::MAX
+    }
+}
+
+#[inline]
+fn convex_polygon_outline_coverage(
+    verts: &[(f32, f32)],
+    px: f32,
+    py: f32,
+    outline_half: f32,
+    anti_alias: bool,
+) -> f32 {
+    let base = sdf_convex_polygon(verts, px, py);
+    let fallback = coverage_from_sdf(base.abs() - outline_half, anti_alias);
+
+    let Some(outer_verts) = offset_convex_polygon(verts, outline_half) else {
+        return fallback;
+    };
+    let outer_cov = coverage_from_sdf(sdf_convex_polygon(&outer_verts, px, py), anti_alias);
+
+    let inner_cov = offset_convex_polygon(verts, -outline_half)
+        .filter(|inner| polygon_signed_area(inner).abs() > 1e-3)
+        .map(|inner| coverage_from_sdf(sdf_convex_polygon(&inner, px, py), anti_alias))
+        .unwrap_or(0.0);
+
+    (outer_cov - inner_cov).clamp(0.0, 1.0)
+}
+
 /// SDF for a cross / plus shape.
 fn sdf_cross(px: f32, py: f32, hx: f32, hy: f32) -> f32 {
     let arm_hw = hx * 0.34;
@@ -635,6 +784,108 @@ fn trapezoid_outline_coverage(
     (outer_cov - inner_cov).clamp(0.0, 1.0)
 }
 
+/// Outline for the Triangle shape (isosceles) with sharp miter joints.
+/// Uses polygon expansion with proper edge normal offsets.
+#[inline]
+fn triangle_outline_coverage(
+    px: f32,
+    py: f32,
+    hx: f32,
+    hy: f32,
+    outline_half: f32,
+    anti_alias: bool,
+) -> f32 {
+    let verts = [(0.0, -hy), (hx, hy), (-hx, hy)];
+    let band = convex_polygon_miter_distance(&verts, px, py).abs() - outline_half;
+    coverage_from_sdf(band, anti_alias)
+}
+
+/// Outline for the Right Angle Triangle with sharp miter joints.
+/// Right angle at bottom-left, other vertices at top-left and bottom-right.
+#[inline]
+fn right_angle_triangle_outline_coverage(
+    px: f32,
+    py: f32,
+    hx: f32,
+    hy: f32,
+    outline_half: f32,
+    anti_alias: bool,
+) -> f32 {
+    let verts = [(-hx, hy), (hx, hy), (-hx, -hy)];
+    let band = convex_polygon_miter_distance(&verts, px, py).abs() - outline_half;
+    coverage_from_sdf(band, anti_alias)
+}
+
+/// Outline for the Parallelogram with sharp miter joints.
+/// Skewed rectangle with proper edge normal offsets.
+#[inline]
+fn parallelogram_outline_coverage(
+    px: f32,
+    py: f32,
+    hx: f32,
+    hy: f32,
+    outline_half: f32,
+    anti_alias: bool,
+) -> f32 {
+    let ol = outline_half;
+    let skew = hx * 0.3;
+    
+    // Outer vertices (expanding by outline width along normals)
+    let outer_verts = [
+        (-hx - ol, -hy - ol),
+        (hx - skew + ol, -hy - ol),
+        (hx + skew + ol, hy + ol),
+        (-hx - ol, hy + ol),
+    ];
+    let outer_cov = coverage_from_sdf(sdf_polygon_path(&outer_verts, px, py), anti_alias);
+    
+    // Inner vertices (contracting by outline width)
+    let inner_verts = [
+        (-hx + ol, -hy + ol),
+        (hx - skew - ol, -hy + ol),
+        (hx + skew - ol, hy - ol),
+        (-hx + ol, hy - ol),
+    ];
+    let inner_cov = coverage_from_sdf(sdf_polygon_path(&inner_verts, px, py), anti_alias);
+    
+    (outer_cov - inner_cov).clamp(0.0, 1.0)
+}
+
+    #[inline]
+    fn shape_outline_coverage(
+        kind: ShapeKind,
+        px: f32,
+        py: f32,
+        hx: f32,
+        hy: f32,
+        outline_half: f32,
+        anti_alias: bool,
+        base_distance: f32,
+    ) -> f32 {
+        match kind {
+            ShapeKind::Rectangle => {
+                rectangle_outline_coverage(px, py, hx, hy, outline_half, anti_alias)
+            }
+            ShapeKind::Cross => cross_outline_coverage(px, py, hx, hy, outline_half, anti_alias),
+            ShapeKind::Trapezoid => {
+                trapezoid_outline_coverage(px, py, hx, hy, outline_half, anti_alias)
+            }
+            ShapeKind::Triangle => {
+                triangle_outline_coverage(px, py, hx, hy, outline_half, anti_alias)
+            }
+            ShapeKind::RightTriangle => {
+                right_angle_triangle_outline_coverage(px, py, hx, hy, outline_half, anti_alias)
+            }
+            ShapeKind::Parallelogram => {
+                parallelogram_outline_coverage(px, py, hx, hy, outline_half, anti_alias)
+            }
+            _ => {
+                let band = base_distance.abs() - outline_half;
+                coverage_from_sdf(band, anti_alias)
+            }
+        }
+    }
+
 /// Rasterize a shape into an RGBA buffer.
 ///
 /// Returns `(buf, buf_w, buf_h, offset_x, offset_y)` where offset is the
@@ -724,31 +975,15 @@ pub fn rasterize_shape(
                         (primary, cov)
                     }
                     ShapeFillMode::Outline => {
-                        let cov = if kind == ShapeKind::Rectangle {
-                            rectangle_outline_coverage(lx, ly, hx, hy, outline_half, aa)
-                        } else if kind == ShapeKind::Cross {
-                            cross_outline_coverage(lx, ly, hx, hy, outline_half, aa)
-                        } else if kind == ShapeKind::Trapezoid {
-                            trapezoid_outline_coverage(lx, ly, hx, hy, outline_half, aa)
-                        } else {
-                            let band = d.abs() - outline_half;
-                            coverage_from_sdf(band, aa)
-                        };
+                        let cov =
+                            shape_outline_coverage(kind, lx, ly, hx, hy, outline_half, aa, d);
                         (primary, cov)
                     }
                     ShapeFillMode::Both => {
                         // Fill interior with secondary, outline with primary
                         let fill_cov = coverage_from_sdf(d, aa);
-                        let outline_cov = if kind == ShapeKind::Rectangle {
-                            rectangle_outline_coverage(lx, ly, hx, hy, outline_half, aa)
-                        } else if kind == ShapeKind::Cross {
-                            cross_outline_coverage(lx, ly, hx, hy, outline_half, aa)
-                        } else if kind == ShapeKind::Trapezoid {
-                            trapezoid_outline_coverage(lx, ly, hx, hy, outline_half, aa)
-                        } else {
-                            let band = d.abs() - outline_half;
-                            coverage_from_sdf(band, aa)
-                        };
+                        let outline_cov =
+                            shape_outline_coverage(kind, lx, ly, hx, hy, outline_half, aa, d);
 
                         if outline_cov > 0.001 {
                             // Outline on top
@@ -873,30 +1108,14 @@ pub fn rasterize_shape_into(
                         (primary, cov)
                     }
                     ShapeFillMode::Outline => {
-                        let cov = if kind == ShapeKind::Rectangle {
-                            rectangle_outline_coverage(lx, ly, hx, hy, outline_half, aa)
-                        } else if kind == ShapeKind::Cross {
-                            cross_outline_coverage(lx, ly, hx, hy, outline_half, aa)
-                        } else if kind == ShapeKind::Trapezoid {
-                            trapezoid_outline_coverage(lx, ly, hx, hy, outline_half, aa)
-                        } else {
-                            let band = d.abs() - outline_half;
-                            coverage_from_sdf(band, aa)
-                        };
+                        let cov =
+                            shape_outline_coverage(kind, lx, ly, hx, hy, outline_half, aa, d);
                         (primary, cov)
                     }
                     ShapeFillMode::Both => {
                         let fill_cov = coverage_from_sdf(d, aa);
-                        let outline_cov = if kind == ShapeKind::Rectangle {
-                            rectangle_outline_coverage(lx, ly, hx, hy, outline_half, aa)
-                        } else if kind == ShapeKind::Cross {
-                            cross_outline_coverage(lx, ly, hx, hy, outline_half, aa)
-                        } else if kind == ShapeKind::Trapezoid {
-                            trapezoid_outline_coverage(lx, ly, hx, hy, outline_half, aa)
-                        } else {
-                            let band = d.abs() - outline_half;
-                            coverage_from_sdf(band, aa)
-                        };
+                        let outline_cov =
+                            shape_outline_coverage(kind, lx, ly, hx, hy, outline_half, aa, d);
                         if outline_cov > 0.001 {
                             let oa = outline_cov;
                             let fa = fill_cov * (1.0 - oa);

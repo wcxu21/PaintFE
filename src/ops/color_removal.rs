@@ -25,6 +25,13 @@ pub fn compute_color_removal(
     if start_x >= w || start_y >= h {
         return Vec::new();
     }
+    if let Some(mask) = selection_mask
+        && (start_x >= mask.width()
+            || start_y >= mask.height()
+            || mask.get_pixel(start_x, start_y).0[0] == 0)
+    {
+        return Vec::new();
+    }
 
     let seed = pixels.get_pixel(start_x, start_y);
     // Skip if the clicked pixel is fully transparent

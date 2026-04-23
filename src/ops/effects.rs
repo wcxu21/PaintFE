@@ -2117,12 +2117,20 @@ pub fn outline(
     width: u32,
     color: [u8; 4],
     mode: OutlineMode,
+    anti_alias: bool,
 ) {
     if layer_idx >= state.layers.len() {
         return;
     }
     let flat = state.layers[layer_idx].pixels.to_rgba_image();
-    let result = outline_core(&flat, width, color, mode, state.selection_mask.as_ref());
+    let result = outline_core(
+        &flat,
+        width,
+        color,
+        mode,
+        anti_alias,
+        state.selection_mask.as_ref(),
+    );
     commit_to_layer(state, layer_idx, &result);
 }
 
@@ -2132,6 +2140,7 @@ pub fn outline_from_flat(
     width: u32,
     color: [u8; 4],
     mode: OutlineMode,
+    anti_alias: bool,
     original_flat: &RgbaImage,
 ) {
     let result = outline_core(
@@ -2139,6 +2148,7 @@ pub fn outline_from_flat(
         width,
         color,
         mode,
+        anti_alias,
         state.selection_mask.as_ref(),
     );
     commit_to_layer(state, layer_idx, &result);
@@ -2149,6 +2159,7 @@ pub fn outline_core(
     width: u32,
     color: [u8; 4],
     mode: OutlineMode,
+    anti_alias: bool,
     mask: Option<&GrayImage>,
 ) -> RgbaImage {
     let w = flat.width() as usize;
@@ -2157,55 +2168,57 @@ pub fn outline_core(
         return flat.clone();
     }
 
-    let ow = width.max(1) as i32;
+    let radius = width.max(1) as f32;
+    let search_radius = radius.ceil() as i32 + 1;
     let src_raw = flat.as_raw();
     let stride = w * 4;
-
-    // Build dilated and eroded alpha masks for edge detection.
     let alpha: Vec<u8> = (0..w * h).map(|i| src_raw[i * 4 + 3]).collect();
-
-    let dilated: Vec<u8> = (0..w * h)
-        .into_par_iter()
-        .map(|idx| {
-            let x = idx % w;
-            let y = idx / w;
-            let mut max_a = 0u8;
-            for dy in -ow..=ow {
-                for dx in -ow..=ow {
-                    if dx * dx + dy * dy <= ow * ow {
-                        let sx = (x as i32 + dx).clamp(0, w as i32 - 1) as usize;
-                        let sy = (y as i32 + dy).clamp(0, h as i32 - 1) as usize;
-                        max_a = max_a.max(alpha[sy * w + sx]);
-                    }
-                }
-            }
-            max_a
-        })
-        .collect();
-
-    let eroded: Vec<u8> = (0..w * h)
-        .into_par_iter()
-        .map(|idx| {
-            let x = idx % w;
-            let y = idx / w;
-            let mut min_a = 255u8;
-            for dy in -ow..=ow {
-                for dx in -ow..=ow {
-                    if dx * dx + dy * dy <= ow * ow {
-                        let sx = (x as i32 + dx).clamp(0, w as i32 - 1) as usize;
-                        let sy = (y as i32 + dy).clamp(0, h as i32 - 1) as usize;
-                        min_a = min_a.min(alpha[sy * w + sx]);
-                    }
-                }
-            }
-            min_a
-        })
-        .collect();
 
     let mask_raw = mask.map(|m| m.as_raw().as_slice());
     let mask_w = mask.map_or(0, |m| m.width() as usize);
     let mask_h = mask.map_or(0, |m| m.height() as usize);
     let mut dst_raw = src_raw.to_vec();
+
+    let shell_coverage = |distance: f32| {
+        if anti_alias {
+            let t = ((radius + 0.5 - distance) / 1.0).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        } else if distance <= radius {
+            1.0
+        } else {
+            0.0
+        }
+    };
+
+    let nearest_distance = |x: usize, y: usize, want_filled: bool| -> Option<f32> {
+        let mut best_sq: Option<i32> = None;
+        for dy in -search_radius..=search_radius {
+            for dx in -search_radius..=search_radius {
+                let dist_sq = dx * dx + dy * dy;
+                let current_best = best_sq.unwrap_or(i32::MAX);
+                if dist_sq > current_best {
+                    continue;
+                }
+
+                let sx = x as i32 + dx;
+                let sy = y as i32 + dy;
+                if sx < 0 || sy < 0 || sx >= w as i32 || sy >= h as i32 {
+                    continue;
+                }
+
+                let sample_alpha = alpha[sy as usize * w + sx as usize];
+                let matches = if want_filled {
+                    sample_alpha > 0
+                } else {
+                    sample_alpha == 0
+                };
+                if matches {
+                    best_sq = Some(dist_sq);
+                }
+            }
+        }
+        best_sq.map(|dist_sq| (dist_sq as f32).sqrt())
+    };
 
     dst_raw
         .par_chunks_mut(stride)
@@ -2222,18 +2235,66 @@ pub fn outline_core(
                 }
 
                 let idx = y * w + x;
-                let is_edge = match mode {
-                    OutlineMode::Outside => dilated[idx] > 0 && alpha[idx] == 0,
-                    OutlineMode::Inside => alpha[idx] > 0 && eroded[idx] == 0,
-                    OutlineMode::Center => dilated[idx] > 0 && eroded[idx] == 0,
+                let src_a = alpha[idx] as f32 / 255.0;
+                let outside_cov = nearest_distance(x, y, true)
+                    .map(|distance| shell_coverage((distance - 1.0).max(0.0)))
+                    .unwrap_or(0.0)
+                    * (1.0 - src_a);
+                let inside_cov = nearest_distance(x, y, false)
+                    .map(shell_coverage)
+                    .unwrap_or(0.0)
+                    * src_a;
+
+                let (under_cov, over_cov) = match mode {
+                    OutlineMode::Outside => (outside_cov, 0.0),
+                    OutlineMode::Inside => (0.0, inside_cov),
+                    OutlineMode::Center => (outside_cov, inside_cov),
                 };
 
-                if is_edge {
-                    row_out[pi] = color[0];
-                    row_out[pi + 1] = color[1];
-                    row_out[pi + 2] = color[2];
-                    row_out[pi + 3] = color[3];
+                let outline_a_under = (color[3] as f32 / 255.0) * under_cov;
+                let outline_a_over = (color[3] as f32 / 255.0) * over_cov;
+
+                let mut comp_r = row_out[pi] as f32 / 255.0;
+                let mut comp_g = row_out[pi + 1] as f32 / 255.0;
+                let mut comp_b = row_out[pi + 2] as f32 / 255.0;
+                let mut comp_a = row_out[pi + 3] as f32 / 255.0;
+
+                if outline_a_under > 0.0 {
+                    let out_a = comp_a + outline_a_under * (1.0 - comp_a);
+                    if out_a > 0.0 {
+                        comp_r = (comp_r * comp_a
+                            + (color[0] as f32 / 255.0) * outline_a_under * (1.0 - comp_a))
+                            / out_a;
+                        comp_g = (comp_g * comp_a
+                            + (color[1] as f32 / 255.0) * outline_a_under * (1.0 - comp_a))
+                            / out_a;
+                        comp_b = (comp_b * comp_a
+                            + (color[2] as f32 / 255.0) * outline_a_under * (1.0 - comp_a))
+                            / out_a;
+                    }
+                    comp_a = out_a;
                 }
+
+                if outline_a_over > 0.0 {
+                    let out_a = outline_a_over + comp_a * (1.0 - outline_a_over);
+                    if out_a > 0.0 {
+                        comp_r = ((color[0] as f32 / 255.0) * outline_a_over
+                            + comp_r * comp_a * (1.0 - outline_a_over))
+                            / out_a;
+                        comp_g = ((color[1] as f32 / 255.0) * outline_a_over
+                            + comp_g * comp_a * (1.0 - outline_a_over))
+                            / out_a;
+                        comp_b = ((color[2] as f32 / 255.0) * outline_a_over
+                            + comp_b * comp_a * (1.0 - outline_a_over))
+                            / out_a;
+                    }
+                    comp_a = out_a;
+                }
+
+                row_out[pi] = (comp_r.clamp(0.0, 1.0) * 255.0).round() as u8;
+                row_out[pi + 1] = (comp_g.clamp(0.0, 1.0) * 255.0).round() as u8;
+                row_out[pi + 2] = (comp_b.clamp(0.0, 1.0) * 255.0).round() as u8;
+                row_out[pi + 3] = (comp_a.clamp(0.0, 1.0) * 255.0).round() as u8;
             }
         });
 

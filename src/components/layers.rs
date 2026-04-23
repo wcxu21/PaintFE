@@ -112,6 +112,8 @@ pub struct LayersPanel {
     last_layer_count: usize,
     /// Layer index to remove from GPU texture cache.
     pub pending_gpu_delete: Option<usize>,
+    /// Layer index deleted this frame so text/tool state can reindex or cancel.
+    pub pending_deleted_layer: Option<usize>,
     /// When set, all GPU layer textures should be invalidated.
     pub pending_gpu_clear: bool,
     pub pending_app_action: Option<LayerAppAction>,
@@ -2597,6 +2599,15 @@ impl LayersPanel {
 
         canvas_state.layers.remove(layer_idx);
 
+        if canvas_state.text_editing_layer == Some(layer_idx) {
+            canvas_state.text_editing_layer = None;
+            canvas_state.clear_preview_state();
+        } else if let Some(text_idx) = canvas_state.text_editing_layer
+            && layer_idx < text_idx
+        {
+            canvas_state.text_editing_layer = Some(text_idx - 1);
+        }
+
         if canvas_state.active_layer_index >= canvas_state.layers.len() {
             canvas_state.active_layer_index = canvas_state.layers.len() - 1;
         } else if canvas_state.active_layer_index > layer_idx {
@@ -2609,6 +2620,7 @@ impl LayersPanel {
 
         // Notify the deletion index so the UI can clean up GPU textures.
         self.pending_gpu_delete = Some(layer_idx);
+        self.pending_deleted_layer = Some(layer_idx);
 
         // Record history
         if let Some(mut cmd) = snapshot_cmd {

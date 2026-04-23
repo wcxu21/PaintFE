@@ -2069,9 +2069,10 @@ impl DropShadowDialog {
 // -------
 
 effect_dialog_base!(OutlineDialog {
-    width: f32 = 0.0,
+    width: f32 = 4.0,
     color: [f32; 3] = [0.0, 0.0, 0.0],
     mode_idx: usize = 0,
+    anti_alias: bool = true,
     first_open: bool = true
 });
 
@@ -2084,7 +2085,7 @@ impl OutlineDialog {
         }
     }
 
-    pub fn show(&mut self, ctx: &egui::Context) -> DialogResult<(u32, [u8; 4], OutlineMode)> {
+    pub fn show(&mut self, ctx: &egui::Context) -> DialogResult<(u32, [u8; 4], OutlineMode, bool)> {
         let mut result = DialogResult::Open;
         let colors = DialogColors::from_ctx(ctx);
 
@@ -2109,7 +2110,7 @@ impl OutlineDialog {
                             ui,
                             &mut self.width,
                             0.5,
-                            1.0..=20.0,
+                            1.0..=4096.0,
                             " px",
                             1.0,
                         ) {
@@ -2142,6 +2143,12 @@ impl OutlineDialog {
                             }
                         });
                         ui.end_row();
+
+                        ui.label(t!("ctx.anti_alias"));
+                        if ui.checkbox(&mut self.anti_alias, t!("ctx.anti_alias")).changed() {
+                            changed = true;
+                        }
+                        ui.end_row();
                     });
 
                 accent_separator(ui, &colors);
@@ -2158,7 +2165,12 @@ impl OutlineDialog {
                         (self.color[2] * 255.0) as u8,
                         255,
                     ];
-                    result = DialogResult::Ok((self.width as u32, c, self.outline_mode()));
+                    result = DialogResult::Ok((
+                        self.width as u32,
+                        c,
+                        self.outline_mode(),
+                        self.anti_alias,
+                    ));
                 }
                 if cancel {
                     result = DialogResult::Cancel;

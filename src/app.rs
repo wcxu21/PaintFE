@@ -2157,9 +2157,11 @@ impl eframe::App for PaintFEApp {
                         self.tools_panel
                             .cancel_active_tool(&mut project.canvas_state);
                     }
-                } else if let Some(project) = self.active_project_mut() {
-                    project.canvas_state.clear_selection();
-                    project.history.undo(&mut project.canvas_state);
+                } else {
+                    self.commit_pending_tool_history();
+                    if let Some(project) = self.active_project_mut() {
+                        project.history.undo(&mut project.canvas_state);
+                    }
                 }
             }
 
@@ -3964,9 +3966,11 @@ impl eframe::App for PaintFEApp {
                                     self.tools_panel
                                         .cancel_active_tool(&mut project.canvas_state);
                                 }
-                            } else if let Some(project) = self.active_project_mut() {
-                                project.canvas_state.clear_selection();
-                                project.history.undo(&mut project.canvas_state);
+                            } else {
+                                self.commit_pending_tool_history();
+                                if let Some(project) = self.active_project_mut() {
+                                    project.history.undo(&mut project.canvas_state);
+                                }
                             }
                             ui.close();
                         }
@@ -5532,9 +5536,11 @@ impl eframe::App for PaintFEApp {
                                 self.tools_panel
                                     .cancel_active_tool(&mut project.canvas_state);
                             }
-                        } else if let Some(project) = self.active_project_mut() {
-                            project.canvas_state.clear_selection();
-                            project.history.undo(&mut project.canvas_state);
+                        } else {
+                            self.commit_pending_tool_history();
+                            if let Some(project) = self.active_project_mut() {
+                                project.history.undo(&mut project.canvas_state);
+                            }
                         }
                     }
                     if self
@@ -6414,61 +6420,7 @@ impl eframe::App for PaintFEApp {
         // Update last_screen_size AFTER all panels have used the flag
         self.last_screen_size = (screen_w, screen_h);
 
-        // --- Process Stroke Events for Undo/Redo ---
-        // Check if a stroke just completed and add it to history
-        if let Some(stroke_event) = self.tools_panel.take_stroke_event()
-            && let Some(project) = self.active_project_mut()
-        {
-            match stroke_event.target {
-                crate::components::tools::StrokeTarget::LayerPixels => {
-                    // Capture "after" state for the stroke bounds
-                    // Use same padding as "before" capture (10.0) to ensure bounds match
-                    let after_patch = history::PixelPatch::capture(
-                        &project.canvas_state,
-                        stroke_event.layer_index,
-                        stroke_event.bounds.expand(10.0),
-                    );
-
-                    // Create the brush command with before/after patches
-                    if let Some(before_patch) = stroke_event.before_snapshot {
-                        let command = history::BrushCommand::new(
-                            stroke_event.description,
-                            before_patch,
-                            after_patch,
-                        );
-                        project.history.push(Box::new(command));
-                        project.mark_dirty();
-                    }
-                }
-                crate::components::tools::StrokeTarget::LayerMask => {
-                    if let Some(layer) = project.canvas_state.layers.get(stroke_event.layer_index) {
-                        let command = history::LayerMaskCommand::new(
-                            stroke_event.description,
-                            stroke_event.layer_index,
-                            stroke_event.before_mask,
-                            layer.mask.clone(),
-                            stroke_event.before_mask_enabled,
-                            layer.mask_enabled,
-                        );
-                        project.history.push(Box::new(command));
-                        project.mark_dirty();
-                    }
-                }
-            }
-        }
-
-        // --- Process pending history commands from tools (e.g., perspective crop) ---
-        let pending_cmds: Vec<_> = self
-            .tools_panel
-            .pending_history_commands
-            .drain(..)
-            .collect();
-        for cmd in pending_cmds {
-            if let Some(project) = self.active_project_mut() {
-                project.history.push(cmd);
-                project.mark_dirty();
-            }
-        }
+        self.commit_pending_tool_history();
 
         // --- Auto-rasterize text layers when destructive tools attempt to paint on them ---
         if let Some(layer_idx) = self.tools_panel.pending_auto_rasterize.take() {
@@ -7452,6 +7404,7 @@ impl PaintFEApp {
         self.paste_overlay = None;
         if self.is_move_pixels_active {
             // Undo the extraction snapshot we already pushed
+            self.commit_pending_tool_history();
             if let Some(project) = self.active_project_mut() {
                 project.history.undo(&mut project.canvas_state);
                 project.canvas_state.clear_preview_state();
@@ -7460,6 +7413,58 @@ impl PaintFEApp {
         } else if let Some(project) = self.active_project_mut() {
             project.canvas_state.clear_preview_state();
             project.canvas_state.mark_dirty(None);
+        }
+    }
+
+    fn commit_pending_tool_history(&mut self) {
+        let pending_cmds: Vec<_> = self
+            .tools_panel
+            .pending_history_commands
+            .drain(..)
+            .collect();
+        for cmd in pending_cmds {
+            if let Some(project) = self.active_project_mut() {
+                project.history.push(cmd);
+                project.mark_dirty();
+            }
+        }
+
+        if let Some(stroke_event) = self.tools_panel.take_stroke_event()
+            && let Some(project) = self.active_project_mut()
+        {
+            match stroke_event.target {
+                crate::components::tools::StrokeTarget::LayerPixels => {
+                    let after_patch = history::PixelPatch::capture(
+                        &project.canvas_state,
+                        stroke_event.layer_index,
+                        stroke_event.bounds.expand(10.0),
+                    );
+
+                    if let Some(before_patch) = stroke_event.before_snapshot {
+                        let command = history::BrushCommand::new(
+                            stroke_event.description,
+                            before_patch,
+                            after_patch,
+                        );
+                        project.history.push(Box::new(command));
+                        project.mark_dirty();
+                    }
+                }
+                crate::components::tools::StrokeTarget::LayerMask => {
+                    if let Some(layer) = project.canvas_state.layers.get(stroke_event.layer_index) {
+                        let command = history::LayerMaskCommand::new(
+                            stroke_event.description,
+                            stroke_event.layer_index,
+                            stroke_event.before_mask,
+                            layer.mask.clone(),
+                            stroke_event.before_mask_enabled,
+                            layer.mask_enabled,
+                        );
+                        project.history.push(Box::new(command));
+                        project.mark_dirty();
+                    }
+                }
+            }
         }
     }
 
@@ -10206,20 +10211,32 @@ DialogResult::Cancel => {
                             255,
                         ];
                         let mode = dlg.outline_mode();
+                        let anti_alias = dlg.anti_alias;
                         self.spawn_preview_job(
                             ctx.input(|i| i.time),
                             "Outline".to_string(),
                             idx,
                             original.clone(),
                             flat.clone(),
-                            move |img| crate::ops::effects::outline_core(img, width, c, mode, None),
+                            move |img| {
+                                crate::ops::effects::outline_core(
+                                    img,
+                                    width,
+                                    c,
+                                    mode,
+                                    anti_alias,
+                                    None,
+                                )
+                            },
                         );
                     }
                 }
                 DialogResult::Ok(_) => {
                     self.preview_job_token = self.preview_job_token.wrapping_add(1);
+                    self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
-                    if let Some(flat) = &dlg.original_flat {
+                    if let (Some(original), Some(flat)) = (&dlg.original_pixels, &dlg.original_flat)
+                    {
                         let width = dlg.width as u32;
                         let c = [
                             (dlg.color[0] * 255.0) as u8,
@@ -10228,37 +10245,29 @@ DialogResult::Cancel => {
                             255,
                         ];
                         let mode = dlg.outline_mode();
-                        if let Some(project) = self.active_project_mut() {
-                            Self::apply_fullres_effect(
-                                &mut project.canvas_state,
-                                idx,
-                                flat,
-                                |img| crate::ops::effects::outline_core(img, width, c, mode, None),
-                            );
-                        }
+                        let anti_alias = dlg.anti_alias;
+                        self.spawn_filter_job(
+                            ctx.input(|i| i.time),
+                            "Outline".to_string(),
+                            idx,
+                            original.clone(),
+                            flat.clone(),
+                            move |img| {
+                                crate::ops::effects::outline_core(
+                                    img,
+                                    width,
+                                    c,
+                                    mode,
+                                    anti_alias,
+                                    None,
+                                )
+                            },
+                        );
                     }
                     self.active_dialog = ActiveDialog::None;
-                    if let Some(project) = self.active_project_mut() {
-                        let idx = dlg.layer_idx;
-                        if let Some(original) = &dlg.original_pixels
-                            && idx < project.canvas_state.layers.len()
-                        {
-                            let adjusted = project.canvas_state.layers[idx].pixels.clone();
-                            project.canvas_state.layers[idx].pixels = original.clone();
-                            let mut cmd = SingleLayerSnapshotCommand::new_for_layer(
-                                "Outline".to_string(),
-                                &project.canvas_state,
-                                idx,
-                            );
-                            project.canvas_state.layers[idx].pixels = adjusted;
-                            cmd.set_after(&project.canvas_state);
-                            project.history.push(Box::new(cmd));
-                        }
-                        project.mark_dirty();
-                    }
                     return;
                 }
-DialogResult::Cancel => {
+                DialogResult::Cancel => {
                     self.preview_job_token = self.preview_job_token.wrapping_add(1);
                     self.filter_cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                     let idx = dlg.layer_idx;
@@ -10289,6 +10298,7 @@ DialogResult::Cancel => {
                                 255,
                             ];
                             let mode = dlg.outline_mode();
+                            let anti_alias = dlg.anti_alias;
                             self.spawn_preview_job(
                                 ctx.input(|i| i.time),
                                 "Outline".to_string(),
@@ -10296,7 +10306,14 @@ DialogResult::Cancel => {
                                 original.clone(),
                                 flat.clone(),
                                 move |img| {
-                                    crate::ops::effects::outline_core(img, width, c, mode, None)
+                                    crate::ops::effects::outline_core(
+                                        img,
+                                        width,
+                                        c,
+                                        mode,
+                                        anti_alias,
+                                        None,
+                                    )
                                 },
                             );
                         }
@@ -11712,12 +11729,41 @@ impl PaintFEApp {
                         .cancel_text_editing(&mut project.canvas_state);
                 }
 
+                if let Some(deleted_idx) = self.layers_panel.pending_deleted_layer
+                    && self.tools_panel.text_state.is_editing
+                    && !self.tools_panel.text_state.editing_text_layer
+                {
+                    match self.tools_panel.text_state.editing_layer_index {
+                        Some(idx) if idx == deleted_idx => {
+                            self.tools_panel
+                                .cancel_text_editing(&mut project.canvas_state);
+                        }
+                        Some(idx) if deleted_idx < idx => {
+                            self.tools_panel.text_state.editing_layer_index = Some(idx - 1);
+                        }
+                        _ => {}
+                    }
+                }
+
+                if self.tools_panel.text_state.is_editing
+                    && !self.tools_panel.text_state.editing_text_layer
+                    && self
+                        .tools_panel
+                        .text_state
+                        .editing_layer_index
+                        .is_none_or(|idx| idx >= project.canvas_state.layers.len())
+                {
+                    self.tools_panel
+                        .cancel_text_editing(&mut project.canvas_state);
+                }
+
                 // Auto-switch tool immediately when layer selection changes
                 // (same frame as click, no 1-frame delay).
                 self.tools_panel
                     .auto_switch_tool_for_layer(&project.canvas_state);
             }
             // Drain pending GPU delete from the layers panel.
+            self.layers_panel.pending_deleted_layer = None;
             if let Some(del_idx) = self.layers_panel.pending_gpu_delete.take() {
                 self.canvas.gpu_remove_layer(del_idx);
             }

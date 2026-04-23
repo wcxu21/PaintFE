@@ -211,7 +211,7 @@ fn outline_outside() {
             img.put_pixel(x, y, image::Rgba([255, 0, 0, 255]));
         }
     }
-    let result = outline_core(&img, 2, [0, 0, 255, 255], OutlineMode::Outside, None);
+    let result = outline_core(&img, 2, [0, 0, 255, 255], OutlineMode::Outside, true, None);
     assert_golden("filters", "outline_outside", &result);
 }
 

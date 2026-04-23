@@ -275,6 +275,16 @@ pub fn delete_layer(state: &mut CanvasState, history: &mut HistoryManager) {
         content: removed.content,
     })));
 
+    // Clear active text layer if it was the deleted layer
+    if state.text_editing_layer == Some(idx) {
+        state.text_editing_layer = None;
+    } else if let Some(text_idx) = state.text_editing_layer {
+        // Adjust text layer index if layer removed before it
+        if idx < text_idx {
+            state.text_editing_layer = Some(text_idx - 1);
+        }
+    }
+
     if state.active_layer_index >= state.layers.len() {
         state.active_layer_index = state.layers.len() - 1;
     }

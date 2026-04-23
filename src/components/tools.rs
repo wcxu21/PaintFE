@@ -1355,6 +1355,8 @@ pub struct TextToolState {
     pub font_preview_pending: std::collections::HashSet<String>,
     /// Whether we are editing a text layer's TextLayerData (vs stamping on a raster layer)
     pub editing_text_layer: bool,
+    /// Layer index that owns the active text edit session.
+    pub editing_layer_index: Option<usize>,
     /// Selection within the active block (Batch 3: per-run formatting)
     pub selection: crate::ops::text_layer::TextSelection,
     /// ID of the currently active text block (Batch 4: multi-block)
@@ -1475,6 +1477,7 @@ impl Default for TextToolState {
             font_preview_rx: None,
             font_preview_pending: std::collections::HashSet::new(),
             editing_text_layer: false,
+            editing_layer_index: None,
             selection: crate::ops::text_layer::TextSelection::default(),
             active_block_id: None,
             ctx_bar_style_dirty: false,
@@ -2182,6 +2185,7 @@ impl ToolsPanel {
         self.text_state.cursor_pos = 0;
         self.text_state.is_editing = false;
         self.text_state.editing_text_layer = false;
+        self.text_state.editing_layer_index = None;
         self.text_state.active_block_id = None;
         self.text_state.selection = crate::ops::text_layer::TextSelection::default();
         self.text_state.text_effects = crate::ops::text_layer::TextEffects::default();
@@ -7179,6 +7183,15 @@ impl ToolsPanel {
                                     buf_h,
                                     &self.text_state.cached_raster_buf,
                                 );
+                                Self::adjust_preview_region_for_selection(
+                                    &mut preview,
+                                    off_x,
+                                    off_y,
+                                    buf_w,
+                                    buf_h,
+                                    canvas_state.selection_mask.as_ref(),
+                                    0.0,
+                                );
 
                                 canvas_state.preview_layer = Some(preview);
                                 canvas_state.preview_blend_mode = self.properties.blending_mode;
@@ -7425,6 +7438,8 @@ impl ToolsPanel {
                                     self.text_state.origin = Some([pos_f.0, pos_f.1]);
                                     self.text_state.is_editing = true;
                                     self.text_state.editing_text_layer = false;
+                                    self.text_state.editing_layer_index =
+                                        Some(canvas_state.active_layer_index);
                                     self.text_state.active_block_id = None;
                                     self.text_state.text.clear();
                                     self.text_state.cursor_pos = 0;
@@ -7448,6 +7463,8 @@ impl ToolsPanel {
                                 self.text_state.origin = Some([pos_f.0, pos_f.1]);
                                 self.text_state.is_editing = true;
                                 self.text_state.editing_text_layer = false;
+                                self.text_state.editing_layer_index =
+                                    Some(canvas_state.active_layer_index);
                                 self.text_state.active_block_id = None;
                                 self.text_state.text.clear();
                                 self.text_state.cursor_pos = 0;
@@ -7494,6 +7511,8 @@ impl ToolsPanel {
                                 self.text_state.origin = Some([pos_f.0, pos_f.1]);
                                 self.text_state.is_editing = true;
                                 self.text_state.editing_text_layer = false;
+                                self.text_state.editing_layer_index =
+                                    Some(canvas_state.active_layer_index);
                                 self.text_state.active_block_id = None;
                                 self.text_state.text.clear();
                                 self.text_state.cursor_pos = 0;
@@ -11254,6 +11273,7 @@ impl ToolsPanel {
                 LinePattern::Dashed => (self.properties.size * 2.0, self.properties.size * 1.5), // Dash, gap
             };
             let pattern_cycle = on_length + off_length;
+            let selection_mask = canvas_state.selection_mask.as_ref();
 
             // Collect all points first for cap style processing
             let mut line_points = Vec::new();
@@ -11286,6 +11306,9 @@ impl ToolsPanel {
                     };
 
                     if should_draw {
+                        if !Self::selection_allows(selection_mask, fx as u32, fy as u32) {
+                            continue;
+                        }
                         line_points.push((fx, fy, i == 0, i == steps));
                     }
                 }
@@ -11303,7 +11326,7 @@ impl ToolsPanel {
                 }
 
                 // Normal drawing for round caps or middle points
-                self.draw_bezier_dot(preview, (fx, fy), color_f32);
+                self.draw_bezier_dot(preview, (fx, fy), color_f32, selection_mask);
             }
 
             // Draw arrowheads if enabled
@@ -11342,6 +11365,7 @@ impl ToolsPanel {
                         color_f32,
                         canvas_state.width,
                         canvas_state.height,
+                        selection_mask,
                     );
                 }
 
@@ -11374,6 +11398,7 @@ impl ToolsPanel {
                         color_f32,
                         canvas_state.width,
                         canvas_state.height,
+                        selection_mask,
                     );
                 }
             }
@@ -11390,6 +11415,7 @@ impl ToolsPanel {
         color_f32: [f32; 4],
         canvas_w: u32,
         canvas_h: u32,
+        selection_mask: Option<&image::GrayImage>,
     ) {
         // 1px AA fade for crisp edges
         let fade_px = 1.0_f32;
@@ -11423,6 +11449,9 @@ impl ToolsPanel {
 
         for y in min_y..=max_y {
             for x in min_x..=max_x {
+                if !Self::selection_allows(selection_mask, x, y) {
+                    continue;
+                }
                 let px = x as f32 + 0.5;
                 let py = y as f32 + 0.5;
 
@@ -11487,7 +11516,15 @@ impl ToolsPanel {
         if distance < 0.1 {
             if (start.0 as u32) < preview.width() && (start.1 as u32) < preview.height() {
                 let anti_alias = self.line_state.line_tool.options.anti_alias;
-                self.draw_bezier_circle_with_hardness(preview, start, color_f32, radius, 0.95, anti_alias);
+                self.draw_bezier_circle_with_hardness(
+                    preview,
+                    start,
+                    color_f32,
+                    radius,
+                    0.95,
+                    anti_alias,
+                    None,
+                );
             }
             return;
         }
@@ -11503,7 +11540,15 @@ impl ToolsPanel {
 
             if (x as u32) < preview.width() && (y as u32) < preview.height() {
                 let anti_alias = self.line_state.line_tool.options.anti_alias;
-                self.draw_bezier_circle_with_hardness(preview, (x, y), color_f32, radius, 0.95, anti_alias);
+                self.draw_bezier_circle_with_hardness(
+                    preview,
+                    (x, y),
+                    color_f32,
+                    radius,
+                    0.95,
+                    anti_alias,
+                    None,
+                );
             }
         }
 
@@ -11511,11 +11556,25 @@ impl ToolsPanel {
     }
 
     /// Draw a single dot for Bézier curve (sub-pixel position for smooth AA)
-    fn draw_bezier_dot(&self, preview: &mut TiledImage, pos: (f32, f32), color_f32: [f32; 4]) {
+    fn draw_bezier_dot(
+        &self,
+        preview: &mut TiledImage,
+        pos: (f32, f32),
+        color_f32: [f32; 4],
+        selection_mask: Option<&image::GrayImage>,
+    ) {
         let radius = (self.properties.size / 2.0).max(1.0);
         let anti_alias = self.line_state.line_tool.options.anti_alias;
         // High hardness for crisp edges with ~2px AA fade (matching arrow sharpness)
-        self.draw_bezier_circle_with_hardness(preview, pos, color_f32, radius, 0.95, anti_alias);
+        self.draw_bezier_circle_with_hardness(
+            preview,
+            pos,
+            color_f32,
+            radius,
+            0.95,
+            anti_alias,
+            selection_mask,
+        );
     }
 
     /// Draw a circle on the preview layer for Bézier curves with custom hardness override
@@ -11528,6 +11587,7 @@ impl ToolsPanel {
         radius: f32,
         forced_hardness: f32,
         anti_alias: bool,
+        selection_mask: Option<&image::GrayImage>,
     ) {
         let (cx, cy) = pos;
 
@@ -11552,6 +11612,9 @@ impl ToolsPanel {
 
         for y in min_y..=max_y {
             for x in min_x..=max_x {
+                if !Self::selection_allows(selection_mask, x, y) {
+                    continue;
+                }
                 // Sub-pixel distance from float center for smooth AA
                 let dx = x as f32 - cx;
                 let dy = y as f32 - cy;
@@ -11614,6 +11677,57 @@ impl ToolsPanel {
             Some(data)
         } else {
             cache.as_ref().map(|entry| entry.data.clone())
+        }
+    }
+
+    #[inline]
+    fn selection_allows(selection_mask: Option<&image::GrayImage>, x: u32, y: u32) -> bool {
+        selection_mask.is_none_or(|mask| {
+            x < mask.width() && y < mask.height() && mask.get_pixel(x, y).0[0] != 0
+        })
+    }
+
+    fn adjust_preview_region_for_selection(
+        preview: &mut TiledImage,
+        off_x: i32,
+        off_y: i32,
+        region_w: u32,
+        region_h: u32,
+        selection_mask: Option<&image::GrayImage>,
+        outside_alpha_scale: f32,
+    ) {
+        let Some(mask) = selection_mask else {
+            return;
+        };
+
+        for row in 0..region_h {
+            let gy = off_y + row as i32;
+            if gy < 0 || gy >= preview.height() as i32 {
+                continue;
+            }
+            for col in 0..region_w {
+                let gx = off_x + col as i32;
+                if gx < 0 || gx >= preview.width() as i32 {
+                    continue;
+                }
+                let x = gx as u32;
+                let y = gy as u32;
+                if Self::selection_allows(Some(mask), x, y) {
+                    continue;
+                }
+                let pixel = preview.get_pixel_mut(x, y);
+                if pixel[3] == 0 {
+                    continue;
+                }
+                if outside_alpha_scale <= 0.0 {
+                    pixel[3] = 0;
+                } else {
+                    pixel[0] = ((pixel[0] as u16 + 128) / 2) as u8;
+                    pixel[1] = ((pixel[1] as u16 + 128) / 2) as u8;
+                    pixel[2] = ((pixel[2] as u16 + 128) / 2) as u8;
+                    pixel[3] = ((pixel[3] as f32) * outside_alpha_scale).round() as u8;
+                }
+            }
         }
     }
 
@@ -16102,6 +16216,15 @@ impl ToolsPanel {
         // (text layer editing has already returned above via the lightweight metrics path)
         let mut preview = TiledImage::new(canvas_state.width, canvas_state.height);
         preview.blit_rgba_at(off_x, off_y, buf_w, buf_h, &result.buf);
+        Self::adjust_preview_region_for_selection(
+            &mut preview,
+            off_x,
+            off_y,
+            buf_w,
+            buf_h,
+            canvas_state.selection_mask.as_ref(),
+            0.0,
+        );
 
         canvas_state.preview_layer = Some(preview);
         canvas_state.preview_blend_mode = self.properties.blending_mode;
@@ -16267,6 +16390,7 @@ impl ToolsPanel {
         self.text_state.cursor_pos = block_text.len();
         self.text_state.is_editing = true;
         self.text_state.editing_text_layer = true;
+        self.text_state.editing_layer_index = Some(canvas_state.active_layer_index);
         self.text_state.active_block_id = Some(bid);
         self.text_state.selection = crate::ops::text_layer::TextSelection::default();
         self.text_state.font_family = style.font_family.clone();
@@ -16339,6 +16463,7 @@ impl ToolsPanel {
         if self.text_state.text.is_empty() || self.text_state.origin.is_none() {
             self.text_state.is_editing = false;
             self.text_state.editing_text_layer = false;
+            self.text_state.editing_layer_index = None;
             self.text_state.active_block_id = None;
             self.text_state.selection = crate::ops::text_layer::TextSelection::default();
             self.text_state.origin = None;
@@ -16364,8 +16489,13 @@ impl ToolsPanel {
         let stroke_event = self.stroke_tracker.finish(canvas_state);
 
         let blend_mode = self.properties.blending_mode;
+        let selection_mask = canvas_state.selection_mask.clone();
+        let target_layer_idx = self
+            .text_state
+            .editing_layer_index
+            .unwrap_or(canvas_state.active_layer_index);
         if let Some(ref preview) = canvas_state.preview_layer
-            && let Some(active_layer) = canvas_state.layers.get_mut(canvas_state.active_layer_index)
+            && let Some(active_layer) = canvas_state.layers.get_mut(target_layer_idx)
         {
             let chunk_data: Vec<(u32, u32, image::RgbaImage)> = preview
                 .chunk_keys()
@@ -16381,6 +16511,9 @@ impl ToolsPanel {
                     for lx in 0..cw {
                         let gx = base_x + lx;
                         let gy = base_y + ly;
+                        if !Self::selection_allows(selection_mask.as_ref(), gx, gy) {
+                            continue;
+                        }
                         let src = *chunk.get_pixel(lx, ly);
                         if src.0[3] == 0 {
                             continue;
@@ -16398,6 +16531,7 @@ impl ToolsPanel {
         self.text_state.cursor_pos = 0;
         self.text_state.is_editing = false;
         self.text_state.editing_text_layer = false;
+        self.text_state.editing_layer_index = None;
         self.text_state.active_block_id = None;
         self.text_state.selection = crate::ops::text_layer::TextSelection::default();
         self.text_state.origin = None;
@@ -16902,6 +17036,7 @@ impl ToolsPanel {
         self.text_state.cursor_pos = 0;
         self.text_state.is_editing = false;
         self.text_state.editing_text_layer = false;
+        self.text_state.editing_layer_index = None;
         self.text_state.active_block_id = None;
         self.text_state.selection = crate::ops::text_layer::TextSelection::default();
         self.text_state.text_effects = crate::ops::text_layer::TextEffects::default();
@@ -17011,7 +17146,19 @@ impl ToolsPanel {
             canvas_state.clear_preview_state();
             return;
         }
-        let warped = crate::ops::transform::warp_displacement_full(source, displacement);
+        let selection_mask = canvas_state.selection_mask.clone();
+        let mut warped = crate::ops::transform::warp_displacement_full(source, displacement);
+        if let Some(mask) = selection_mask.as_ref() {
+            let w = warped.width().min(source.width());
+            let h = warped.height().min(source.height());
+            for y in 0..h {
+                for x in 0..w {
+                    if x >= mask.width() || y >= mask.height() || mask.get_pixel(x, y).0[0] == 0 {
+                        *warped.get_pixel_mut(x, y) = *source.get_pixel(x, y);
+                    }
+                }
+            }
+        }
         let mut history_cmd = crate::components::history::SingleLayerSnapshotCommand::new_for_layer(
             "Liquify".to_string(),
             canvas_state,
@@ -17105,6 +17252,20 @@ impl ToolsPanel {
                 h,
             );
             self.liquify_state.warp_buffer = warped;
+        }
+
+        if let Some(mask) = canvas_state.selection_mask.as_ref() {
+            let src_raw = source.as_raw();
+            for y in 0..h {
+                for x in 0..w {
+                    if x < mask.width() && y < mask.height() && mask.get_pixel(x, y).0[0] != 0 {
+                        continue;
+                    }
+                    let idx = ((y * w + x) * 4) as usize;
+                    self.liquify_state.warp_buffer[idx..idx + 4]
+                        .copy_from_slice(&src_raw[idx..idx + 4]);
+                }
+            }
         }
 
         let preview = TiledImage::from_raw_rgba(w, h, &self.liquify_state.warp_buffer);
@@ -17726,6 +17887,16 @@ impl ToolsPanel {
             off_x,
             off_y,
         );
+        let mut preview = preview;
+        Self::adjust_preview_region_for_selection(
+            &mut preview,
+            off_x,
+            off_y,
+            buf_w,
+            buf_h,
+            canvas_state.selection_mask.as_ref(),
+            0.3,
+        );
 
         canvas_state.preview_layer = Some(preview);
         canvas_state.preview_blend_mode = self.properties.blending_mode;
@@ -17773,6 +17944,7 @@ impl ToolsPanel {
         if let Some(ref preview) = canvas_state.preview_layer
             && let Some(active_layer) = canvas_state.layers.get_mut(target_layer_idx)
         {
+            let selection_mask = canvas_state.selection_mask.clone();
             let chunk_data: Vec<(u32, u32, image::RgbaImage)> = preview
                 .chunk_keys()
                 .filter_map(|(cx, cy)| preview.get_chunk(cx, cy).map(|c| (cx, cy, c.clone())))
@@ -17787,6 +17959,9 @@ impl ToolsPanel {
                     for lx in 0..cw {
                         let gx = base_x + lx;
                         let gy = base_y + ly;
+                        if !Self::selection_allows(selection_mask.as_ref(), gx, gy) {
+                            continue;
+                        }
                         let src = *chunk.get_pixel(lx, ly);
                         if src.0[3] == 0 {
                             continue;

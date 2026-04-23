@@ -2525,7 +2525,11 @@ impl KeyCombo {
         } else if let Some(ref t) = self.text_char {
             parts.push(t.as_str());
         }
-        parts.join("+")
+        if parts.is_empty() {
+            "—".to_string()
+        } else {
+            parts.join("+")
+        }
     }
 
     /// Serialize to config string
@@ -2696,7 +2700,7 @@ impl BindableAction {
         match self {
             Self::NewFile => t!("keybind.new_file"),
             Self::OpenFile => t!("keybind.open_file"),
-            Self::CloseProject => t!("menu.file.close"),
+            Self::CloseProject => t!("keybind.close_file"),
             Self::Save => t!("keybind.save"),
             Self::SaveAll => t!("keybind.save_all"),
             Self::SaveAs => t!("keybind.save_as"),
@@ -5297,7 +5301,7 @@ impl SettingsWindow {
                                         self.show_hardware_tab(ui, settings);
                                     }
                                     SettingsTab::Keybinds => {
-                                        self.show_keybinds_tab(ui, settings);
+                                        self.show_keybinds_tab(ui, settings, assets);
                                     }
                                     SettingsTab::AI => {
                                         self.show_ai_tab(ui, settings);
@@ -6804,7 +6808,12 @@ impl SettingsWindow {
     }
 
     // -- Keybinds Tab ---------------------------------------------
-    fn show_keybinds_tab(&mut self, ui: &mut egui::Ui, settings: &mut AppSettings) {
+    fn show_keybinds_tab(
+        &mut self,
+        ui: &mut egui::Ui,
+        settings: &mut AppSettings,
+        _assets: &Assets,
+    ) {
         Self::section_header(ui, &t!("settings.keybinds.title"));
         ui.weak(t!("settings.keybinds.hint"));
         ui.add_space(8.0);
@@ -6818,17 +6827,22 @@ impl SettingsWindow {
             } else {
                 // Check for any key press
                 let new_combo = ui.input(|i| {
-                    let ctrl = i.modifiers.command;
+                    let ctrl = i.modifiers.command || i.modifiers.ctrl;
                     let shift = i.modifiers.shift;
                     let alt = i.modifiers.alt;
-                    // Check for text events (for bracket keys, etc.)
+                    let mut text_combo = None;
+                    let mut key_combo = None;
                     for ev in &i.events {
                         match ev {
                             egui::Event::Text(t) if !t.is_empty() => {
-                                // Only use text events for non-letter chars (brackets etc.)
-                                let ch = t.chars().next().unwrap_or(' ');
-                                if !ch.is_ascii_alphabetic() && !ch.is_ascii_digit() {
-                                    return Some(KeyCombo {
+                                let is_symbol = t.chars().count() == 1
+                                    && t.chars().all(|ch| {
+                                        !ch.is_ascii_alphanumeric()
+                                            && !ch.is_whitespace()
+                                            && !ch.is_control()
+                                    });
+                                if is_symbol {
+                                    text_combo = Some(KeyCombo {
                                         ctrl,
                                         shift,
                                         alt,
@@ -6840,24 +6854,20 @@ impl SettingsWindow {
                             egui::Event::Key {
                                 key, pressed: true, ..
                             } => {
-                                // Skip pure modifier keys
-                                match key {
-                                    egui::Key::Escape => {} // handled above
-                                    _ => {
-                                        return Some(KeyCombo {
+                                if *key != egui::Key::Escape && key_name(*key) != "?" {
+                                    key_combo = Some(KeyCombo {
                                             ctrl,
                                             shift,
                                             alt,
                                             key: Some(*key),
                                             text_char: None,
                                         });
-                                    }
                                 }
                             }
                             _ => {}
                         }
                     }
-                    None
+                    text_combo.or(key_combo)
                 });
 
                 if let Some(combo) = new_combo {
@@ -6867,79 +6877,90 @@ impl SettingsWindow {
             }
         }
 
-        // Keybinds table — the outer ScrollArea (in show()) handles scrolling.
-        // Cap height so buttons below remain accessible without scrolling far.
-        egui::ScrollArea::vertical()
-            .id_salt("keybinds_inner_scroll")
-            .auto_shrink([false; 2])
-            .max_height(880.0)
-            .show(ui, |ui| {
-                let mut current_category = String::new();
-                for action in BindableAction::all() {
-                    let cat = action.category();
-                    if cat != current_category {
-                        if !current_category.is_empty() {
-                            ui.add_space(6.0);
-                        }
-                        ui.label(egui::RichText::new(&cat).strong().size(13.0));
-                        ui.separator();
-                        current_category = cat;
-                    }
-
-                    ui.horizontal(|ui| {
-                        let name = action.display_name();
-                        ui.label(egui::RichText::new(name).size(12.0));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if *action == BindableAction::BrushResizeDragModifier {
-                                let mut current = self
-                                    .staged_keybindings
-                                    .get(*action)
-                                    .cloned()
-                                    .unwrap_or_else(|| {
-                                        KeyCombo::modifiers_only(false, true, false)
-                                    });
-                                egui::ComboBox::from_id_salt("brush_resize_drag_modifier")
-                                    .selected_text(current.display())
-                                    .show_ui(ui, |ui| {
-                                        let options = [
-                                            ("Shift", KeyCombo::modifiers_only(false, true, false)),
-                                            ("Ctrl", KeyCombo::modifiers_only(true, false, false)),
-                                            ("Alt", KeyCombo::modifiers_only(false, false, true)),
-                                        ];
-                                        for (label, combo) in options {
-                                            ui.selectable_value(&mut current, combo, label);
-                                        }
-                                    });
-                                self.staged_keybindings.set(*action, current);
-                            } else {
-                                let is_rebinding = self.rebinding_action == Some(*action);
-                                let btn_text = if is_rebinding {
-                                    egui::RichText::new(t!("settings.keybinds.press_key"))
-                                        .italics()
-                                        .color(if ui.visuals().dark_mode {
-                                            Color32::from_rgb(100, 200, 255)
-                                        } else {
-                                            Color32::from_rgb(0, 100, 200)
-                                        })
-                                } else {
-                                    let combo_text = self
-                                        .staged_keybindings
-                                        .get(*action)
-                                        .map(|c| c.display())
-                                        .unwrap_or_else(|| "—".to_string());
-                                    egui::RichText::new(combo_text).monospace()
-                                };
-                                let btn = ui.add(
-                                    egui::Button::new(btn_text).min_size(egui::vec2(100.0, 20.0)),
-                                );
-                                if btn.clicked() && !is_rebinding {
-                                    self.rebinding_action = Some(*action);
-                                }
-                            }
-                        });
-                    });
+        // Keybinds table — rendered inline without a nested ScrollArea
+        // (the outer ScrollArea in show() handles scrolling the tab content)
+        let mut current_category = String::new();
+        for action in BindableAction::all() {
+            let cat = action.category();
+            if cat != current_category {
+                if !current_category.is_empty() {
+                    ui.add_space(6.0);
                 }
+                ui.label(egui::RichText::new(&cat).strong().size(13.0));
+                ui.separator();
+                current_category = cat;
+            }
+
+            ui.horizontal(|ui| {
+                let name = action.display_name();
+                ui.label(egui::RichText::new(name).size(12.0));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if *action == BindableAction::BrushResizeDragModifier {
+                        let mut current = self
+                            .staged_keybindings
+                            .get(*action)
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                KeyCombo::modifiers_only(false, true, false)
+                            });
+                        egui::ComboBox::from_id_salt("brush_resize_drag_modifier")
+                            .selected_text(current.display())
+                            .show_ui(ui, |ui| {
+                                let options = [
+                                    ("Shift", KeyCombo::modifiers_only(false, true, false)),
+                                    ("Ctrl", KeyCombo::modifiers_only(true, false, false)),
+                                    ("Alt", KeyCombo::modifiers_only(false, false, true)),
+                                ];
+                                for (label, combo) in options {
+                                    ui.selectable_value(&mut current, combo, label);
+                                }
+                            });
+                        self.staged_keybindings.set(*action, current);
+                    } else {
+                        let is_rebinding = self.rebinding_action == Some(*action);
+
+                        // Clear button to unbind (if keybind is set)
+                        if let Some(combo) = self.staged_keybindings.get(*action)
+                            && (combo.key.is_some()
+                                || combo.text_char.is_some()
+                                || combo.ctrl
+                                || combo.shift
+                                || combo.alt)
+                        {
+                            let unbind_btn = ui.button("x");
+                            if unbind_btn.clicked() {
+                                self.staged_keybindings
+                                    .set(*action, KeyCombo::modifiers_only(false, false, false));
+                            }
+                            unbind_btn.on_hover_text(t!("settings.keybinds.clear_keybind"));
+                        }
+
+                        let btn_text = if is_rebinding {
+                            egui::RichText::new(t!("settings.keybinds.press_key"))
+                                .italics()
+                                .color(if ui.visuals().dark_mode {
+                                    Color32::from_rgb(100, 200, 255)
+                                } else {
+                                    Color32::from_rgb(0, 100, 200)
+                                })
+                        } else {
+                            let combo_text = self
+                                .staged_keybindings
+                                .get(*action)
+                                .map(|c| c.display())
+                                .unwrap_or_else(|| "—".to_string());
+                            egui::RichText::new(combo_text).monospace()
+                        };
+                        let btn = ui.add(
+                            egui::Button::new(btn_text).min_size(egui::vec2(100.0, 20.0)),
+                        );
+                        if btn.clicked() && !is_rebinding {
+                            self.rebinding_action = Some(*action);
+                        }
+                    }
+                });
             });
+        }
 
         ui.add_space(12.0);
         ui.separator();
