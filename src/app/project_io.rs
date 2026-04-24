@@ -135,7 +135,7 @@ impl PaintFEApp {
         });
 
         for img in decoded_images {
-            self.queue_paste_image(img, cursor_canvas, None, false, false);
+            self.queue_paste_image(img, cursor_canvas, None, false, false, None);
         }
     }
 

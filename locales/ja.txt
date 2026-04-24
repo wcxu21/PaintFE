@@ -389,6 +389,7 @@ settings.general.debug_zoom=ズームレベル
 settings.general.debug_fps=FPS カウンター
 settings.general.debug_gpu=GPU 情報
 settings.general.debug_operations=処理の進捗
+settings.general.show_tool_info=ツール情報を表示
 settings.general.reset_defaults=初期設定に戻す
 settings.hardware.preferred_gpu=優先 GPU
 settings.hardware.adapter=アダプター :

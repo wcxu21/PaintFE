@@ -10,7 +10,7 @@ impl CrystallizeDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
-                paint_dialog_header(ui, &colors, "\u{1F48E}", &t!("dialog.crystallize"));
+                if paint_dialog_header(ui, &colors, "\u{1F48E}", &t!("dialog.crystallize")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
                 section_label(ui, &colors, "VORONOI SETTINGS");
 
@@ -127,7 +127,7 @@ impl DentsDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(370.0);
-                paint_dialog_header(ui, &colors, "\u{1F30A}", &t!("dialog.dents"));
+                if paint_dialog_header(ui, &colors, "\u{1F30A}", &t!("dialog.dents")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
                 section_label(ui, &colors, "DISTORTION SETTINGS");
 
@@ -268,7 +268,7 @@ impl PixelateDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
-                paint_dialog_header(ui, &colors, "\u{1F9E9}", &t!("dialog.pixelate"));
+                if paint_dialog_header(ui, &colors, "\u{1F9E9}", &t!("dialog.pixelate")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
                 section_label(ui, &colors, "PIXEL SETTINGS");
 
@@ -353,7 +353,7 @@ impl BulgeDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
-                paint_dialog_header(ui, &colors, "\u{1F534}", &t!("dialog.bulge_pinch"));
+                if paint_dialog_header(ui, &colors, "\u{1F534}", &t!("dialog.bulge_pinch")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
                 section_label(ui, &colors, "DISTORTION SETTINGS");
 
@@ -415,7 +415,7 @@ impl TwistDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
-                paint_dialog_header(ui, &colors, "\u{1F300}", &t!("dialog.twist"));
+                if paint_dialog_header(ui, &colors, "\u{1F300}", &t!("dialog.twist")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
                 section_label(ui, &colors, "TWIST SETTINGS");
 
@@ -492,4 +492,5 @@ effect_dialog_base!(AddNoiseDialog {
     octaves: f32 = 1.0,
     first_open: bool = true
 });
+
 

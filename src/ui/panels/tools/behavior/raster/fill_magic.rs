@@ -1,13 +1,30 @@
 impl ToolsPanel {
-    fn clear_fill_preview_state(&mut self) {
+    fn reset_fill_preview_state(&mut self, clear_pending_clicks: bool) {
         self.fill_state.active_fill = None;
         self.fill_state.fill_color_u8 = None;
         self.fill_state.tolerance_changed_at = None;
         self.fill_state.recalc_pending = false;
         self.fill_state.async_rx = None;
         self.fill_state.preview_in_flight = false;
-        self.fill_state.cached_flat_rgba = None;
         self.fill_state.gpu_preview_region.clear();
+        self.fill_state.defer_preview_clear = false;
+        self.fill_state.preview_clear_at = None;
+        if clear_pending_clicks {
+            self.fill_state.pending_clicks.clear();
+        }
+        // Keep cached_flat_rgba alive to avoid re-fetch on next click.
+    }
+
+    fn clear_fill_preview_state(&mut self) {
+        self.reset_fill_preview_state(true);
+    }
+
+    pub(crate) fn should_keep_fill_preview_overlay(&self) -> bool {
+        self.fill_state.active_fill.is_some()
+            || self.fill_state.preview_in_flight
+            || self.fill_state.defer_preview_clear
+            || self.fill_state.preview_clear_at.is_some()
+            || !self.fill_state.pending_clicks.is_empty()
     }
 
     fn clear_magic_wand_async_state(&mut self) {
@@ -144,6 +161,26 @@ impl ToolsPanel {
         preview_region_w: u32,
         preview_region_h: u32,
     ) {
+        if self.fill_state.defer_preview_clear {
+            // The previous preview stayed visible during reseed handoff; now
+            // fully replace it so stale pixels from the old fill cannot leak
+            // into the new overlay or the next commit.
+            let preview_blend_mode = canvas_state.preview_blend_mode;
+            let preview_force_composite = canvas_state.preview_force_composite;
+            let preview_is_eraser = canvas_state.preview_is_eraser;
+            let preview_replaces_layer = canvas_state.preview_replaces_layer;
+            let preview_targets_mask = canvas_state.preview_targets_mask;
+            let preview_mask_reveal = canvas_state.preview_mask_reveal;
+            canvas_state.clear_preview_state();
+            canvas_state.preview_blend_mode = preview_blend_mode;
+            canvas_state.preview_force_composite = preview_force_composite;
+            canvas_state.preview_is_eraser = preview_is_eraser;
+            canvas_state.preview_replaces_layer = preview_replaces_layer;
+            canvas_state.preview_targets_mask = preview_targets_mask;
+            canvas_state.preview_mask_reveal = preview_mask_reveal;
+            self.fill_state.defer_preview_clear = false;
+        }
+
         if let Some(dirty_bbox) = dirty_bbox {
             if canvas_state.preview_layer.is_none() {
                 canvas_state.preview_layer =
@@ -314,7 +351,7 @@ impl ToolsPanel {
     }
 
     fn maybe_prewarm_active_layer_rgba(&mut self, canvas_state: &CanvasState) {
-        if !matches!(self.active_tool, Tool::MagicWand | Tool::Fill) {
+        if !matches!(self.active_tool, Tool::MagicWand) {
             return;
         }
 
@@ -380,12 +417,10 @@ impl ToolsPanel {
             return if distance <= threshold { 255 } else { 0 };
         }
 
-        let aa_band = 5u8;
         if distance <= threshold {
             255
-        } else if distance <= threshold.saturating_add(aa_band) {
-            let delta = distance.saturating_sub(threshold) as f32;
-            (255.0 * (1.0 - delta / aa_band as f32).max(0.0)) as u8
+        } else if distance == threshold.saturating_add(1) {
+            128
         } else {
             0
         }
@@ -402,11 +437,7 @@ impl ToolsPanel {
     ) where
         F: FnMut(usize, u8),
     {
-        let aa_band = if old_anti_aliased || new_anti_aliased {
-            5u8
-        } else {
-            0u8
-        };
+        let aa_band = if old_anti_aliased || new_anti_aliased { 1u8 } else { 0u8 };
         let (start_distance, end_distance) = match old_threshold {
             Some(previous) => (
                 previous.min(new_threshold),
@@ -521,10 +552,8 @@ impl ToolsPanel {
         fill_bbox: (u32, u32, u32, u32),
         fill_color: Rgba<u8>,
         selection_mask: Option<&GrayImage>,
-        anti_aliased: bool,
         width: u32,
         height: u32,
-        background_rgba: &[u8],
     ) -> Vec<u8> {
         let (bx0, by0, bx1, by1) = fill_bbox;
         let wu = width as usize;
@@ -538,92 +567,17 @@ impl ToolsPanel {
         for span in spans {
             let row_offset = (span.y - by0) as usize * region_w as usize * 4;
             for x in span.x0..=span.x1 {
-                let local_idx = row_offset + (x - bx0) as usize * 4;
-                region_buf[local_idx..local_idx + 4].copy_from_slice(&fill_color.0);
-            }
-
-            if !anti_aliased {
-                continue;
-            }
-
-            for x in span.x0..=span.x1 {
-                let has_above = span.y > 0;
-                let has_below = span.y + 1 < height;
-                let touches_edge = x == span.x0
-                    || x == span.x1
-                    || !has_above
-                    || !has_below
-                    || !Self::fill_pixel_is_active(
-                        fill_mask,
-                        selection_mask,
-                        width,
-                        height,
-                        x,
-                        span.y - 1,
-                    )
-                    || !Self::fill_pixel_is_active(
-                        fill_mask,
-                        selection_mask,
-                        width,
-                        height,
-                        x,
-                        span.y + 1,
-                    );
-                if !touches_edge {
+                let mask_idx = span.y as usize * wu + x as usize;
+                let coverage = fill_mask[mask_idx];
+                if coverage == 0 {
                     continue;
                 }
-
-                let mut neighbor_fill_count = 0u8;
-                let mut total_neighbors = 0u8;
-                for dy in -1i32..=1 {
-                    for dx in -1i32..=1 {
-                        if dx == 0 && dy == 0 {
-                            continue;
-                        }
-                        let nx = x as i32 + dx;
-                        let ny = span.y as i32 + dy;
-                        if nx >= 0 && nx < width as i32 && ny >= 0 && ny < height as i32 {
-                            total_neighbors += 1;
-                            if Self::fill_pixel_is_active(
-                                fill_mask,
-                                selection_mask,
-                                width,
-                                height,
-                                nx as u32,
-                                ny as u32,
-                            ) {
-                                neighbor_fill_count += 1;
-                            }
-                        }
-                    }
-                }
-
-                if total_neighbors > 0 && neighbor_fill_count < total_neighbors {
-                    // Keep thin/island pixel-art features fully covered. If we soften these,
-                    // 1px regions can fade out and look like "no fill happened".
-                    if neighbor_fill_count <= 2 {
-                        continue;
-                    }
-
-                    let idx = span.y as usize * wu + x as usize;
-                    let ratio = neighbor_fill_count as f32 / total_neighbors as f32;
-                    let t = ratio * ratio * (3.0 - 2.0 * ratio);
-                    let bg_base = idx * 4;
-                    let bg = [
-                        background_rgba[bg_base],
-                        background_rgba[bg_base + 1],
-                        background_rgba[bg_base + 2],
-                        background_rgba[bg_base + 3],
-                    ];
-                    let local_idx = row_offset + (x - bx0) as usize * 4;
-                    let blend = |fc: u8, bc: u8, factor: f32| -> u8 {
-                        (fc as f32 * factor + bc as f32 * (1.0 - factor)).round() as u8
-                    };
-                    region_buf[local_idx] = blend(fill_color.0[0], bg[0], t);
-                    region_buf[local_idx + 1] = blend(fill_color.0[1], bg[1], t);
-                    region_buf[local_idx + 2] = blend(fill_color.0[2], bg[2], t);
-                    region_buf[local_idx + 3] = (fill_color.0[3] as f32 * t).round() as u8;
-                }
+                let local_idx = row_offset + (x - bx0) as usize * 4;
+                region_buf[local_idx] = fill_color.0[0];
+                region_buf[local_idx + 1] = fill_color.0[1];
+                region_buf[local_idx + 2] = fill_color.0[2];
+                region_buf[local_idx + 3] =
+                    ((fill_color.0[3] as u16 * coverage as u16 + 127) / 255) as u8;
             }
         }
 
@@ -836,10 +790,8 @@ impl ToolsPanel {
                         bbox,
                         fill_color_u8,
                         selection_mask.as_ref(),
-                        anti_aliased,
                         width,
                         height,
-                        &flat_rgba,
                     ),
                     region_w,
                     region_h,
@@ -1132,11 +1084,7 @@ impl ToolsPanel {
         secondary_color_f32: [f32; 4],
         gpu_renderer: Option<&mut crate::gpu::GpuRenderer>,
     ) {
-        if self.fill_state.active_fill.is_some() {
-            self.commit_fill_preview(canvas_state);
-        }
-
-        self.perform_flood_fill(
+        self.apply_fill_click_direct(
             canvas_state,
             pos,
             use_secondary,
@@ -1145,6 +1093,138 @@ impl ToolsPanel {
             secondary_color_f32,
             gpu_renderer,
         );
+    }
+
+    fn apply_fill_click_direct(
+        &mut self,
+        canvas_state: &mut CanvasState,
+        pos: (u32, u32),
+        use_secondary: bool,
+        global_fill: bool,
+        primary_color_f32: [f32; 4],
+        secondary_color_f32: [f32; 4],
+        _gpu_renderer: Option<&mut crate::gpu::GpuRenderer>,
+    ) {
+        if pos.0 >= canvas_state.width || pos.1 >= canvas_state.height {
+            return;
+        }
+
+        // Commit any existing fill preview before starting a new one
+        self.commit_fill_preview(canvas_state);
+        canvas_state.fill_commit_overlays.clear();
+
+        let active_layer_index = canvas_state.active_layer_index;
+        let Some(active_layer) = canvas_state.layers.get(active_layer_index) else {
+            return;
+        };
+
+        let target_color = *active_layer.pixels.get_pixel(pos.0, pos.1);
+        let flat_rgba = active_layer.pixels.to_rgba_image().into_raw();
+        let width = canvas_state.width;
+        let height = canvas_state.height;
+        let distance_mode = WandDistanceMode::LegacyRgba;
+        let connectivity = FloodConnectivity::Four;
+        let threshold = Self::tolerance_threshold_u8(self.fill_state.tolerance);
+        let anti_aliased = self.fill_state.anti_aliased;
+        let fill_threshold = threshold;
+        let selection_mask = canvas_state.selection_mask.clone();
+
+        let fill_color = if use_secondary {
+            secondary_color_f32
+        } else {
+            primary_color_f32
+        };
+        let fill_color_u8 = Rgba([
+            (fill_color[0] * 255.0) as u8,
+            (fill_color[1] * 255.0) as u8,
+            (fill_color[2] * 255.0) as u8,
+            (fill_color[3] * 255.0) as u8,
+        ]);
+
+        let region_index = if global_fill {
+            Self::compute_global_distance_map(
+                &flat_rgba,
+                &target_color,
+                width,
+                height,
+                distance_mode,
+            )
+        } else {
+            Self::compute_flood_distance_map(
+                &flat_rgba,
+                pos,
+                &target_color,
+                width,
+                height,
+                distance_mode,
+                connectivity,
+            )
+        };
+
+        let fill_mask = Self::build_threshold_mask(&region_index, fill_threshold, anti_aliased);
+        let Some(fill_bbox) = region_index.threshold_bbox(fill_threshold) else {
+            return;
+        };
+        let preview_region = Self::build_fill_preview_region(
+            &fill_mask,
+            fill_bbox,
+            fill_color_u8,
+            selection_mask.as_ref(),
+            width,
+            height,
+        );
+        let region_w = fill_bbox.2.saturating_sub(fill_bbox.0) + 1;
+        let region_h = fill_bbox.3.saturating_sub(fill_bbox.1) + 1;
+        if preview_region.is_empty() || region_w == 0 || region_h == 0 {
+            return;
+        }
+
+        let mut history_cmd = crate::components::history::SingleLayerSnapshotCommand::new_for_layer(
+            "Fill".to_string(),
+            canvas_state,
+            active_layer_index,
+        );
+        let blend_mode = self.properties.blending_mode;
+        let mut changed = false;
+
+        if let Some(active_layer) = canvas_state.layers.get_mut(active_layer_index) {
+            for row in 0..region_h as usize {
+                let gy = fill_bbox.1 + row as u32;
+                let src_row = row * region_w as usize * 4;
+                for col in 0..region_w as usize {
+                    let gx = fill_bbox.0 + col as u32;
+                    let src_off = src_row + col * 4;
+                    let src = Rgba([
+                        preview_region[src_off],
+                        preview_region[src_off + 1],
+                        preview_region[src_off + 2],
+                        preview_region[src_off + 3],
+                    ]);
+                    if src[3] == 0 {
+                        continue;
+                    }
+                    let dst = *active_layer.pixels.get_pixel(gx, gy);
+                    let blended = CanvasState::blend_pixel_static(dst, src, blend_mode, 1.0);
+                    if blended != dst {
+                        active_layer.pixels.put_pixel(gx, gy, blended);
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        if !changed {
+            return;
+        }
+
+        let dirty_rect = egui::Rect::from_min_max(
+            egui::pos2(fill_bbox.0 as f32, fill_bbox.1 as f32),
+            egui::pos2((fill_bbox.2 + 1) as f32, (fill_bbox.3 + 1) as f32),
+        );
+        canvas_state.mark_dirty(Some(dirty_rect));
+        history_cmd.set_after(canvas_state);
+        self.pending_history_commands.push(Box::new(history_cmd));
+        self.pending_stroke_event = None;
     }
 
     /// Fill tool - flood fill with preview
@@ -1184,9 +1264,12 @@ impl ToolsPanel {
             (fill_color[3] * 255.0) as u8,
         ]);
 
-        // Fill tool keeps a single production behavior: perceptual matching with 4-connected
-        // flood. This avoids legacy mode combinations that hurt predictability.
-        self.fill_state.distance_mode = WandDistanceMode::Perceptual;
+        // Fill tool uses simple max-component distance with 4-connected flood.
+        // Perceptual distance (sRGB-to-linear + luminance/chroma weighting) can
+        // produce non-zero distances for visually identical pixels, causing
+        // 1-pixel gaps at fill boundaries. LegacyRgba is more predictable for
+        // pixel art.
+        self.fill_state.distance_mode = WandDistanceMode::LegacyRgba;
         self.fill_state.connectivity = FloodConnectivity::Four;
 
         self.fill_state.active_fill = Some(ActiveFillRegion {
@@ -1207,7 +1290,10 @@ impl ToolsPanel {
         self.fill_state.tolerance_changed_at = None;
         self.fill_state.recalc_pending = true;
         self.fill_state.preview_in_flight = false;
-        canvas_state.preview_layer = Some(TiledImage::new(canvas_state.width, canvas_state.height));
+
+        // Keep existing preview visible until the first patch of the new seed
+        // arrives to avoid an empty-frame flash between clicks.
+        self.fill_state.defer_preview_clear = canvas_state.preview_layer.is_some();
 
         // Start stroke tracking for undo/redo
         if let Some(_layer) = canvas_state.layers.get(canvas_state.active_layer_index) {
@@ -1217,7 +1303,6 @@ impl ToolsPanel {
 
         canvas_state.preview_blend_mode = BlendMode::Normal;
         canvas_state.preview_force_composite = fill_color_u8.0[3] < 255;
-        canvas_state.mark_preview_changed();
 
         // GPU path: compute flood distances synchronously on GPU, build index, render preview
         if let Some(gpu) = gpu_renderer {
@@ -1274,18 +1359,63 @@ impl ToolsPanel {
 
     /// Commit the fill preview to the actual layer
     fn commit_fill_preview(&mut self, canvas_state: &mut CanvasState) {
+        self.commit_fill_preview_impl(canvas_state, true);
+    }
+
+    /// Commit fill preview to the active layer.
+    ///
+    /// When `clear_preview_overlay` is false, the current preview remains
+    /// visible until a subsequent preview patch replaces it.
+    fn commit_fill_preview_impl(
+        &mut self,
+        canvas_state: &mut CanvasState,
+        clear_preview_overlay: bool,
+    ) {
         let Some(active_fill) = self.fill_state.active_fill.as_ref() else {
             return;
         };
 
         let target_layer_idx = active_fill.layer_idx;
         if target_layer_idx >= canvas_state.layers.len() {
-            self.clear_fill_preview_state();
-            canvas_state.clear_preview_state();
+            self.reset_fill_preview_state(clear_preview_overlay);
+            if clear_preview_overlay {
+                canvas_state.clear_preview_state();
+            }
             return;
         }
 
-        self.clear_fill_preview_state();
+        let dirty_rect = canvas_state.preview_stroke_bounds;
+        let overlay_bounds = active_fill.fill_bbox.or_else(|| {
+            dirty_rect.map(|bounds| {
+                let x0 = bounds.min.x.floor().max(0.0) as u32;
+                let y0 = bounds.min.y.floor().max(0.0) as u32;
+                let x1 = bounds.max.x.ceil().max(0.0) as u32;
+                let y1 = bounds.max.y.ceil().max(0.0) as u32;
+                (
+                    x0,
+                    y0,
+                    x1.saturating_sub(1),
+                    y1.saturating_sub(1),
+                )
+            })
+        });
+        let commit_overlay =
+            if let (Some(preview), Some((x0, y0, x1, y1))) =
+                (canvas_state.preview_layer.as_ref(), overlay_bounds)
+        {
+            let width = x1.saturating_sub(x0) + 1;
+            let height = y1.saturating_sub(y0) + 1;
+            if width > 0 && height > 0 {
+                let mut region = Vec::new();
+                preview.extract_region_rgba_fast(x0, y0, width, height, &mut region);
+                Some(((x0, y0, x1, y1), region))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        self.reset_fill_preview_state(clear_preview_overlay);
 
         let blend_mode = self.properties.blending_mode;
 
@@ -1329,9 +1459,22 @@ impl ToolsPanel {
             }
         }
 
-        // Mark dirty and clear preview
-        canvas_state.clear_preview_state();
-        canvas_state.mark_dirty(None);
+        if let Some((overlay_bounds, overlay_rgba)) = commit_overlay {
+            self.fill_state.cached_flat_rgba = None;
+            canvas_state.push_fill_commit_overlay(
+                overlay_bounds,
+                overlay_rgba,
+                std::time::Duration::from_millis(100),
+            );
+        }
+
+        // Mark dirty and clear preview (optional for reseed click path)
+        if clear_preview_overlay {
+            self.fill_state.preview_clear_at = Some(
+                std::time::Instant::now() + std::time::Duration::from_millis(200),
+            );
+        }
+        canvas_state.mark_dirty(dirty_rect);
 
         // Store event for history
         if stroke_event.is_some() {

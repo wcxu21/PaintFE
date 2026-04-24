@@ -20,7 +20,7 @@ impl GridDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(370.0);
-                paint_dialog_header(ui, &colors, "\u{1F4D0}", &t!("dialog.grid"));
+                if paint_dialog_header(ui, &colors, "\u{1F4D0}", &t!("dialog.grid")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
                 section_label(ui, &colors, "GRID SETTINGS");
 
@@ -159,7 +159,7 @@ impl DropShadowDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(380.0);
-                paint_dialog_header(ui, &colors, "\u{1F4A4}", &t!("dialog.drop_shadow"));
+                if paint_dialog_header(ui, &colors, "\u{1F4A4}", &t!("dialog.drop_shadow")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
                 section_label(ui, &colors, "SHADOW SETTINGS");
 
@@ -269,7 +269,7 @@ impl OutlineDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(360.0);
-                paint_dialog_header(ui, &colors, "\u{1F58A}", &t!("dialog.outline"));
+                if paint_dialog_header(ui, &colors, "\u{1F58A}", &t!("dialog.outline")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
                 section_label(ui, &colors, "OUTLINE SETTINGS");
 
@@ -375,7 +375,7 @@ impl CanvasBorderDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 70.0))
             .show(ctx, |ui| {
                 ui.set_min_width(360.0);
-                paint_dialog_header(ui, &colors, "\u{25A3}", &t!("dialog.canvas_border"));
+                if paint_dialog_header(ui, &colors, "\u{25A3}", &t!("dialog.canvas_border")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
                 section_label(ui, &colors, "BORDER SETTINGS");
 
@@ -451,7 +451,7 @@ impl PixelDragDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(370.0);
-                paint_dialog_header(ui, &colors, "\u{1F4A2}", &t!("dialog.pixel_drag"));
+                if paint_dialog_header(ui, &colors, "\u{1F4A2}", &t!("dialog.pixel_drag")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
                 section_label(ui, &colors, "GLITCH SETTINGS");
 
@@ -567,7 +567,7 @@ impl RgbDisplaceDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 200.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(420.0);
-                paint_dialog_header(ui, &colors, "\u{1F308}", &t!("dialog.rgb_displace"));
+                if paint_dialog_header(ui, &colors, "\u{1F308}", &t!("dialog.rgb_displace")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
                 section_label(ui, &colors, "CHANNEL OFFSETS");
 
@@ -758,4 +758,5 @@ effect_dialog_base!(InkDialog {
     threshold: f32 = 0.3,
     first_open: bool = true
 });
+
 

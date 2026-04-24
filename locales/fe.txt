@@ -301,6 +301,7 @@ settings.general.debug_zoom=Squint Level
 settings.general.debug_fps=Frames Per Second
 settings.general.debug_gpu=Steam Engine Info
 settings.general.debug_operations=Work in Progress
+settings.general.show_tool_info=Show Tool Info
 settings.general.reset_defaults=Factory Reset
 settings.hardware.preferred_gpu=Preferred Engine
 settings.hardware.adapter=Horsepower:

@@ -1,3 +1,11 @@
+pub struct FillCommitOverlay {
+    pub bounds: (u32, u32, u32, u32),
+    pub rgba: Vec<u8>,
+    pub started_at: std::time::Instant,
+    pub duration: std::time::Duration,
+    pub texture: Option<egui::TextureHandle>,
+}
+
 pub struct CanvasState {
     pub layers: Vec<Layer>,
     pub active_layer_index: usize,
@@ -97,6 +105,8 @@ pub struct CanvasState {
     /// Bounding box of the selected region in canvas coordinates
     /// (used to position the overlay texture).
     pub selection_overlay_bounds: Option<(u32, u32, u32, u32)>,
+    /// Short-lived fill overlays used to visually bridge preview commits.
+    pub fill_commit_overlays: Vec<FillCommitOverlay>,
     /// Cached border segments in canvas coordinates: (line_pos, seg_start, seg_end).
     /// Horizontal segments: y_line, x_start, x_end.
     /// Vertical segments: x_line, y_start, y_end.
@@ -167,6 +177,7 @@ impl CanvasState {
             selection_overlay_built_generation: 0,
             selection_overlay_anim_offset: -1.0,
             selection_overlay_bounds: None,
+            fill_commit_overlays: Vec::new(),
             selection_border_h_segs: Vec::new(),
             selection_border_v_segs: Vec::new(),
             selection_border_built_generation: u64::MAX, // force first compute
@@ -194,6 +205,26 @@ impl CanvasState {
         self.preview_replaces_layer = false;
         self.preview_targets_mask = false;
         self.preview_mask_reveal = false;
+    }
+
+    pub fn push_fill_commit_overlay(
+        &mut self,
+        bounds: (u32, u32, u32, u32),
+        rgba: Vec<u8>,
+        duration: std::time::Duration,
+    ) {
+        let width = bounds.2.saturating_sub(bounds.0) + 1;
+        let height = bounds.3.saturating_sub(bounds.1) + 1;
+        if width == 0 || height == 0 || rgba.is_empty() {
+            return;
+        }
+        self.fill_commit_overlays.push(FillCommitOverlay {
+            bounds,
+            rgba,
+            started_at: std::time::Instant::now(),
+            duration,
+            texture: None,
+        });
     }
 
     /// Mirror all populated pixels in the preview layer according to the

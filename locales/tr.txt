@@ -301,6 +301,7 @@ settings.general.debug_zoom=Yakınlaştırma Düzeyi
 settings.general.debug_fps=FPS Sayacı
 settings.general.debug_gpu=GPU Bilgisi
 settings.general.debug_operations=İşlem İlerlemesi
+settings.general.show_tool_info=Araç Bilgisini Göster
 settings.general.reset_defaults=Varsayılanlara Sıfırla
 settings.hardware.preferred_gpu=Tercih Edilen GPU
 settings.hardware.adapter=Adaptör:

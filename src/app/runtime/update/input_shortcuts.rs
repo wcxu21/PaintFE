@@ -194,7 +194,11 @@ impl PaintFEApp {
         // The KeyBindings::is_pressed method uses consume_key internally,
         // so egui will NOT forward consumed keys to text widgets.
         // Clone keybindings to avoid borrow conflicts with &mut self methods.
-        if !modal_open {
+        //
+        // Skip all shortcut processing while the settings window is waiting
+        // for a keybind combo, so the rebinding handler sees the raw events.
+        let is_rebinding = self.settings_window.rebinding_action.is_some();
+        if !modal_open && !is_rebinding {
             self.tools_panel.brush_resize_drag_binding = self
                 .settings
                 .keybindings

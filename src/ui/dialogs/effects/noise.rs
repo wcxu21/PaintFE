@@ -21,7 +21,7 @@ impl AddNoiseDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 185.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(380.0);
-                paint_dialog_header(ui, &colors, "\u{1F4A5}", &t!("dialog.add_noise"));
+                if paint_dialog_header(ui, &colors, "\u{1F4A5}", &t!("dialog.add_noise")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
                 section_label(ui, &colors, "NOISE SETTINGS");
 
@@ -186,7 +186,7 @@ impl ReduceNoiseDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
-                paint_dialog_header(ui, &colors, "\u{1F50A}", &t!("dialog.reduce_noise"));
+                if paint_dialog_header(ui, &colors, "\u{1F50A}", &t!("dialog.reduce_noise")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
                 section_label(ui, &colors, "DENOISE SETTINGS");
 
@@ -252,7 +252,7 @@ impl MedianDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
-                paint_dialog_header(ui, &colors, "\u{1F4CA}", &t!("dialog.median_filter"));
+                if paint_dialog_header(ui, &colors, "\u{1F4CA}", &t!("dialog.median_filter")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
                 section_label(ui, &colors, "FILTER SETTINGS");
 
@@ -303,4 +303,5 @@ effect_dialog_base!(GlowDialog {
     intensity: f32 = 0.0,
     first_open: bool = true
 });
+
 

@@ -28,7 +28,7 @@ pub struct SettingsWindow {
     /// Staging copy of keybindings for the Keybinds tab
     staged_keybindings: KeyBindings,
     /// Which action is currently being rebound (waiting for key press)
-    rebinding_action: Option<BindableAction>,
+    pub rebinding_action: Option<BindableAction>,
     /// Brief status message after theme import/export (cleared on next frame)
     theme_status: Option<(String, f64)>,
 }
@@ -513,6 +513,19 @@ impl SettingsWindow {
                 .weak(),
         );
 
+        ui.add_space(6.0);
+        ui.checkbox(
+            &mut settings.clipboard_copy_transparent_cutout,
+            "Transparent pasted pixels overwrite destination",
+        );
+        ui.label(
+            egui::RichText::new(
+                "When enabled, pasted selections keep their original silhouette instead of filling their bounding box.",
+            )
+            .small()
+            .weak(),
+        );
+
         // -- Debug Info ---------------------------------------------------
         Self::section_header(ui, &t!("settings.general.debug_info"));
         ui.checkbox(
@@ -546,6 +559,10 @@ impl SettingsWindow {
                 ui.checkbox(
                     &mut settings.debug_show_operations,
                     t!("settings.general.debug_operations"),
+                );
+                ui.checkbox(
+                    &mut settings.show_tool_info,
+                    t!("settings.general.show_tool_info"),
                 );
             });
         }
@@ -847,6 +864,32 @@ impl SettingsWindow {
                     settings.save();
                 }
                 ui.end_row();
+
+                // Pixel grid outline color
+                ui.label("Pixel Grid Outline");
+                ui.horizontal(|ui| {
+                    if Self::color_row(ui, "", &mut settings.pixel_grid_outline_color) {
+                        settings.save();
+                    }
+                    if ui.button("↺").on_hover_text("Reset to default").clicked() {
+                        settings.pixel_grid_outline_color = Color32::from_black_alpha(90);
+                        settings.save();
+                    }
+                });
+                ui.end_row();
+
+                // Pixel grid center color
+                ui.label("Pixel Grid Center");
+                ui.horizontal(|ui| {
+                    if Self::color_row(ui, "", &mut settings.pixel_grid_center_color) {
+                        settings.save();
+                    }
+                    if ui.button("↺").on_hover_text("Reset to default").clicked() {
+                        settings.pixel_grid_center_color = Color32::from_white_alpha(100);
+                        settings.save();
+                    }
+                });
+                ui.end_row();
             });
         ui.label(
             egui::RichText::new(t!("settings.interface.zoom_filter_hint"))
@@ -855,6 +898,11 @@ impl SettingsWindow {
         );
         ui.label(
             egui::RichText::new(t!("settings.interface.brightness_hint"))
+                .small()
+                .weak(),
+        );
+        ui.label(
+            egui::RichText::new("Pixel grid outline/center colors control the dual-stroke grid visibility on any background.")
                 .small()
                 .weak(),
         );
@@ -1064,8 +1112,14 @@ impl SettingsWindow {
                     );
                     Self::opt_color_row(
                         ui,
-                        "Tool Shelf",
+                        "Tool Shelf BG",
                         &mut settings.ov_tool_shelf_bg,
+                        &mut self.dirty,
+                    );
+                    Self::opt_color_row(
+                        ui,
+                        "Tool Shelf Border",
+                        &mut settings.ov_tool_shelf_border,
                         &mut self.dirty,
                     );
                     Self::opt_color_row(
@@ -1139,6 +1193,14 @@ impl SettingsWindow {
                     );
                     Self::opt_f32_row(
                         ui,
+                        "Tool Shelf CornerRadius",
+                        &mut settings.tool_shelf_rounding,
+                        0.0,
+                        24.0,
+                        &mut self.dirty,
+                    );
+                    Self::opt_f32_row(
+                        ui,
                         "Menu CornerRadius",
                         &mut settings.menu_rounding,
                         0.0,
@@ -1187,6 +1249,7 @@ impl SettingsWindow {
                 settings.ov_button_active = None;
                 settings.ov_floating_window_bg = None;
                 settings.ov_tool_shelf_bg = None;
+                settings.ov_tool_shelf_border = None;
                 settings.ov_toolbar_bg = None;
                 settings.ov_menu_bg = None;
                 settings.ov_icon_button_bg = None;
@@ -1202,6 +1265,7 @@ impl SettingsWindow {
                 settings.widget_rounding = None;
                 settings.window_rounding = None;
                 settings.menu_rounding = None;
+                settings.tool_shelf_rounding = None;
                 settings.glow_intensity = 1.0;
                 settings.shadow_strength = 1.0;
                 settings.canvas_grid_visible = true;
@@ -1551,19 +1615,26 @@ impl SettingsWindow {
         theme: &mut crate::theme::Theme,
         ctx: &egui::Context,
     ) {
+        let effective_accent = if self.staged_preset == ThemePreset::Custom {
+            self.staged_accent
+        } else {
+            self.staged_preset.accent_colors()
+        };
+
         settings.theme_mode = self.staged_mode;
         settings.theme_preset = self.staged_preset;
-        settings.custom_accent = self.staged_accent;
+        settings.custom_accent = effective_accent;
+        self.staged_accent = effective_accent;
 
-        *theme = theme.with_accent(self.staged_preset, self.staged_accent);
+        *theme = theme.with_accent(self.staged_preset, effective_accent);
         // If mode changed, rebuild with correct mode
         if settings.theme_mode != theme.mode {
             *theme = match settings.theme_mode {
                 ThemeMode::Light => {
-                    crate::theme::Theme::light_with_accent(self.staged_preset, self.staged_accent)
+                    crate::theme::Theme::light_with_accent(self.staged_preset, effective_accent)
                 }
                 ThemeMode::Dark => {
-                    crate::theme::Theme::dark_with_accent(self.staged_preset, self.staged_accent)
+                    crate::theme::Theme::dark_with_accent(self.staged_preset, effective_accent)
                 }
             };
         }
@@ -1812,60 +1883,86 @@ impl SettingsWindow {
         ui.add_space(8.0);
 
         // Detect key press for rebinding
+        //
+        // On Windows, modifier keys (Ctrl/Shift/Alt) cannot be reliably detected
+        // from keyboard events because WM_CHAR for Ctrl+letter is suppressed by
+        // configure_event_loop, and winit may not include modifier state in
+        // KeyboardInput events. As a workaround, the rebinding button only
+        // captures the KEY itself — modifiers are set via toggle buttons in the
+        // keybind row below.
         if let Some(rebind_action) = self.rebinding_action {
-            // Check for Escape to cancel
             let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
             if esc {
                 self.rebinding_action = None;
             } else {
-                // Check for any key press
+                // Capture the key from Event::Key events (modifier-free).
+                // Symbol characters (e.g. [, ], /, =, -) come via Event::Text.
                 let new_combo = ui.input(|i| {
-                    let ctrl = i.modifiers.command || i.modifiers.ctrl;
-                    let shift = i.modifiers.shift;
-                    let alt = i.modifiers.alt;
-                    let mut text_combo = None;
-                    let mut key_combo = None;
+                    let mut found = None;
                     for ev in &i.events {
                         match ev {
-                            egui::Event::Text(t) if !t.is_empty() => {
-                                let is_symbol = t.chars().count() == 1
-                                    && t.chars().all(|ch| {
-                                        !ch.is_ascii_alphanumeric()
-                                            && !ch.is_whitespace()
-                                            && !ch.is_control()
-                                    });
+                            egui::Event::Text(t) if t.chars().count() == 1 => {
+                                let ch = t.chars().next().unwrap();
+                                let is_symbol = !ch.is_ascii_alphanumeric()
+                                    && !ch.is_whitespace()
+                                    && !ch.is_control();
                                 if is_symbol {
-                                    text_combo = Some(KeyCombo {
-                                        ctrl,
-                                        shift,
-                                        alt,
+                                    found = Some(KeyCombo {
+                                        ctrl: false,
+                                        shift: false,
+                                        alt: false,
                                         key: None,
                                         text_char: Some(t.clone()),
                                     });
+                                    break;
                                 }
                             }
                             egui::Event::Key {
-                                key, pressed: true, ..
+                                key,
+                                pressed: true,
+                                ..
                             } if *key != egui::Key::Escape && key_name(*key) != "?" => {
-                                key_combo = Some(KeyCombo {
-                                    ctrl,
-                                    shift,
-                                    alt,
+                                found = Some(KeyCombo {
+                                    ctrl: false,
+                                    shift: false,
+                                    alt: false,
                                     key: Some(*key),
                                     text_char: None,
                                 });
+                                break;
                             }
                             _ => {}
                         }
                     }
-                    text_combo.or(key_combo)
+                    found
                 });
 
                 if let Some(combo) = new_combo {
-                    self.staged_keybindings.set(rebind_action, combo);
+                    // Preserve any existing modifier flags from the staged binding
+                    let existing = self.staged_keybindings.get(rebind_action).cloned();
+                    let merged = KeyCombo {
+                        ctrl: existing.as_ref().map(|c| c.ctrl).unwrap_or(false),
+                        shift: existing.as_ref().map(|c| c.shift).unwrap_or(false),
+                        alt: existing.as_ref().map(|c| c.alt).unwrap_or(false),
+                        ..combo
+                    };
+                    self.staged_keybindings.set(rebind_action, merged);
                     self.rebinding_action = None;
                 }
             }
+
+            // Consume all keyboard events so they don't trigger canvas shortcuts
+            ui.input_mut(|i| {
+                i.events.retain(|e| {
+                    matches!(
+                        e,
+                        egui::Event::Copy
+                            | egui::Event::Cut
+                            | egui::Event::Paste(_)
+                            | egui::Event::PointerMoved(_)
+                    )
+                })
+            });
         }
 
         // Keybinds table — rendered inline without a nested ScrollArea
@@ -1920,8 +2017,113 @@ impl SettingsWindow {
                             if unbind_btn.clicked() {
                                 self.staged_keybindings
                                     .set(*action, KeyCombo::modifiers_only(false, false, false));
+                                self.rebinding_action = None;
                             }
                             unbind_btn.on_hover_text(t!("settings.keybinds.clear_keybind"));
+                        }
+
+                        // Modifier prefix toggle buttons (Ctrl / Shift / Alt)
+                        // Manual toggle since automatic modifier detection from
+                        // keyboard events is unreliable on Windows.
+                        let mod_btn_size = egui::vec2(30.0, 20.0);
+                        let ctrl_active = self
+                            .staged_keybindings
+                            .get(*action)
+                            .map(|c| c.ctrl)
+                            .unwrap_or(false);
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Ctrl")
+                                        .size(9.0)
+                                        .color(if ctrl_active {
+                                            Color32::WHITE
+                                        } else {
+                                            Color32::GRAY
+                                        }),
+                                )
+                                .min_size(mod_btn_size)
+                                .fill(if ctrl_active {
+                                    ui.visuals().selection.bg_fill
+                                } else {
+                                    ui.visuals().widgets.inactive.bg_fill
+                                }),
+                            )
+                            .clicked()
+                        {
+                            let mut c = self
+                                .staged_keybindings
+                                .get(*action)
+                                .cloned()
+                                .unwrap_or_else(|| KeyCombo::modifiers_only(false, false, false));
+                            c.ctrl = !c.ctrl;
+                            self.staged_keybindings.set(*action, c);
+                        }
+                        let shift_active = self
+                            .staged_keybindings
+                            .get(*action)
+                            .map(|c| c.shift)
+                            .unwrap_or(false);
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Shft")
+                                        .size(9.0)
+                                        .color(if shift_active {
+                                            Color32::WHITE
+                                        } else {
+                                            Color32::GRAY
+                                        }),
+                                )
+                                .min_size(mod_btn_size)
+                                .fill(if shift_active {
+                                    ui.visuals().selection.bg_fill
+                                } else {
+                                    ui.visuals().widgets.inactive.bg_fill
+                                }),
+                            )
+                            .clicked()
+                        {
+                            let mut c = self
+                                .staged_keybindings
+                                .get(*action)
+                                .cloned()
+                                .unwrap_or_else(|| KeyCombo::modifiers_only(false, false, false));
+                            c.shift = !c.shift;
+                            self.staged_keybindings.set(*action, c);
+                        }
+                        let alt_active = self
+                            .staged_keybindings
+                            .get(*action)
+                            .map(|c| c.alt)
+                            .unwrap_or(false);
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Alt")
+                                        .size(9.0)
+                                        .color(if alt_active {
+                                            Color32::WHITE
+                                        } else {
+                                            Color32::GRAY
+                                        }),
+                                )
+                                .min_size(mod_btn_size)
+                                .fill(if alt_active {
+                                    ui.visuals().selection.bg_fill
+                                } else {
+                                    ui.visuals().widgets.inactive.bg_fill
+                                }),
+                            )
+                            .clicked()
+                        {
+                            let mut c = self
+                                .staged_keybindings
+                                .get(*action)
+                                .cloned()
+                                .unwrap_or_else(|| KeyCombo::modifiers_only(false, false, false));
+                            c.alt = !c.alt;
+                            self.staged_keybindings.set(*action, c);
                         }
 
                         let btn_text = if is_rebinding {

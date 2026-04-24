@@ -302,6 +302,7 @@ settings.general.debug_zoom=Zoom Level
 settings.general.debug_fps=FPS Counter
 settings.general.debug_gpu=GPU Info
 settings.general.debug_operations=Work Progress
+settings.general.show_tool_info=Show Tool Info
 settings.general.reset_defaults=Factory Reset
 settings.hardware.preferred_gpu=Grunt Source
 settings.hardware.adapter=Card:

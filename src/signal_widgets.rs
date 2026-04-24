@@ -583,7 +583,7 @@ pub fn card_frame_interactive<R>(
 
     let frame = egui::Frame::NONE
         .fill(theme.panel_bg)
-        .corner_radius(CornerRadius::same(12))
+        .corner_radius(theme.widget_cr(12))
         .stroke(Stroke::new(1.0, border))
         .shadow(Shadow {
             offset: [0, 0],

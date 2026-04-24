@@ -385,7 +385,7 @@ impl ToolsPanel {
 
         // Calculate spacing (25% of brush diameter)
         let spacing = (self.properties.size * 0.25).max(1.0);
-        let radius = (self.properties.size / 2.0).max(1.0);
+        let radius = self.properties.size / 2.0;
 
         // Calculate distance
         let dx = x1 - x0;
@@ -437,7 +437,7 @@ impl ToolsPanel {
         color_f32: [f32; 4],
         selection_mask: Option<&image::GrayImage>,
     ) {
-        let radius = (self.properties.size / 2.0).max(1.0);
+        let radius = self.properties.size / 2.0;
         let anti_alias = self.line_state.line_tool.options.anti_alias;
         // High hardness for crisp edges with ~2px AA fade (matching arrow sharpness)
         self.draw_bezier_circle_with_hardness(
@@ -466,11 +466,14 @@ impl ToolsPanel {
         let (cx, cy) = pos;
 
         // Extend the sampling area beyond the nominal radius so the soft fade
-        // region actually gets drawn.  For softness 0.3 the fade extends ~70% of
-        // radius beyond the solid core; we add a generous 2px on top for tiny
-        // brushes.
+        // region actually gets drawn.  For tiny radii (< 1.5) we only need 1px
+        // of AA feather; for larger radii the fade scales with softness.
         let aa_pad = if anti_alias {
-            (radius * (1.0 - forced_hardness)).max(2.0) + 2.0
+            if radius < 1.5 {
+                1.5  // 1px AA feather for thin lines
+            } else {
+                (radius * (1.0 - forced_hardness)).max(2.0) + 2.0
+            }
         } else {
             1.0
         };

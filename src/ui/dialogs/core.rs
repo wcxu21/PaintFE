@@ -183,11 +183,11 @@ pub(crate) fn paint_dialog_header(
     colors: &DialogColors,
     icon: &str,
     title: &str,
-) {
+) -> bool {
     let available_width = ui.available_width();
     let header_height = 32.0;
-    let (rect, _) =
-        ui.allocate_exact_size(Vec2::new(available_width, header_height), Sense::hover());
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(available_width, header_height), Sense::click());
 
     let painter = ui.painter();
     // Gradient-like header: accent faint fill with rounded top corners
@@ -208,6 +208,30 @@ pub(crate) fn paint_dialog_header(
         egui::FontId::proportional(14.0),
         colors.accent_strong,
     );
+
+    let close_size = Vec2::new(header_height, header_height);
+    let close_rect = Rect::from_center_size(
+        Pos2::new(rect.max.x - close_size.x * 0.5, rect.center().y),
+        close_size,
+    );
+    let close_response = ui.interact(
+        close_rect,
+        response.id.with("dialog_header_close"),
+        Sense::click(),
+    );
+    painter.text(
+        close_rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "×",
+        egui::FontId::proportional(14.0),
+        if close_response.hovered() {
+            colors.accent_strong
+        } else {
+            colors.accent
+        },
+    );
+
+    close_response.clicked()
 }
 
 /// Styled section label with monospace uppercase styling.

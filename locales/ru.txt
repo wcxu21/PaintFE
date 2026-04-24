@@ -301,6 +301,7 @@ settings.general.debug_zoom=Уровень масштаба
 settings.general.debug_fps=Счётчик FPS
 settings.general.debug_gpu=Информация о GPU
 settings.general.debug_operations=Прогресс операций
+settings.general.show_tool_info=Показать информацию об инструменте
 settings.general.reset_defaults=Сбросить по умолчанию
 settings.hardware.preferred_gpu=Предпочитаемый GPU
 settings.hardware.adapter=Адаптер:

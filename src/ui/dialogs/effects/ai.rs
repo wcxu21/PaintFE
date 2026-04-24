@@ -30,7 +30,7 @@ impl RemoveBackgroundDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 190.0, 80.0))
             .show(ctx, |ui| {
                 ui.set_min_width(380.0);
-                paint_dialog_header(ui, &colors, "\u{2728}", &t!("dialog.remove_background"));
+                if paint_dialog_header(ui, &colors, "\u{2728}", &t!("dialog.remove_background")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
 
                 section_label(ui, &colors, "MASK SETTINGS");
@@ -232,3 +232,4 @@ impl RemoveBackgroundDialog {
         result
     }
 }
+

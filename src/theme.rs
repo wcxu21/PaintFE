@@ -81,6 +81,7 @@ pub struct ThemeOverrides {
     // Panels & windows
     pub floating_window_bg: Option<Color32>,
     pub tool_shelf_bg: Option<Color32>,
+    pub tool_shelf_border: Option<Color32>,
     pub toolbar_bg: Option<Color32>,
     pub menu_bg: Option<Color32>,
 
@@ -106,6 +107,7 @@ pub struct ThemeOverrides {
     pub widget_rounding: Option<f32>,
     pub window_rounding: Option<f32>,
     pub menu_rounding: Option<f32>,
+    pub tool_shelf_rounding: Option<f32>,
 
     // Atmosphere
     pub glow_intensity: Option<f32>,
@@ -136,6 +138,7 @@ impl ThemeOverrides {
             && self.button_active.is_none()
             && self.floating_window_bg.is_none()
             && self.tool_shelf_bg.is_none()
+            && self.tool_shelf_border.is_none()
             && self.toolbar_bg.is_none()
             && self.menu_bg.is_none()
             && self.icon_button_bg.is_none()
@@ -151,6 +154,7 @@ impl ThemeOverrides {
             && self.widget_rounding.is_none()
             && self.window_rounding.is_none()
             && self.menu_rounding.is_none()
+            && self.tool_shelf_rounding.is_none()
             && self.glow_intensity.is_none()
             && self.shadow_strength.is_none()
     }
@@ -183,6 +187,25 @@ impl AccentColors {
             ThemeMode::Light => (self.light_normal, self.light_faint, self.light_strong),
             ThemeMode::Dark => (self.dark_normal, self.dark_faint, self.dark_strong),
         }
+    }
+
+    fn faint_over_light(r: u8, g: u8, b: u8, alpha: u8) -> Color32 {
+        let a = alpha as u16;
+        let inv = 255u16 - a;
+        Color32::from_rgb(
+            ((r as u16 * a + 255u16 * inv + 127) / 255) as u8,
+            ((g as u16 * a + 255u16 * inv + 127) / 255) as u8,
+            ((b as u16 * a + 255u16 * inv + 127) / 255) as u8,
+        )
+    }
+
+    fn faint_over_dark(r: u8, g: u8, b: u8, alpha: u8) -> Color32 {
+        let a = alpha as u16;
+        Color32::from_rgb(
+            ((r as u16 * a + 127) / 255) as u8,
+            ((g as u16 * a + 127) / 255) as u8,
+            ((b as u16 * a + 127) / 255) as u8,
+        )
     }
 }
 
@@ -247,109 +270,109 @@ impl ThemePreset {
             // Blue (current default, snapshotted from existing theme)
             ThemePreset::Blue => AccentColors {
                 light_normal: Color32::from_rgb(56, 123, 234), // #387BEA
-                light_faint: Color32::from_rgba_unmultiplied(56, 123, 234, 50),
+                light_faint: AccentColors::faint_over_light(56, 123, 234, 50),
                 light_strong: Color32::from_rgb(30, 80, 180), // #1E50B4
                 dark_normal: Color32::from_rgb(66, 133, 244), // #4285F4
-                dark_faint: Color32::from_rgba_unmultiplied(66, 133, 244, 60),
+                dark_faint: AccentColors::faint_over_dark(66, 133, 244, 60),
                 dark_strong: Color32::from_rgb(120, 175, 255), // #78AFFF
             },
             // Orange — warm, energetic
             ThemePreset::Orange => AccentColors {
                 light_normal: Color32::from_rgb(230, 126, 34), // #E67E22
-                light_faint: Color32::from_rgba_unmultiplied(230, 126, 34, 50),
+                light_faint: AccentColors::faint_over_light(230, 126, 34, 50),
                 light_strong: Color32::from_rgb(180, 82, 10), // #B4520A
                 dark_normal: Color32::from_rgb(243, 156, 18), // #F39C12
-                dark_faint: Color32::from_rgba_unmultiplied(243, 156, 18, 60),
+                dark_faint: AccentColors::faint_over_dark(243, 156, 18, 60),
                 dark_strong: Color32::from_rgb(255, 200, 100), // #FFC864
             },
             // Purple — creative, modern
             ThemePreset::Purple => AccentColors {
                 light_normal: Color32::from_rgb(142, 68, 173), // #8E44AD
-                light_faint: Color32::from_rgba_unmultiplied(142, 68, 173, 50),
+                light_faint: AccentColors::faint_over_light(142, 68, 173, 50),
                 light_strong: Color32::from_rgb(100, 30, 140), // #641E8C
                 dark_normal: Color32::from_rgb(165, 105, 210), // #A569D2
-                dark_faint: Color32::from_rgba_unmultiplied(165, 105, 210, 60),
+                dark_faint: AccentColors::faint_over_dark(165, 105, 210, 60),
                 dark_strong: Color32::from_rgb(200, 160, 245), // #C8A0F5
             },
             // Red — bold, action-oriented
             ThemePreset::Red => AccentColors {
                 light_normal: Color32::from_rgb(211, 47, 47), // #D32F2F
-                light_faint: Color32::from_rgba_unmultiplied(211, 47, 47, 50),
+                light_faint: AccentColors::faint_over_light(211, 47, 47, 50),
                 light_strong: Color32::from_rgb(160, 20, 20), // #A01414
                 dark_normal: Color32::from_rgb(239, 83, 80),  // #EF5350
-                dark_faint: Color32::from_rgba_unmultiplied(239, 83, 80, 60),
+                dark_faint: AccentColors::faint_over_dark(239, 83, 80, 60),
                 dark_strong: Color32::from_rgb(255, 150, 150), // #FF9696
             },
             // Green — natural, calm
             ThemePreset::Green => AccentColors {
                 light_normal: Color32::from_rgb(39, 174, 96), // #27AE60
-                light_faint: Color32::from_rgba_unmultiplied(39, 174, 96, 50),
+                light_faint: AccentColors::faint_over_light(39, 174, 96, 50),
                 light_strong: Color32::from_rgb(20, 120, 60), // #14783C
                 dark_normal: Color32::from_rgb(46, 204, 113), // #2ECC71
-                dark_faint: Color32::from_rgba_unmultiplied(46, 204, 113, 60),
+                dark_faint: AccentColors::faint_over_dark(46, 204, 113, 60),
                 dark_strong: Color32::from_rgb(120, 235, 170), // #78EBAA
             },
             // Lime — fresh, vibrant
             ThemePreset::Lime => AccentColors {
                 light_normal: Color32::from_rgb(130, 190, 20), // #82BE14
-                light_faint: Color32::from_rgba_unmultiplied(130, 190, 20, 50),
+                light_faint: AccentColors::faint_over_light(130, 190, 20, 50),
                 light_strong: Color32::from_rgb(85, 135, 5), // #558705
                 dark_normal: Color32::from_rgb(160, 220, 50), // #A0DC32
-                dark_faint: Color32::from_rgba_unmultiplied(160, 220, 50, 60),
+                dark_faint: AccentColors::faint_over_dark(160, 220, 50, 60),
                 dark_strong: Color32::from_rgb(200, 245, 120), // #C8F578
             },
             // Nebula — deep violet with electric cyan highlights
             ThemePreset::Nebula => AccentColors {
                 light_normal: Color32::from_rgb(124, 58, 237), // #7C3AED rich violet
-                light_faint: Color32::from_rgba_unmultiplied(124, 58, 237, 45),
+                light_faint: AccentColors::faint_over_light(124, 58, 237, 45),
                 light_strong: Color32::from_rgb(79, 22, 178), // #4F16B2 deep violet
                 dark_normal: Color32::from_rgb(167, 139, 250), // #A78BFA soft violet
-                dark_faint: Color32::from_rgba_unmultiplied(139, 92, 246, 60),
+                dark_faint: AccentColors::faint_over_dark(139, 92, 246, 60),
                 dark_strong: Color32::from_rgb(216, 180, 254), // #D8B4FE lavender
             },
             // Ember — molten amber-gold, like live coals
             ThemePreset::Ember => AccentColors {
                 light_normal: Color32::from_rgb(180, 83, 9), // #B45309 deep amber
-                light_faint: Color32::from_rgba_unmultiplied(180, 83, 9, 45),
+                light_faint: AccentColors::faint_over_light(180, 83, 9, 45),
                 light_strong: Color32::from_rgb(120, 50, 5), // #783205 dark ember
                 dark_normal: Color32::from_rgb(251, 191, 36), // #FBBF24 golden amber
-                dark_faint: Color32::from_rgba_unmultiplied(251, 191, 36, 55),
+                dark_faint: AccentColors::faint_over_dark(251, 191, 36, 55),
                 dark_strong: Color32::from_rgb(253, 224, 120), // #FDE078 pale gold
             },
             // Sakura — cherry blossom rose pink
             ThemePreset::Sakura => AccentColors {
                 light_normal: Color32::from_rgb(225, 29, 72), // #E11D48 vivid rose
-                light_faint: Color32::from_rgba_unmultiplied(225, 29, 72, 40),
+                light_faint: AccentColors::faint_over_light(225, 29, 72, 40),
                 light_strong: Color32::from_rgb(159, 18, 57), // #9F1239 deep rose
                 dark_normal: Color32::from_rgb(251, 113, 133), // #FB7185 soft pink
-                dark_faint: Color32::from_rgba_unmultiplied(251, 113, 133, 55),
+                dark_faint: AccentColors::faint_over_dark(251, 113, 133, 55),
                 dark_strong: Color32::from_rgb(253, 164, 175), // #FDA4AF blush
             },
             // Glacier — arctic teal and ice blue
             ThemePreset::Glacier => AccentColors {
                 light_normal: Color32::from_rgb(8, 145, 178), // #0891B2 deep cyan
-                light_faint: Color32::from_rgba_unmultiplied(8, 145, 178, 45),
+                light_faint: AccentColors::faint_over_light(8, 145, 178, 45),
                 light_strong: Color32::from_rgb(14, 116, 144), // #0E7490 dark teal
                 dark_normal: Color32::from_rgb(34, 211, 238),  // #22D3EE electric cyan
-                dark_faint: Color32::from_rgba_unmultiplied(34, 211, 238, 55),
+                dark_faint: AccentColors::faint_over_dark(34, 211, 238, 55),
                 dark_strong: Color32::from_rgb(103, 232, 249), // #67E8F9 ice blue
             },
             // Midnight — deep indigo with electric periwinkle highlights
             ThemePreset::Midnight => AccentColors {
                 light_normal: Color32::from_rgb(67, 56, 202), // #4338CA indigo
-                light_faint: Color32::from_rgba_unmultiplied(67, 56, 202, 45),
+                light_faint: AccentColors::faint_over_light(67, 56, 202, 45),
                 light_strong: Color32::from_rgb(49, 46, 129), // #312E81 deep indigo
                 dark_normal: Color32::from_rgb(129, 140, 248), // #818CF8 periwinkle
-                dark_faint: Color32::from_rgba_unmultiplied(129, 140, 248, 55),
+                dark_faint: AccentColors::faint_over_dark(129, 140, 248, 55),
                 dark_strong: Color32::from_rgb(165, 180, 252), // #A5B4FC soft periwinkle
             },
             // Signal — website-inspired burnt orange + green (Signal Grid design language)
             ThemePreset::Signal => AccentColors {
                 light_normal: Color32::from_rgb(232, 89, 12), // #e8590c burnt orange
-                light_faint: Color32::from_rgba_unmultiplied(232, 89, 12, 30),
+                light_faint: AccentColors::faint_over_light(232, 89, 12, 30),
                 light_strong: Color32::from_rgb(200, 60, 5), // deep orange
                 dark_normal: Color32::from_rgb(232, 89, 12), // #e8590c
-                dark_faint: Color32::from_rgba_unmultiplied(232, 89, 12, 40),
+                dark_faint: AccentColors::faint_over_dark(232, 89, 12, 40),
                 dark_strong: Color32::from_rgb(249, 115, 22), // #f97316 bright orange
             },
             // Custom returns Blue as fallback (actual custom colors stored separately)
@@ -399,6 +422,7 @@ pub struct Theme {
     // Panel-specific
     pub floating_window_bg: Color32,
     pub tool_shelf_bg: Color32,
+    pub tool_shelf_border: Color32,
     pub toolbar_bg: Color32,
     pub menu_bg: Color32,
 
@@ -425,6 +449,7 @@ pub struct Theme {
     pub widget_rounding: f32,
     pub window_rounding: f32,
     pub menu_rounding: f32,
+    pub tool_shelf_rounding: f32,
     pub glow_intensity: f32,
     pub shadow_strength: f32,
 }
@@ -479,12 +504,13 @@ impl Theme {
             // Floating elements — subtle transparency
             floating_window_bg: Color32::from_rgba_unmultiplied(17, 17, 20, 240),
             tool_shelf_bg: Color32::from_rgb(17, 17, 22),
+            tool_shelf_border: Color32::from_rgb(42, 42, 53), // matches dark border_color
             toolbar_bg: Color32::from_rgb(17, 17, 20), // #111114 matches panel_bg for visibility
             menu_bg: Color32::from_rgb(17, 17, 20),    // #111114
 
             // Control-specific backgrounds
             icon_button_bg: Color32::from_gray(18),
-            icon_button_active: Color32::from_rgb(42, 42, 53),
+            icon_button_active: faint,
             icon_button_disabled: Color32::from_rgb(24, 24, 28),
             text_input_bg: Color32::from_rgb(8, 8, 10),
             stepper_button_bg: Color32::from_rgb(36, 36, 44),
@@ -505,6 +531,7 @@ impl Theme {
             widget_rounding: 6.0,
             window_rounding: 10.0,
             menu_rounding: 8.0,
+            tool_shelf_rounding: 8.0,
             glow_intensity: 1.0,
             shadow_strength: 1.0,
         }
@@ -553,12 +580,13 @@ impl Theme {
             // Floating elements
             floating_window_bg: Color32::from_rgba_unmultiplied(255, 255, 255, 248),
             tool_shelf_bg: Color32::from_rgb(255, 255, 255),
+            tool_shelf_border: Color32::from_rgb(208, 208, 222), // matches light border_color
             toolbar_bg: Color32::from_rgb(244, 244, 247), // #f4f4f7
             menu_bg: Color32::from_rgb(255, 255, 255),
 
             // Control-specific backgrounds
             icon_button_bg: Color32::from_gray(238),
-            icon_button_active: Color32::from_rgb(208, 208, 222),
+            icon_button_active: faint,
             icon_button_disabled: Color32::from_rgb(228, 228, 236),
             text_input_bg: Color32::from_gray(218),
             stepper_button_bg: Color32::from_rgb(228, 228, 236),
@@ -579,6 +607,7 @@ impl Theme {
             widget_rounding: 6.0,
             window_rounding: 10.0,
             menu_rounding: 8.0,
+            tool_shelf_rounding: 8.0,
             glow_intensity: 1.0,
             shadow_strength: 1.0,
         }
@@ -658,6 +687,9 @@ impl Theme {
         if let Some(c) = ov.tool_shelf_bg {
             self.tool_shelf_bg = c;
         }
+        if let Some(c) = ov.tool_shelf_border {
+            self.tool_shelf_border = c;
+        }
         if let Some(c) = ov.toolbar_bg {
             self.toolbar_bg = c;
         }
@@ -710,6 +742,9 @@ impl Theme {
         }
         if let Some(v) = ov.menu_rounding {
             self.menu_rounding = v;
+        }
+        if let Some(v) = ov.tool_shelf_rounding {
+            self.tool_shelf_rounding = v;
         }
 
         self.glow_accent = Self::scale_color_alpha(self.glow_accent, self.glow_intensity);
@@ -923,6 +958,18 @@ impl Theme {
     pub const FONT_HEADING: f32 = 14.0; // Panel titles
     pub const FONT_TITLE: f32 = 16.0; // Dialog titles
 
+    /// Convenience: CornerRadius from the current widget_rounding.
+    /// Uses `default` when widget_rounding is at the theme default (6.0),
+    /// so each frame type keeps its original look unless the user overrides.
+    pub fn widget_cr(&self, default: u8) -> CornerRadius {
+        let r = if (self.widget_rounding - 6.0).abs() < 0.01 {
+            default
+        } else {
+            self.widget_rounding as u8
+        };
+        CornerRadius::same(r)
+    }
+
     pub fn floating_window_frame(&self) -> egui::Frame {
         let shadow_alpha = match self.mode {
             ThemeMode::Dark => 50,
@@ -930,7 +977,7 @@ impl Theme {
         };
         egui::Frame::NONE
             .fill(self.floating_window_bg)
-            .corner_radius(CornerRadius::same(10))
+            .corner_radius(self.widget_cr(10))
             .stroke(Stroke::new(1.0, self.border_color))
             .shadow(Shadow {
                 offset: [0, 0],
@@ -955,7 +1002,7 @@ impl Theme {
         };
         egui::Frame::NONE
             .fill(self.floating_window_bg)
-            .corner_radius(CornerRadius::same(10))
+            .corner_radius(self.widget_cr(10))
             .stroke(Stroke::new(1.0, border))
             .shadow(Shadow {
                 offset: [0, 0],
@@ -986,7 +1033,7 @@ impl Theme {
         };
         egui::Frame::NONE
             .fill(self.panel_bg)
-            .corner_radius(CornerRadius::same(12))
+            .corner_radius(self.widget_cr(12))
             .stroke(Stroke::new(1.0, self.border_color))
             .shadow(Shadow {
                 offset: [0, 0],
@@ -1022,7 +1069,7 @@ impl Theme {
     pub fn tab_frame(&self) -> egui::Frame {
         egui::Frame::NONE
             .fill(self.bg2)
-            .corner_radius(CornerRadius::same(8))
+            .corner_radius(self.widget_cr(8))
             .stroke(Stroke::new(1.0, self.border_color))
             .inner_margin(egui::Margin::symmetric(4, 2))
     }
@@ -1050,30 +1097,18 @@ impl Theme {
     /// Floating tool shelf frame — sits below the toolbar, overlaying the canvas.
     /// Rounded container with subtle shadow, matching website `.card` pattern.
     pub fn tool_shelf_frame(&self) -> egui::Frame {
-        match self.mode {
-            ThemeMode::Dark => egui::Frame::NONE
-                .fill(self.tool_shelf_bg)
-                .corner_radius(CornerRadius::same(8))
-                .stroke(Stroke::new(1.0, self.border_color))
-                .shadow(Shadow {
-                    offset: [0, 0],
-                    blur: self.scaled_shadow_blur(6),
-                    spread: 0,
-                    color: Color32::from_black_alpha(self.scaled_shadow_alpha(40)),
-                })
-                .inner_margin(egui::Margin::symmetric(10, 5)),
-            ThemeMode::Light => egui::Frame::NONE
-                .fill(self.tool_shelf_bg)
-                .corner_radius(CornerRadius::same(8))
-                .stroke(Stroke::new(1.0, Color32::from_rgb(208, 208, 222)))
-                .shadow(Shadow {
-                    offset: [0, 0],
-                    blur: self.scaled_shadow_blur(4),
-                    spread: 0,
-                    color: Color32::from_black_alpha(self.scaled_shadow_alpha(14)),
-                })
-                .inner_margin(egui::Margin::symmetric(10, 5)),
-        }
+        let r = CornerRadius::same(self.tool_shelf_rounding as u8);
+        egui::Frame::NONE
+            .fill(self.tool_shelf_bg)
+            .corner_radius(r)
+            .stroke(Stroke::new(1.0, self.tool_shelf_border))
+            .shadow(Shadow {
+                offset: [0, 0],
+                blur: self.scaled_shadow_blur(6),
+                spread: 0,
+                color: Color32::from_black_alpha(self.scaled_shadow_alpha(40)),
+            })
+            .inner_margin(egui::Margin::symmetric(10, 5))
     }
 
     pub fn icon_button_bg_for(ui: &egui::Ui) -> Color32 {
@@ -1086,7 +1121,7 @@ impl Theme {
     pub fn icon_button_active_for(ui: &egui::Ui) -> Color32 {
         ui.ctx().data_mut(|d| {
             d.get_persisted::<Color32>(egui::Id::new("paintfe_icon_button_active"))
-                .unwrap_or(ui.visuals().widgets.active.bg_fill)
+                .unwrap_or(ui.visuals().selection.bg_fill)
         })
     }
 

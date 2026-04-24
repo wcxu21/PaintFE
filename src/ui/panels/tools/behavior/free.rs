@@ -104,7 +104,7 @@ mod tests {
     use image::Rgba;
 
     #[test]
-    fn fill_press_commits_previous_preview_and_starts_new_fill() {
+    fn fill_press_commits_previous_preview_and_applies_new_fill() {
         let mut tools = ToolsPanel::default();
         let mut canvas_state = CanvasState::new(4, 4);
         let committed_color = Rgba([255, 0, 0, 255]);
@@ -136,6 +136,7 @@ mod tests {
             None,
         );
 
+        // Previous preview should be committed to the layer
         assert_eq!(
             *canvas_state.layers[canvas_state.active_layer_index]
                 .pixels
@@ -143,8 +144,12 @@ mod tests {
             committed_color
         );
 
-        let active_fill = tools.fill_state.active_fill.as_ref().unwrap();
-        assert_eq!((active_fill.start_x, active_fill.start_y), (3, 3));
-        assert!(canvas_state.preview_layer.is_some());
+        // New fill should be applied directly at the click position
+        assert_eq!(
+            *canvas_state.layers[canvas_state.active_layer_index]
+                .pixels
+                .get_pixel(3, 3),
+            Rgba([0, 0, 255, 255])
+        );
     }
 }

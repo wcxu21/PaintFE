@@ -1005,7 +1005,7 @@ impl Canvas {
 
         // Draw pixel grid overlay when zoomed in
         if state.show_pixel_grid && self.zoom >= 8.0 {
-            self.draw_pixel_grid(&painter, image_rect, state, canvas_rect);
+            self.draw_pixel_grid(&painter, image_rect, state, canvas_rect, debug_settings);
         }
 
         // Draw mirror axis overlay
@@ -1055,6 +1055,10 @@ impl Canvas {
                 ui.ctx(),
             );
             state.selection_mask = Some(mask); // put it back
+        }
+
+        if !state.fill_commit_overlays.is_empty() {
+            self.draw_fill_commit_overlays(&painter, image_rect, state, ui.ctx());
         }
 
         // 2. Draw the in-progress drag preview (while dragging a selection tool).
@@ -1242,7 +1246,9 @@ impl Canvas {
             if state.preview_layer.is_some() {
                 let tool_using = tools
                     .as_ref()
-                    .is_some_and(|t| t.stroke_tracker.uses_preview_layer);
+                    .is_some_and(|t| {
+                        t.stroke_tracker.uses_preview_layer || t.should_keep_fill_preview_overlay()
+                    });
                 if !tool_using {
                     state.clear_preview_state();
                     state.mark_dirty(None);
@@ -1317,7 +1323,9 @@ impl Canvas {
                 // Check if a tool stroke is active ÔÇö if so, leave preview_layer alone.
                 let tool_using_preview = tools
                     .as_ref()
-                    .is_some_and(|t| t.stroke_tracker.uses_preview_layer);
+                    .is_some_and(|t| {
+                        t.stroke_tracker.uses_preview_layer || t.should_keep_fill_preview_overlay()
+                    });
                 if !tool_using_preview {
                     state.clear_preview_state();
                 }
@@ -1358,6 +1366,89 @@ impl Canvas {
                 o.rotation.to_degrees(),
                 o.scale_x * 100.0,
             )
+        });
+
+        // Tool info data (for bottom-left info overlay).
+        let tool_info_data: Option<String> = tools.as_ref().and_then(|t| {
+            match t.active_tool {
+                crate::components::tools::Tool::Line => {
+                    let lt = &t.line_state.line_tool;
+                    if lt.stage == crate::components::tools::LineStage::Dragging
+                        || lt.stage == crate::components::tools::LineStage::Editing
+                    {
+                        let p0 = lt.control_points[0];
+                        let p3 = lt.control_points[3];
+                        let dx = p3.x - p0.x;
+                        let dy = p3.y - p0.y;
+                        let length = (dx * dx + dy * dy).sqrt();
+                        Some(format!(
+                            "Line: {:.1}px | Pos: ({:.0}, {:.0}) \u{2192} ({:.0}, {:.0})",
+                            length, p0.x, p0.y, p3.x, p3.y
+                        ))
+                    } else {
+                        None
+                    }
+                }
+                crate::components::tools::Tool::RectangleSelect
+                | crate::components::tools::Tool::EllipseSelect => {
+                    if t.selection_state.dragging {
+                        if let (Some(s), Some(e)) =
+                            (t.selection_state.drag_start, t.selection_state.drag_end)
+                        {
+                            let w = (e.x - s.x).abs();
+                            let h = (e.y - s.y).abs();
+                            let cx = (s.x + e.x) / 2.0;
+                            let cy = (s.y + e.y) / 2.0;
+                            let label = if t.active_tool
+                                == crate::components::tools::Tool::RectangleSelect
+                            {
+                                "Rect"
+                            } else {
+                                "Ellipse"
+                            };
+                            Some(format!(
+                                "{}: {:.0}x{:.0} | Center: ({:.0}, {:.0})",
+                                label, w, h, cx, cy
+                            ))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }
+                crate::components::tools::Tool::Shapes => {
+                    let ss = &t.shapes_state;
+                    if ss.is_drawing {
+                        if let (Some(start), Some(end)) = (ss.draw_start, ss.draw_end) {
+                            let w = (end[0] - start[0]).abs();
+                            let h = (end[1] - start[1]).abs();
+                            let cx = (start[0] + end[0]) / 2.0;
+                            let cy = (start[1] + end[1]) / 2.0;
+                            Some(format!(
+                                "Shape: {:.0}x{:.0} | Center: ({:.0}, {:.0})",
+                                w, h, cx, cy
+                            ))
+                        } else {
+                            None
+                        }
+                    } else if let Some(ref placed) = ss.placed {
+                        let w = placed.hw * 2.0;
+                        let h = placed.hh * 2.0;
+                        let mut s = format!(
+                            "Shape: {:.0}x{:.0} | Center: ({:.0}, {:.0})",
+                            w, h, placed.cx, placed.cy
+                        );
+                        if placed.rotation != 0.0 {
+                            s.push_str(&format!(" | Rot: {:.1}\u{b0}", placed.rotation.to_degrees()));
+                        }
+                        Some(s)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            }
         });
 
         // Check if Pencil tool is active before consuming tools
@@ -1464,7 +1555,8 @@ impl Canvas {
         // Handle tool input - Call every frame while mouse button is held
         if let Some(tools) = tools {
             // Only block input if there's a modal window/popup or pointer is over any UI element
-            let ui_blocking = egui::Popup::is_any_open(ui.ctx()) || ui.ctx().is_pointer_over_egui();
+            let pointer_over_egui = ui.ctx().is_pointer_over_egui();
+            let ui_blocking = egui::Popup::is_any_open(ui.ctx()) || pointer_over_egui;
 
             // Get mouse position and check if over canvas.
             // On Wayland with a graphics tablet the stylus may route events as
@@ -1473,6 +1565,9 @@ impl Canvas {
             let mouse_pos = ui.input(|i| {
                 i.pointer.interact_pos().or_else(|| {
                     i.events.iter().rev().find_map(|e| match e {
+                        egui::Event::PointerButton {
+                            pressed: true, pos, ..
+                        } => Some(*pos),
                         egui::Event::Touch {
                             phase: egui::TouchPhase::Start | egui::TouchPhase::Move,
                             pos,
@@ -1483,6 +1578,70 @@ impl Canvas {
                 })
             });
             let pointer_over_canvas = mouse_pos.is_some_and(|pos| canvas_rect.contains(pos));
+            let raw_pointer_button_on_canvas = ui.input(|i| {
+                if pointer_over_egui {
+                    return false;
+                }
+                i.events.iter().any(|e| match e {
+                    egui::Event::PointerButton {
+                        pressed: true, pos, ..
+                    } => image_rect.contains(*pos),
+                    egui::Event::Touch {
+                        phase: egui::TouchPhase::Start,
+                        pos,
+                        ..
+                    } => image_rect.contains(*pos),
+                    _ => false,
+                })
+            });
+            let shift_held_now = ui.input(|i| i.modifiers.shift);
+            let raw_fill_clicks: Vec<crate::components::tools::FillPendingClick> =
+                if tools.active_tool == crate::components::tools::Tool::Fill && !pointer_over_egui
+                {
+                    ui.input(|i| {
+                        i.events
+                            .iter()
+                            .filter_map(|e| match e {
+                                egui::Event::PointerButton {
+                                    pressed: true,
+                                    pos,
+                                    button,
+                                    ..
+                                } if matches!(
+                                    button,
+                                    egui::PointerButton::Primary
+                                        | egui::PointerButton::Secondary
+                                ) && image_rect.contains(*pos) =>
+                                {
+                                    self.screen_to_canvas(*pos, canvas_rect, state).map(
+                                        |canvas_pos| crate::components::tools::FillPendingClick {
+                                            pos: canvas_pos,
+                                            use_secondary: *button
+                                                == egui::PointerButton::Secondary,
+                                            global_fill: shift_held_now,
+                                        },
+                                    )
+                                }
+                                egui::Event::Touch {
+                                    phase: egui::TouchPhase::Start,
+                                    pos,
+                                    ..
+                                } if image_rect.contains(*pos) => {
+                                    self.screen_to_canvas(*pos, canvas_rect, state).map(
+                                        |canvas_pos| crate::components::tools::FillPendingClick {
+                                            pos: canvas_pos,
+                                            use_secondary: false,
+                                            global_fill: shift_held_now,
+                                        },
+                                    )
+                                }
+                                _ => None,
+                            })
+                            .collect()
+                    })
+                } else {
+                    Vec::new()
+                };
 
             // Get canvas position (will be None if not over image)
             let canvas_pos =
@@ -1514,6 +1673,8 @@ impl Canvas {
             // Collect ALL sub-frame PointerMoved events for smooth strokes.
             // At 21 FPS with a 1000Hz mouse, there can be ~48 intermediate
             // positions between frames. Processing all of them eliminates gaps.
+            // When painting, use unclamped conversion so strokes can start from
+            // off-canvas and still track motion back onto the canvas.
             let raw_motion_events: Vec<(f32, f32)> = if is_painting {
                 ui.input(|i| {
                     i.events
@@ -1538,20 +1699,12 @@ impl Canvas {
                                 Pos2::new(center_x, center_y),
                                 Vec2::new(image_width, image_height),
                             );
-                            if !ir.contains(screen_pos) {
-                                return None;
-                            }
                             let rel_x = (screen_pos.x - ir.min.x) / self.zoom;
                             let rel_y = (screen_pos.y - ir.min.y) / self.zoom;
-                            if rel_x >= 0.0
-                                && rel_x < state.width as f32
-                                && rel_y >= 0.0
-                                && rel_y < state.height as f32
-                            {
-                                Some((rel_x, rel_y))
-                            } else {
-                                None
-                            }
+                            // Pass raw coordinates — draw functions clip to canvas
+                            // bounds internally. Off-canvas positions produce no
+                            // pixels but maintain natural stroke flow.
+                            Some((rel_x, rel_y))
                         })
                         .collect()
                 })
@@ -1569,7 +1722,11 @@ impl Canvas {
                 || tools.text_state.dragging_handle
                 // Magic Wand reacts to a single click; block only if pointer genuinely
                 // left the canvas, not because a UI panel is "over" the viewport rect.
-                || tools.active_tool == crate::components::tools::Tool::MagicWand;
+                || tools.active_tool == crate::components::tools::Tool::MagicWand
+                // Brush/Pencil/Eraser/Line: allow off-canvas drag so users can start
+                // strokes from outside the canvas for better edge coverage.
+                || tools.line_state.line_tool.stage != crate::components::tools::LineStage::Idle
+                || tools.is_stroke_active();
             // When editing a text layer block, handles (rotation, delete) can be drawn outside
             // canvas bounds ÔÇö allow input so the user can click/drag them.
             // This also overrides ui_blocking, because the handles may overlap panels.
@@ -1591,10 +1748,12 @@ impl Canvas {
             let allow_input = !modal_open
                 && !paste_consumed_input
                 && (!ui_blocking
+                    || raw_pointer_button_on_canvas
                     || text_drag_override
                     || keyboard_tool_override
                     || pending_tool_commit)
                 && (pointer_over_canvas
+                    || raw_pointer_button_on_canvas
                     || is_painting
                     || tool_drag_active
                     || text_handles_active
@@ -1602,6 +1761,14 @@ impl Canvas {
                     || pending_tool_commit);
 
             if allow_input {
+                if tools.active_tool == crate::components::tools::Tool::Fill {
+                    for click in raw_fill_clicks {
+                        if tools.fill_state.pending_clicks.len() >= 64 {
+                            let _ = tools.fill_state.pending_clicks.pop_front();
+                        }
+                        tools.fill_state.pending_clicks.push_back(click);
+                    }
+                }
                 tools.handle_input(
                     ui,
                     state,
@@ -2289,25 +2456,25 @@ impl Canvas {
                 mouse_pos.and_then(|pos| self.screen_to_canvas(pos, canvas_rect, state));
 
             let debug_text = if let Some((cx, cy, sw, sh, rot_deg, scale_pct)) = paste_info {
-                // Paste overlay active ÔÇö show paste-specific info.
+                // Paste overlay active — show paste-specific info.
                 format!(
-                    "Paste: {:.0}├ù{:.0} | Pos: ({:.0}, {:.0}) | Rot: {:.1}┬░ | Scale: {:.0}%",
+                    "Paste: {:.0}x{:.0} | Pos: ({:.0}, {:.0}) | Rot: {:.1}deg | Scale: {:.0}%",
                     sw, sh, cx, cy, rot_deg, scale_pct
                 )
             } else if let Some((w, h)) = sel_drag_info {
-                // Selection being drawn ÔÇö show selection dimensions.
+                // Selection being drawn — show selection dimensions.
                 let mouse_info = if let Some((mx, my)) = canvas_pos {
                     format!(" | Cursor: {}, {}", mx, my)
                 } else {
                     String::new()
                 };
-                format!("Selection: {:.0}├ù{:.0}{}", w, h, mouse_info)
+                format!("Selection: {:.0}x{:.0}{}", w, h, mouse_info)
             } else {
-                // Default ÔÇö build custom info based on settings
+                // Default — build custom info based on settings
                 let mut parts = Vec::new();
 
                 if debug_settings.debug_show_canvas_size {
-                    parts.push(format!("{}├ù{}", state.width, state.height));
+                    parts.push(format!("{}x{}", state.width, state.height));
                 }
 
                 if debug_settings.debug_show_zoom {
@@ -2430,6 +2597,33 @@ impl Canvas {
 
                 // Draw text
                 painter.galley(ops_pos, ops_galley, egui::Color32::TRANSPARENT);
+            }
+
+            // ====================================================================
+            // TOOL INFO OVERLAY  (bottom-left, context-sensitive, single line)
+            // ====================================================================
+            if debug_settings.show_tool_info && let Some(ref info_text) = tool_info_data {
+                    let font_id = egui::FontId::monospace(9.0);
+                    let text_color = Color32::from_gray(200);
+
+                    let galley = ui.painter().layout_no_wrap(
+                        info_text.clone(),
+                        font_id,
+                        text_color,
+                    );
+
+                    // Position at bottom-left of canvas
+                    let info_pos = canvas_rect.left_bottom()
+                        + egui::vec2(10.0, -(galley.size().y + 10.0));
+                    let info_rect = egui::Align2::LEFT_TOP.anchor_rect(
+                        egui::Rect::from_min_size(info_pos, galley.size()),
+                    );
+
+                    // Draw semi-transparent black background
+                    painter.rect_filled(info_rect.expand(4.0), 2.0, Color32::from_black_alpha(120));
+
+                    // Draw text
+                    painter.galley(info_pos, galley, egui::Color32::TRANSPARENT);
             }
         }
     }

@@ -33,7 +33,7 @@ impl BrightnessContrastDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
-                paint_dialog_header(ui, &colors, "☀", &t!("dialog.brightness_contrast"));
+                if paint_dialog_header(ui, &colors, "☀", &t!("dialog.brightness_contrast")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
 
                 section_label(ui, &colors, "ADJUSTMENTS");
@@ -155,7 +155,7 @@ impl HueSaturationDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(380.0);
-                paint_dialog_header(ui, &colors, "🎨", &t!("dialog.hue_saturation"));
+                if paint_dialog_header(ui, &colors, "🎨", &t!("dialog.hue_saturation")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
 
                 section_label(ui, &colors, "GLOBAL ADJUSTMENTS");
@@ -376,7 +376,7 @@ impl ExposureDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 160.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(320.0);
-                paint_dialog_header(ui, &colors, "📷", &t!("dialog.exposure"));
+                if paint_dialog_header(ui, &colors, "📷", &t!("dialog.exposure")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
 
                 section_label(ui, &colors, "EXPOSURE");
@@ -505,7 +505,7 @@ impl HighlightsShadowsDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
-                paint_dialog_header(ui, &colors, "◑", &t!("dialog.highlights_shadows"));
+                if paint_dialog_header(ui, &colors, "◑", &t!("dialog.highlights_shadows")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
 
                 section_label(ui, &colors, "TONAL ADJUSTMENTS");
@@ -717,7 +717,7 @@ impl LevelsDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 200.0, 40.0))
             .show(ctx, |ui| {
                 ui.set_min_width(400.0);
-                paint_dialog_header(ui, &colors, "📊", &t!("dialog.levels"));
+                if paint_dialog_header(ui, &colors, "📊", &t!("dialog.levels")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
 
                 // --- Channel selector ---
@@ -1031,7 +1031,7 @@ impl CurvesDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 195.0, 40.0))
             .show(ctx, |ui| {
                 ui.set_min_width(390.0);
-                paint_dialog_header(ui, &colors, "📈", &t!("dialog.curves"));
+                if paint_dialog_header(ui, &colors, "📈", &t!("dialog.curves")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
 
                 // --- Channel selector row ---
@@ -1452,7 +1452,7 @@ impl TemperatureTintDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(360.0);
-                paint_dialog_header(ui, &colors, "☀", &t!("dialog.temperature_tint"));
+                if paint_dialog_header(ui, &colors, "☀", &t!("dialog.temperature_tint")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
 
                 section_label(ui, &colors, "WHITE BALANCE");
@@ -1657,7 +1657,7 @@ impl ThresholdDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 160.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(320.0);
-                paint_dialog_header(ui, &colors, "◑", &t!("dialog.threshold"));
+                if paint_dialog_header(ui, &colors, "◑", &t!("dialog.threshold")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
 
                 section_label(ui, &colors, "THRESHOLD");
@@ -1762,7 +1762,7 @@ impl PosterizeDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 160.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(320.0);
-                paint_dialog_header(ui, &colors, "🎨", &t!("dialog.posterize"));
+                if paint_dialog_header(ui, &colors, "🎨", &t!("dialog.posterize")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
 
                 section_label(ui, &colors, "POSTERIZE");
@@ -1872,7 +1872,7 @@ impl ColorBalanceDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 185.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(370.0);
-                paint_dialog_header(ui, &colors, "⚖", &t!("dialog.color_balance"));
+                if paint_dialog_header(ui, &colors, "⚖", &t!("dialog.color_balance")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
 
                 // Zone selector
@@ -2052,7 +2052,7 @@ impl GradientMapDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 185.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(370.0);
-                paint_dialog_header(ui, &colors, "🌈", &t!("dialog.gradient_map"));
+                if paint_dialog_header(ui, &colors, "🌈", &t!("dialog.gradient_map")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
 
                 // Preset buttons
@@ -2205,7 +2205,7 @@ impl BlackAndWhiteDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 185.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(370.0);
-                paint_dialog_header(ui, &colors, "🎨", &t!("dialog.black_and_white"));
+                if paint_dialog_header(ui, &colors, "🎨", &t!("dialog.black_and_white")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
 
                 // Quick presets
@@ -2368,7 +2368,7 @@ impl VibranceDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
-                paint_dialog_header(ui, &colors, "✨", &t!("dialog.vibrance"));
+                if paint_dialog_header(ui, &colors, "✨", &t!("dialog.vibrance")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
 
                 section_label(ui, &colors, "VIBRANCE");
@@ -2438,3 +2438,4 @@ impl VibranceDialog {
 }
 
 // ============================================================================
+

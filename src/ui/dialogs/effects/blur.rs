@@ -10,7 +10,7 @@ impl BokehBlurDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
-                paint_dialog_header(ui, &colors, "\u{2B55}", &t!("dialog.bokeh_blur"));
+                if paint_dialog_header(ui, &colors, "\u{2B55}", &t!("dialog.bokeh_blur")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
                 section_label(ui, &colors, "BLUR SETTINGS");
 
@@ -140,7 +140,7 @@ impl MotionBlurDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
-                paint_dialog_header(ui, &colors, "\u{27A1}", &t!("dialog.motion_blur"));
+                if paint_dialog_header(ui, &colors, "\u{27A1}", &t!("dialog.motion_blur")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
                 section_label(ui, &colors, "MOTION SETTINGS");
 
@@ -227,7 +227,7 @@ impl BoxBlurDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
-                paint_dialog_header(ui, &colors, "\u{25A3}", &t!("dialog.box_blur"));
+                if paint_dialog_header(ui, &colors, "\u{25A3}", &t!("dialog.box_blur")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
                 section_label(ui, &colors, "BLUR SETTINGS");
 
@@ -312,7 +312,7 @@ impl ZoomBlurDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 190.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(380.0);
-                paint_dialog_header(ui, &colors, "\u{25CE}", &t!("dialog.zoom_blur"));
+                if paint_dialog_header(ui, &colors, "\u{25CE}", &t!("dialog.zoom_blur")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
 
                 let mut changed = false;
@@ -581,4 +581,5 @@ effect_dialog_base!(CrystallizeDialog {
     seed: u32 = 42,
     first_open: bool = true
 });
+
 

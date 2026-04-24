@@ -301,6 +301,7 @@ settings.general.debug_zoom=Niveau de zoom
 settings.general.debug_fps=Compteur FPS
 settings.general.debug_gpu=Infos GPU
 settings.general.debug_operations=Progression des opérations
+settings.general.show_tool_info=Afficher les infos d'outil
 settings.general.reset_defaults=Réinitialiser par défaut
 settings.hardware.preferred_gpu=GPU préféré
 settings.hardware.adapter=Adaptateur :

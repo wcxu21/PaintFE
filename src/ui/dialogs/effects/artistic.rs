@@ -10,7 +10,7 @@ impl InkDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
-                paint_dialog_header(ui, &colors, "\u{1F58B}", &t!("dialog.ink"));
+                if paint_dialog_header(ui, &colors, "\u{1F58B}", &t!("dialog.ink")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
                 section_label(ui, &colors, "INK SETTINGS");
 
@@ -77,7 +77,7 @@ impl OilPaintingDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(360.0);
-                paint_dialog_header(ui, &colors, "\u{1F3A8}", &t!("dialog.oil_painting"));
+                if paint_dialog_header(ui, &colors, "\u{1F3A8}", &t!("dialog.oil_painting")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
                 section_label(ui, &colors, "PAINTING SETTINGS");
 
@@ -156,7 +156,7 @@ impl ColorFilterDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(380.0);
-                paint_dialog_header(ui, &colors, "\u{1F3AD}", &t!("dialog.color_filter"));
+                if paint_dialog_header(ui, &colors, "\u{1F3AD}", &t!("dialog.color_filter")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
                 section_label(ui, &colors, "FILTER SETTINGS");
 
@@ -291,7 +291,7 @@ impl ContoursDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 190.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(400.0);
-                paint_dialog_header(ui, &colors, "\u{1F5FA}", &t!("dialog.contours"));
+                if paint_dialog_header(ui, &colors, "\u{1F5FA}", &t!("dialog.contours")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
                 section_label(ui, &colors, "CONTOUR SETTINGS");
 
@@ -491,4 +491,5 @@ impl ContoursDialog {
         result
     }
 }
+
 

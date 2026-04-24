@@ -40,6 +40,10 @@ pub struct AppSettings {
     pub preferred_gpu: String,
     /// Pixel grid display mode
     pub pixel_grid_mode: PixelGridMode,
+    /// Pixel grid outline color (dual-stroke black outline)
+    pub pixel_grid_outline_color: Color32,
+    /// Pixel grid center color (dual-stroke white center)
+    pub pixel_grid_center_color: Color32,
     /// Maximum number of undo steps
     pub max_undo_steps: usize,
     /// Auto-save interval in minutes (0 = disabled)
@@ -59,6 +63,7 @@ pub struct AppSettings {
 
     // Debug panel settings
     pub show_debug_panel: bool,
+    pub show_tool_info: bool,
     pub debug_show_canvas_size: bool,
     pub debug_show_zoom: bool,
     pub debug_show_fps: bool,
@@ -173,6 +178,8 @@ pub struct AppSettings {
     pub window_rounding: Option<f32>,
     /// Menu rounding override (px).
     pub menu_rounding: Option<f32>,
+    /// Tool shelf corner radius override (px).
+    pub tool_shelf_rounding: Option<f32>,
 
     // Theme color overrides (None = use preset default)
     pub ov_bg_color: Option<Color32>,
@@ -191,6 +198,7 @@ pub struct AppSettings {
     pub ov_button_active: Option<Color32>,
     pub ov_floating_window_bg: Option<Color32>,
     pub ov_tool_shelf_bg: Option<Color32>,
+    pub ov_tool_shelf_border: Option<Color32>,
     pub ov_toolbar_bg: Option<Color32>,
     pub ov_menu_bg: Option<Color32>,
     pub ov_icon_button_bg: Option<Color32>,
@@ -215,6 +223,8 @@ impl Default for AppSettings {
             gpu_acceleration: true,
             preferred_gpu: "Auto".to_string(),
             pixel_grid_mode: PixelGridMode::Auto,
+            pixel_grid_outline_color: Color32::from_black_alpha(90),
+            pixel_grid_center_color: Color32::from_white_alpha(100),
             max_undo_steps: 50,
             auto_save_minutes: 0,
             neon_mode: false,
@@ -224,6 +234,7 @@ impl Default for AppSettings {
             birefnet_model_path: String::new(),
 
             show_debug_panel: true,
+            show_tool_info: true,
             debug_show_canvas_size: true,
             debug_show_zoom: true,
             debug_show_fps: false,
@@ -295,7 +306,7 @@ impl Default for AppSettings {
 
             // Advanced Customization defaults
             persisted_text_font_family: String::new(),
-            clipboard_copy_transparent_cutout: false,
+            clipboard_copy_transparent_cutout: true,
             persist_window_maximized: false,
 
             // Advanced Customization defaults
@@ -308,6 +319,7 @@ impl Default for AppSettings {
             widget_rounding: None,
             window_rounding: None,
             menu_rounding: None,
+            tool_shelf_rounding: None,
             ov_bg_color: None,
             ov_panel_bg: None,
             ov_window_bg: None,
@@ -324,6 +336,7 @@ impl Default for AppSettings {
             ov_button_active: None,
             ov_floating_window_bg: None,
             ov_tool_shelf_bg: None,
+            ov_tool_shelf_border: None,
             ov_toolbar_bg: None,
             ov_menu_bg: None,
             ov_icon_button_bg: None,
@@ -464,6 +477,7 @@ impl AppSettings {
             button_active: self.ov_button_active,
             floating_window_bg: self.ov_floating_window_bg,
             tool_shelf_bg: self.ov_tool_shelf_bg,
+            tool_shelf_border: self.ov_tool_shelf_border,
             toolbar_bg: self.ov_toolbar_bg,
             menu_bg: self.ov_menu_bg,
             icon_button_bg: self.ov_icon_button_bg,
@@ -479,6 +493,7 @@ impl AppSettings {
             widget_rounding: self.widget_rounding,
             window_rounding: self.window_rounding,
             menu_rounding: self.menu_rounding,
+            tool_shelf_rounding: self.tool_shelf_rounding,
             glow_intensity: Some(self.glow_intensity),
             shadow_strength: Some(self.shadow_strength),
         }
@@ -486,6 +501,11 @@ impl AppSettings {
 
     /// Export all theme-related settings as a shareable plain-text string.
     pub fn export_theme_to_string(&self) -> String {
+        let effective_accent = if self.theme_preset == ThemePreset::Custom {
+            self.custom_accent
+        } else {
+            self.theme_preset.accent_colors()
+        };
         let mode_str = match self.theme_mode {
             ThemeMode::Light => "light",
             ThemeMode::Dark => "dark",
@@ -525,12 +545,12 @@ impl AppSettings {
              ui_density={density_str}\n\
              glow_intensity={}\n\
              shadow_strength={}\n",
-            Self::color_to_str(self.custom_accent.light_normal),
-            Self::color_to_str(self.custom_accent.light_faint),
-            Self::color_to_str(self.custom_accent.light_strong),
-            Self::color_to_str(self.custom_accent.dark_normal),
-            Self::color_to_str(self.custom_accent.dark_faint),
-            Self::color_to_str(self.custom_accent.dark_strong),
+            Self::color_to_str(effective_accent.light_normal),
+            Self::color_to_str(effective_accent.light_faint),
+            Self::color_to_str(effective_accent.light_strong),
+            Self::color_to_str(effective_accent.dark_normal),
+            Self::color_to_str(effective_accent.dark_faint),
+            Self::color_to_str(effective_accent.dark_strong),
             self.neon_mode,
             self.advanced_customization,
             self.glow_intensity,
@@ -544,6 +564,9 @@ impl AppSettings {
         }
         if let Some(v) = self.menu_rounding {
             content.push_str(&format!("menu_rounding={v}\n"));
+        }
+        if let Some(v) = self.tool_shelf_rounding {
+            content.push_str(&format!("tool_shelf_rounding={v}\n"));
         }
         let ov_fields: &[(&str, Option<Color32>)] = &[
             ("ov_bg_color", self.ov_bg_color),
@@ -562,6 +585,7 @@ impl AppSettings {
             ("ov_button_active", self.ov_button_active),
             ("ov_floating_window_bg", self.ov_floating_window_bg),
             ("ov_tool_shelf_bg", self.ov_tool_shelf_bg),
+            ("ov_tool_shelf_border", self.ov_tool_shelf_border),
             ("ov_toolbar_bg", self.ov_toolbar_bg),
             ("ov_menu_bg", self.ov_menu_bg),
             ("ov_icon_button_bg", self.ov_icon_button_bg),
@@ -684,6 +708,9 @@ impl AppSettings {
         if let Some(v) = map.get("menu_rounding") {
             self.menu_rounding = v.parse::<f32>().ok();
         }
+        if let Some(v) = map.get("tool_shelf_rounding") {
+            self.tool_shelf_rounding = v.parse::<f32>().ok();
+        }
         macro_rules! import_ov {
             ($key:expr, $field:ident) => {
                 if let Some(v) = map.get($key) {
@@ -707,6 +734,7 @@ impl AppSettings {
         import_ov!("ov_button_active", ov_button_active);
         import_ov!("ov_floating_window_bg", ov_floating_window_bg);
         import_ov!("ov_tool_shelf_bg", ov_tool_shelf_bg);
+        import_ov!("ov_tool_shelf_border", ov_tool_shelf_border);
         import_ov!("ov_toolbar_bg", ov_toolbar_bg);
         import_ov!("ov_menu_bg", ov_menu_bg);
         import_ov!("ov_icon_button_bg", ov_icon_button_bg);
@@ -719,12 +747,21 @@ impl AppSettings {
         import_ov!("ov_glow_accent", ov_glow_accent);
         import_ov!("ov_accent3", ov_accent3);
         import_ov!("ov_accent4", ov_accent4);
+
+        if self.theme_preset != ThemePreset::Custom {
+            self.custom_accent = self.theme_preset.accent_colors();
+        }
     }
 
     /// Save settings to disk
     pub fn save(&self) {
         let Some(path) = Self::settings_path() else {
             return;
+        };
+        let effective_accent = if self.theme_preset == ThemePreset::Custom {
+            self.custom_accent
+        } else {
+            self.theme_preset.accent_colors()
         };
         let mode_str = match self.theme_mode {
             ThemeMode::Light => "light",
@@ -760,6 +797,8 @@ impl AppSettings {
              gpu_acceleration={}\n\
              preferred_gpu={}\n\
              pixel_grid_mode={grid_str}\n\
+             pixel_grid_outline_color={}\n\
+             pixel_grid_center_color={}\n\
              max_undo_steps={}\n\
              auto_save_minutes={}\n\
              accent_light_normal={}\n\
@@ -780,14 +819,16 @@ impl AppSettings {
              confirm_on_exit={}\n",
             self.gpu_acceleration,
             self.preferred_gpu,
+            Self::color_to_str(self.pixel_grid_outline_color),
+            Self::color_to_str(self.pixel_grid_center_color),
             self.max_undo_steps,
             self.auto_save_minutes,
-            Self::color_to_str(self.custom_accent.light_normal),
-            Self::color_to_str(self.custom_accent.light_faint),
-            Self::color_to_str(self.custom_accent.light_strong),
-            Self::color_to_str(self.custom_accent.dark_normal),
-            Self::color_to_str(self.custom_accent.dark_faint),
-            Self::color_to_str(self.custom_accent.dark_strong),
+            Self::color_to_str(effective_accent.light_normal),
+            Self::color_to_str(effective_accent.light_faint),
+            Self::color_to_str(effective_accent.light_strong),
+            Self::color_to_str(effective_accent.dark_normal),
+            Self::color_to_str(effective_accent.dark_faint),
+            Self::color_to_str(effective_accent.dark_strong),
             self.neon_mode,
             self.checkerboard_brightness,
             self.onnx_runtime_path,
@@ -1042,6 +1083,9 @@ impl AppSettings {
         if let Some(v) = self.menu_rounding {
             content.push_str(&format!("menu_rounding={v}\n"));
         }
+        if let Some(v) = self.tool_shelf_rounding {
+            content.push_str(&format!("tool_shelf_rounding={v}\n"));
+        }
         // Color overrides — skip lines for None values (saves space)
         let ov_fields: &[(&str, Option<Color32>)] = &[
             ("ov_bg_color", self.ov_bg_color),
@@ -1060,6 +1104,7 @@ impl AppSettings {
             ("ov_button_active", self.ov_button_active),
             ("ov_floating_window_bg", self.ov_floating_window_bg),
             ("ov_tool_shelf_bg", self.ov_tool_shelf_bg),
+            ("ov_tool_shelf_border", self.ov_tool_shelf_border),
             ("ov_toolbar_bg", self.ov_toolbar_bg),
             ("ov_menu_bg", self.ov_menu_bg),
             ("ov_icon_button_bg", self.ov_icon_button_bg),
@@ -1078,7 +1123,9 @@ impl AppSettings {
                 content.push_str(&format!("{}={}\n", key, Self::color_to_str(*c)));
             }
         }
-        let _ = std::fs::write(path, content);
+        if let Err(e) = std::fs::write(&path, &content) {
+            eprintln!("[PaintFE] Failed to save settings to {}: {}", path.display(), e);
+        }
     }
 
     /// Load settings from disk (returns default if file missing or corrupt)
@@ -1134,6 +1181,14 @@ impl AppSettings {
                         "off" => PixelGridMode::AlwaysOff,
                         _ => PixelGridMode::Auto,
                     };
+                }
+                "pixel_grid_outline_color" => {
+                    s.pixel_grid_outline_color = Self::str_to_color(val)
+                        .unwrap_or(Color32::from_black_alpha(90));
+                }
+                "pixel_grid_center_color" => {
+                    s.pixel_grid_center_color = Self::str_to_color(val)
+                        .unwrap_or(Color32::from_white_alpha(100));
                 }
                 "max_undo_steps" => {
                     s.max_undo_steps = val.parse().unwrap_or(50);
@@ -1392,6 +1447,9 @@ impl AppSettings {
                 "menu_rounding" => {
                     s.menu_rounding = val.parse().ok();
                 }
+                "tool_shelf_rounding" => {
+                    s.tool_shelf_rounding = val.parse().ok();
+                }
                 // Color overrides
                 "ov_bg_color" => {
                     s.ov_bg_color = Self::str_to_opt_color(val);
@@ -1441,6 +1499,9 @@ impl AppSettings {
                 "ov_tool_shelf_bg" => {
                     s.ov_tool_shelf_bg = Self::str_to_opt_color(val);
                 }
+                "ov_tool_shelf_border" => {
+                    s.ov_tool_shelf_border = Self::str_to_opt_color(val);
+                }
                 "ov_toolbar_bg" => {
                     s.ov_toolbar_bg = Self::str_to_opt_color(val);
                 }
@@ -1484,6 +1545,13 @@ impl AppSettings {
                     }
                 }
             }
+        }
+
+        // Corruption detection: if language field looks like a number, the
+        // settings file was saved with the old misaligned argument order.
+        // Reset to defaults to avoid cascading corruption.
+        if s.language.parse::<f64>().is_ok() {
+            return Self::default();
         }
 
         // If not custom, override accent with preset colors

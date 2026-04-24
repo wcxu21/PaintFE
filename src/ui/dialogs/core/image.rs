@@ -137,7 +137,7 @@ impl ResizeImageDialog {
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
 
-                paint_dialog_header(ui, &colors, "\u{1F4D0}", &t!("dialog.resize_image"));
+                if paint_dialog_header(ui, &colors, "\u{1F4D0}", &t!("dialog.resize_image")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
 
                 // -- Preset (own grid so it doesn't misalign the dims columns) --
@@ -442,7 +442,7 @@ impl ResizeCanvasDialog {
             .show(ctx, |ui| {
                 ui.set_min_width(340.0);
 
-                paint_dialog_header(ui, &colors, "\u{1F532}", &t!("dialog.resize_canvas"));
+                if paint_dialog_header(ui, &colors, "\u{1F532}", &t!("dialog.resize_canvas")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
 
                 // -- Dimensions section --
@@ -813,7 +813,7 @@ impl GaussianBlurDialog {
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
 
-                paint_dialog_header(ui, &colors, "\u{1F4A7}", &t!("dialog.gaussian_blur"));
+                if paint_dialog_header(ui, &colors, "\u{1F4A7}", &t!("dialog.gaussian_blur")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
 
                 // -- Parameters --
@@ -935,4 +935,5 @@ impl GaussianBlurDialog {
 // ============================================================================
 // LAYER TRANSFORM DIALOG - with interactive rotation gizmo
 // ============================================================================
+
 

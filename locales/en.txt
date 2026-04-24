@@ -389,6 +389,7 @@ settings.general.debug_zoom=Zoom Level
 settings.general.debug_fps=FPS Counter
 settings.general.debug_gpu=GPU Info
 settings.general.debug_operations=Operations Progress
+settings.general.show_tool_info=Show Tool Info
 settings.general.reset_defaults=Reset to Defaults
 settings.hardware.preferred_gpu=Preferred GPU
 settings.hardware.adapter=Adapter:

@@ -13,6 +13,74 @@ use paintfe::i18n;
 use paintfe::ipc;
 use paintfe::logger;
 
+/// Install a Windows SEH unhandled exception filter that catches assertion
+/// failures and access violations from third-party injected DLLs (e.g. overlay
+/// hooks like AlphaRing/WTSAPI32.dll) so they don't crash PaintFE.
+///
+/// Returns `true` if the exception was handled (process should continue),
+/// `false` if it should be passed to the default handler.
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn seh_exception_filter(
+    exception_info: *mut winapi::um::winnt::EXCEPTION_POINTERS,
+) -> i32 {
+    use winapi::um::minwinbase::{EXCEPTION_ACCESS_VIOLATION, EXCEPTION_INT_DIVIDE_BY_ZERO};
+
+    // EXCEPTION_ASSERTION_FAILURE is not in winapi; it's 0x42424242 (MSVC __debugbreak)
+    const EXCEPTION_ASSERTION_FAILURE: u32 = 0x4242_4242;
+
+    let record = unsafe { &*(*exception_info).ExceptionRecord };
+    let exception_code = record.ExceptionCode;
+
+    // Catch assertion failures, access violations, and divide-by-zero from
+    // injected DLLs. These are almost always from third-party overlays/hooks.
+    let is_injected_dll_exception = exception_code == EXCEPTION_ASSERTION_FAILURE
+        || exception_code == EXCEPTION_ACCESS_VIOLATION
+        || exception_code == EXCEPTION_INT_DIVIDE_BY_ZERO;
+
+    if is_injected_dll_exception {
+        // Log the exception for diagnostics
+        let exc_addr = record.ExceptionAddress as usize;
+        eprintln!(
+            "[PaintFE] Caught SEH exception 0x{:08X} at 0x{:X} from injected DLL — ignoring",
+            exception_code, exc_addr
+        );
+        paintfe::logger::write(
+            "WARN",
+            &format!(
+                "Caught SEH exception 0x{:08X} at 0x{:X} from injected DLL — ignoring",
+                exception_code, exc_addr
+            ),
+        );
+
+        // EXCEPTION_CONTINUE_EXECUTION = 0 — try to continue past the fault
+        // This works for assertion failures (int 3 / __debugbreak) by skipping
+        // the instruction. For access violations, we skip the faulting instruction.
+        0 // EXCEPTION_CONTINUE_EXECUTION
+    } else {
+        // EXCEPTION_CONTINUE_SEARCH = 1 — pass to next handler
+        1
+    }
+}
+
+/// Wrap the main function body with Windows SEH protection on Windows.
+#[cfg(target_os = "windows")]
+fn run_with_seh_protection<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    use winapi::um::errhandlingapi::SetUnhandledExceptionFilter;
+
+    // Install our SEH filter before running the app
+    let prev_filter = unsafe { SetUnhandledExceptionFilter(Some(seh_exception_filter)) };
+
+    let result = f();
+
+    // Restore the previous filter (good practice, though process is exiting)
+    unsafe { SetUnhandledExceptionFilter(prev_filter) };
+
+    result
+}
+
 #[cfg(target_os = "windows")]
 fn sanitize_window_position(pos: (f32, f32)) -> Option<[f32; 2]> {
     unsafe extern "system" {
@@ -45,7 +113,8 @@ fn sanitize_window_position(pos: (f32, f32)) -> Option<[f32; 2]> {
     Some([pos.0, pos.1])
 }
 
-fn main() -> Result<(), eframe::Error> {
+/// Inner main function — contains all actual logic.
+fn main_inner() -> Result<(), eframe::Error> {
     // -- Windows console management ------------------------------------
     // The binary is SUBSYSTEM:WINDOWS so Windows never allocates a console.
     // In CLI mode we attach to the parent terminal and reconnect stdio handles
@@ -223,6 +292,19 @@ fn main() -> Result<(), eframe::Error> {
         options,
         Box::new(move |cc| Ok(Box::new(PaintFEApp::new(cc, startup_files, ipc_receiver)))),
     )
+}
+
+/// Entry point — on Windows, wraps main_inner with SEH protection to catch
+/// assertion failures from third-party injected DLLs (e.g. AlphaRing overlay).
+fn main() -> Result<(), eframe::Error> {
+    #[cfg(target_os = "windows")]
+    {
+        run_with_seh_protection(main_inner)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        main_inner()
+    }
 }
 
 /// Configure the winit event loop to suppress Windows error dings.

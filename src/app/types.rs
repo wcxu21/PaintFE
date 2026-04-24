@@ -46,6 +46,7 @@ struct PendingPasteRequest {
     source_center: Option<egui::Pos2>,
     use_source_center: bool,
     overwrite_transparent_pixels: bool,
+    overwrite_mask: Option<image::GrayImage>,
 }
 
 /// Result delivered from a background IO thread.

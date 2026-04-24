@@ -5,6 +5,7 @@ impl Canvas {
         image_rect: Rect,
         state: &CanvasState,
         viewport: Rect,
+        settings: &crate::assets::AppSettings,
     ) {
         let pixel_size = self.zoom;
 
@@ -30,10 +31,9 @@ impl Canvas {
             .ceil()
             .min(state.height as f32) as u32;
 
-        // Grid colors using difference blend approach:
-        // Draw black outline + white center line for visibility on any background
-        let grid_outline = Color32::from_black_alpha(90);
-        let grid_center = Color32::from_white_alpha(100);
+        // Grid colors from user settings (dual-stroke: outline + center)
+        let grid_outline = settings.pixel_grid_outline_color;
+        let grid_center = settings.pixel_grid_center_color;
 
         // Adaptive stroke width: thinner lines as zoom increases for less visual clutter
         // At zoom 8 (minimum grid display): base thickness (1.2 and 0.6, which is 40% smaller than original 2.0 and 1.0)
@@ -854,9 +854,10 @@ impl Canvas {
                 for x in 0..cols {
                     if (x + y) % 2 != 0 {
                         pixels[y * cols + x] = dark;
-                    }
-                }
             }
+        }
+    }
+
             let image = ColorImage {
                 size: [cols, rows],
                 source_size: egui::Vec2::new(cols as f32, rows as f32),
@@ -899,6 +900,75 @@ impl Canvas {
         let uv = Rect::from_min_max(Pos2::new(u_min, v_min), Pos2::new(u_max, v_max));
 
         painter.image(tex.id(), rect, uv, Color32::WHITE);
+    }
+
+    fn draw_fill_commit_overlays(
+        &self,
+        painter: &egui::Painter,
+        image_rect: Rect,
+        state: &mut CanvasState,
+        ctx: &egui::Context,
+    ) {
+        let now = std::time::Instant::now();
+        state.fill_commit_overlays.retain_mut(|overlay| {
+            let elapsed = now.saturating_duration_since(overlay.started_at);
+            if elapsed >= overlay.duration {
+                return false;
+            }
+
+            let width = overlay.bounds.2.saturating_sub(overlay.bounds.0) + 1;
+            let height = overlay.bounds.3.saturating_sub(overlay.bounds.1) + 1;
+            if width == 0 || height == 0 || overlay.rgba.is_empty() {
+                return false;
+            }
+
+            if overlay.texture.is_none() {
+                let color_image = ColorImage::from_rgba_unmultiplied(
+                    [width as usize, height as usize],
+                    &overlay.rgba,
+                );
+                overlay.texture = Some(ctx.load_texture(
+                    format!(
+                        "fill_commit_overlay_{}_{}_{}",
+                        overlay.started_at.elapsed().as_nanos(),
+                        overlay.bounds.0,
+                        overlay.bounds.1
+                    ),
+                    ImageData::Color(Arc::new(color_image)),
+                    TextureOptions {
+                        magnification: TextureFilter::Nearest,
+                        minification: TextureFilter::Linear,
+                        ..Default::default()
+                    },
+                ));
+            }
+
+            let fade =
+                1.0 - (elapsed.as_secs_f32() / overlay.duration.as_secs_f32()).clamp(0.0, 1.0);
+            let alpha = (255.0 * fade + 0.5) as u8;
+            let tint = Color32::from_rgba_premultiplied(alpha, alpha, alpha, alpha);
+
+            if let Some(tex) = &overlay.texture {
+                let screen_x0 = (image_rect.min.x + overlay.bounds.0 as f32 * self.zoom).round();
+                let screen_y0 = (image_rect.min.y + overlay.bounds.1 as f32 * self.zoom).round();
+                let screen_x1 =
+                    (image_rect.min.x + (overlay.bounds.2 + 1) as f32 * self.zoom).round();
+                let screen_y1 =
+                    (image_rect.min.y + (overlay.bounds.3 + 1) as f32 * self.zoom).round();
+                painter.image(
+                    tex.id(),
+                    Rect::from_min_max(
+                        Pos2::new(screen_x0, screen_y0),
+                        Pos2::new(screen_x1, screen_y1),
+                    ),
+                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                    tint,
+                );
+            }
+
+            ctx.request_repaint();
+            true
+        });
     }
 
     /// Converts screen position to canvas pixel coordinates

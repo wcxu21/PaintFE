@@ -1,31 +1,8 @@
+include!("dialogs_menu/modal_flow.rs");
+
 impl PaintFEApp {
     fn show_runtime_dialogs_menu(&mut self, ctx: &egui::Context) {
-        // Settings Window
-        self.settings_window
-            .show(ctx, &mut self.settings, &mut self.theme, &self.assets);
-        // Re-probe ONNX availability only when paths change
-        let current_paths = (
-            self.settings.onnx_runtime_path.clone(),
-            self.settings.birefnet_model_path.clone(),
-        );
-        if current_paths != self.onnx_last_probed_paths {
-            self.onnx_last_probed_paths = current_paths;
-            self.onnx_available = if !self.settings.onnx_runtime_path.is_empty()
-                && !self.settings.birefnet_model_path.is_empty()
-            {
-                crate::ops::ai::probe_onnx_runtime(&self.settings.onnx_runtime_path).is_ok()
-                    && std::path::Path::new(&self.settings.birefnet_model_path).exists()
-            } else {
-                false
-            };
-        }
-
-        // --- Process Modal Dialogs ---
-        self.process_active_dialog(ctx);
-        let modal_open = self.save_file_dialog.open
-            || self.new_file_dialog.open
-            || !matches!(self.active_dialog, ActiveDialog::None)
-            || self.pending_paste_request.is_some();
+        let modal_open = self.handle_runtime_modal_flow(ctx);
 
         // --- Top Menu Bar ---
         let menu_kb = self.settings.keybindings.clone();
@@ -602,7 +579,7 @@ impl PaintFEApp {
                                 )
                                 .clicked()
                             {
-                                self.do_snapshot_op("Rotate 90┬░ CW", |s| {
+                                self.do_snapshot_op("Rotate 90 deg CW", |s| {
                                     crate::ops::transform::rotate_canvas_90cw(s);
                                 });
                                 ui.close();
@@ -616,7 +593,7 @@ impl PaintFEApp {
                                 )
                                 .clicked()
                             {
-                                self.do_snapshot_op("Rotate 90┬░ CCW", |s| {
+                                self.do_snapshot_op("Rotate 90 deg CCW", |s| {
                                     crate::ops::transform::rotate_canvas_90ccw(s);
                                 });
                                 ui.close();
@@ -630,7 +607,7 @@ impl PaintFEApp {
                                 )
                                 .clicked()
                             {
-                                self.do_snapshot_op("Rotate 180┬░", |s| {
+                                self.do_snapshot_op("Rotate 180 deg", |s| {
                                     crate::ops::transform::rotate_canvas_180(s);
                                 });
                                 ui.close();
@@ -2072,6 +2049,7 @@ impl PaintFEApp {
                                         .inner_margin(egui::Margin::symmetric(10, 4))
                                         .corner_radius(rounding)
                                         .show(ui, |ui| {
+                                            ui.set_min_height(18.0);
                                             ui.horizontal(|ui| {
                                                 // Dirty dot indicator
                                                 if *is_dirty {
@@ -2089,8 +2067,10 @@ impl PaintFEApp {
                                                 }
 
                                                 // Tab label (clickable + draggable for reorder)
+                                                // Use Button instead of Label to prevent text selection cursor
                                                 let label_resp = ui.add(
-                                                    egui::Label::new(text)
+                                                    egui::Button::new(text)
+                                                        .frame(false)
                                                         .sense(egui::Sense::click_and_drag()),
                                                 );
                                                 if label_resp.clicked() {
@@ -2102,23 +2082,22 @@ impl PaintFEApp {
                                                     });
                                                 }
 
-                                                // Dimension text for active tab (dimmed)
-                                                if is_active {
-                                                    let dim_text = egui::RichText::new(format!(
-                                                        "{}x{}",
-                                                        cw, ch
-                                                    ))
-                                                    .size(10.0)
-                                                    .color(match self.theme.mode {
-                                                        crate::theme::ThemeMode::Dark => {
-                                                            egui::Color32::from_gray(80)
-                                                        }
-                                                        crate::theme::ThemeMode::Light => {
-                                                            egui::Color32::from_gray(160)
-                                                        }
-                                                    });
-                                                    ui.label(dim_text);
-                                                }
+                                                // Always reserve the size-label slot so the
+                                                // tab row doesn't jitter when switching projects.
+                                                let dim_text = egui::RichText::new(format!(
+                                                    "{}x{}",
+                                                    cw, ch
+                                                ))
+                                                .size(10.0)
+                                                .color(match self.theme.mode {
+                                                    crate::theme::ThemeMode::Dark => {
+                                                        egui::Color32::from_gray(80)
+                                                    }
+                                                    crate::theme::ThemeMode::Light => {
+                                                        egui::Color32::from_gray(160)
+                                                    }
+                                                });
+                                                ui.add_visible(is_active, egui::Label::new(dim_text));
 
                                                 // Close button -- always visible (subtle when not hovered)
                                                 // Previously gated on `is_active || was_hovered` which caused the
@@ -2178,9 +2157,9 @@ impl PaintFEApp {
                                         let stripe_rect = egui::Rect::from_min_max(
                                             egui::pos2(
                                                 tab_rect.left() + 2.0,
-                                                tab_rect.bottom() - 2.0,
+                                                tab_rect.bottom() - 3.0,
                                             ),
-                                            egui::pos2(tab_rect.right() - 2.0, tab_rect.bottom()),
+                                            egui::pos2(tab_rect.right() - 2.0, tab_rect.bottom() - 1.0),
                                         );
                                         let stripe_alpha = (active_t * 255.0) as u8;
                                         let stripe_color = egui::Color32::from_rgba_unmultiplied(

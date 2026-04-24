@@ -102,7 +102,7 @@ impl ToolsPanel {
         forced_hardness: f32,
         anti_alias: bool,
     ) -> f32 {
-        // Hard-edge (no AA): binary cutoff
+        // Hard-edge (no AA): binary cutoff at exact radius
         if !anti_alias {
             return if dist < radius { 1.0 } else { 0.0 };
         }
@@ -110,8 +110,13 @@ impl ToolsPanel {
         // Anti-aliased: smoothstep fade
         let safe_hardness = forced_hardness.clamp(0.0, 0.99);
 
-        // For small brushes (radius < 3), force extra AA by extending beyond nominal radius
-        let (effective_radius, fade_width) = if radius < 3.0 {
+        // For very small radii (< 1.5px, i.e. size < 3px), keep the core at the
+        // actual radius and add a 1px AA feather outside.  This prevents inflating
+        // a 1px line into a ~5px blob while still giving smooth edges.
+        let (effective_radius, fade_width) = if radius < 1.5 {
+            // Core at actual radius, 1px AA feather outside
+            (radius + 1.0, 1.0)
+        } else if radius < 3.0 {
             // For tiny brushes, ensure at least 1.5px of AA range
             let aa_extend = 1.5;
             let extended_radius = radius + aa_extend;

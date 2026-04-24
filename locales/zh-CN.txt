@@ -301,6 +301,7 @@ settings.general.debug_zoom=缩放级别
 settings.general.debug_fps=FPS 计数器
 settings.general.debug_gpu=GPU 信息
 settings.general.debug_operations=操作进度
+settings.general.show_tool_info=显示工具信息
 settings.general.reset_defaults=重置为默认值
 settings.hardware.preferred_gpu=首选 GPU
 settings.hardware.adapter=适配器:

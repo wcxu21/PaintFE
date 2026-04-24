@@ -45,7 +45,7 @@ impl ColorRangeDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 170.0, 40.0))
             .show(ctx, |ui| {
                 ui.set_min_width(340.0);
-                paint_dialog_header(ui, &colors, "🎨", "Select Color Range");
+                if paint_dialog_header(ui, &colors, "🎨", "Select Color Range") { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
 
                 let mut changed = false;
@@ -161,3 +161,4 @@ impl ColorRangeDialog {
         result
     }
 }
+

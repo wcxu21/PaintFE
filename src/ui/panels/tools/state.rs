@@ -7,6 +7,7 @@ use eframe::egui;
 use egui::{Color32, Pos2, Rect, Vec2};
 use image::{GrayImage, Rgba};
 use rayon::prelude::*;
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -790,6 +791,20 @@ pub struct FillToolState {
     /// Cached flat RGBA snapshot of the active layer for preview recalculation.
     cached_flat_rgba: Option<FlatLayerCache>,
     gpu_preview_region: Vec<u8>,
+    /// Keep the previous preview visible until the next fill preview patch is ready.
+    pub defer_preview_clear: bool,
+    /// Optional deadline for clearing a committed fill preview overlay.
+    pub preview_clear_at: Option<Instant>,
+    /// Queued click parameters for rapid fill taps during async preview work.
+    pub pending_clicks: VecDeque<FillPendingClick>,
+}
+
+/// Parameters for a queued fill click (used when async preview is in flight).
+#[derive(Clone, Copy)]
+pub struct FillPendingClick {
+    pub pos: (u32, u32),
+    pub use_secondary: bool,
+    pub global_fill: bool,
 }
 
 impl Clone for FillToolState {
@@ -812,6 +827,9 @@ impl Clone for FillToolState {
             preview_in_flight: false,
             cached_flat_rgba: self.cached_flat_rgba.clone(),
             gpu_preview_region: self.gpu_preview_region.clone(),
+            defer_preview_clear: self.defer_preview_clear,
+            preview_clear_at: self.preview_clear_at,
+            pending_clicks: self.pending_clicks.clone(),
         }
     }
 }
@@ -821,7 +839,7 @@ impl Default for FillToolState {
         Self {
             tolerance: 5.0,
             anti_aliased: false,
-            distance_mode: WandDistanceMode::Perceptual,
+            distance_mode: WandDistanceMode::LegacyRgba,
             connectivity: FloodConnectivity::Four,
             active_fill: None,
             last_preview_tolerance: 5.0,
@@ -836,6 +854,9 @@ impl Default for FillToolState {
             preview_in_flight: false,
             cached_flat_rgba: None,
             gpu_preview_region: Vec::new(),
+            defer_preview_clear: false,
+            preview_clear_at: None,
+            pending_clicks: VecDeque::new(),
         }
     }
 }

@@ -66,7 +66,7 @@ impl LayerTransformDialog {
             .show(ctx, |ui| {
                 ui.set_min_width(370.0);
 
-                paint_dialog_header(ui, &colors, "\u{1F504}", &t!("dialog.layer_transform"));
+                if paint_dialog_header(ui, &colors, "\u{1F504}", &t!("dialog.layer_transform")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
 
                 // -- Interactive Rotation Gizmo --
@@ -480,7 +480,7 @@ impl AlignLayerDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 170.0, 70.0))
             .show(ctx, |ui| {
                 ui.set_min_width(340.0);
-                paint_dialog_header(ui, &colors, "\u{2B1A}", &t!("dialog.align_layer"));
+                if paint_dialog_header(ui, &colors, "\u{2B1A}", &t!("dialog.align_layer")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
                 section_label(ui, &colors, "ALIGN TO CANVAS");
                 ui.label("Moves the active raster layer using its non-transparent bounds.");
@@ -573,4 +573,5 @@ impl AlignLayerDialog {
 // ============================================================================
 // BRIGHTNESS / CONTRAST DIALOG
 // ============================================================================
+
 

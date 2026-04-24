@@ -14,11 +14,11 @@ impl PaintFEApp {
     }
 
     /// Show the floating Tools panel (minimalist vertical strip) - anchored to left edge
-    fn show_floating_tools_panel(&mut self, ctx: &egui::Context, screen_size_changed: bool) {
+    fn show_floating_tools_panel(&mut self, ctx: &egui::Context, _screen_size_changed: bool) {
         let mut show = self.window_visibility.tools;
         let mut close_clicked = false;
 
-        let first_show = self.tools_panel_pos.is_none();
+        let _first_show = self.tools_panel_pos.is_none();
         let screen_rect = ctx.content_rect();
         let (pos_x, pos_y) = self.tools_panel_pos.unwrap_or((12.0, 128.0));
 
@@ -33,7 +33,8 @@ impl PaintFEApp {
             .title_bar(false)
             .frame(self.theme.floating_window_frame_animated(hover_t));
 
-        if first_show || screen_size_changed {
+        // Always enforce anchored position so the panel stays put on resize
+        {
             let clamped =
                 Self::clamp_floating_pos(pos_x, pos_y, egui::vec2(114.0, 400.0), screen_rect);
             window = window.current_pos(clamped);
@@ -105,7 +106,7 @@ impl PaintFEApp {
     }
 
     /// Show the floating Layers panel
-    fn show_floating_layers_panel(&mut self, ctx: &egui::Context, screen_size_changed: bool) {
+    fn show_floating_layers_panel(&mut self, ctx: &egui::Context, _screen_size_changed: bool) {
         let mut show = self.window_visibility.layers;
         let mut close_clicked = false;
         self.is_pointer_over_layers_panel = false;
@@ -113,7 +114,7 @@ impl PaintFEApp {
         let screen_rect = ctx.content_rect();
         let screen_w = screen_rect.max.x;
 
-        let first_show = self.layers_panel_right_offset.is_none();
+        let _first_show = self.layers_panel_right_offset.is_none();
 
         // Default: 12px from right edge, 12px below menu bar
         let (right_off, y_pos) = self.layers_panel_right_offset.unwrap_or((264.0, 128.0));
@@ -131,8 +132,8 @@ impl PaintFEApp {
             .title_bar(false)
             .frame(self.theme.floating_window_frame_animated(hover_t));
 
-        // Only force position on first show or when screen size changes
-        if first_show || screen_size_changed {
+        // Always enforce anchored position so the panel stays put on resize
+        {
             let clamped =
                 Self::clamp_floating_pos(pos_x, y_pos, egui::vec2(180.0, 200.0), screen_rect);
             window = window.current_pos(clamped);
@@ -149,6 +150,7 @@ impl PaintFEApp {
             ) {
                 close_clicked = true;
             }
+
             if let Some(project) = self.projects.get_mut(self.active_project_index) {
                 self.layers_panel.show(
                     ui,
@@ -203,6 +205,12 @@ impl PaintFEApp {
                 // (same frame as click, no 1-frame delay).
                 self.tools_panel
                     .auto_switch_tool_for_layer(&project.canvas_state);
+            }
+
+            // Cancel paste overlay if the layer it was on was deleted.
+            // Must be after layers_panel.show() so pending_deleted_layer is set.
+            if self.paste_overlay.is_some() && self.layers_panel.pending_deleted_layer.is_some() {
+                self.cancel_paste_overlay();
             }
             // Drain pending GPU delete from the layers panel.
             self.layers_panel.pending_deleted_layer = None;
@@ -353,7 +361,7 @@ impl PaintFEApp {
     }
 
     /// Show the floating History panel
-    fn show_floating_history_panel(&mut self, ctx: &egui::Context, screen_size_changed: bool) {
+    fn show_floating_history_panel(&mut self, ctx: &egui::Context, _screen_size_changed: bool) {
         let mut show = self.window_visibility.history;
         let mut close_clicked = false;
 
@@ -361,7 +369,7 @@ impl PaintFEApp {
         let screen_w = screen_rect.max.x;
         let screen_h = screen_rect.max.y;
 
-        let first_show = self.history_panel_right_offset.is_none();
+        let _first_show = self.history_panel_right_offset.is_none();
 
         // Default: 12px from right edge, 12px from bottom
         let (right_off, bot_off) = self.history_panel_right_offset.unwrap_or((230.0, 242.0));
@@ -382,7 +390,8 @@ impl PaintFEApp {
             .title_bar(false)
             .frame(self.theme.floating_window_frame_animated(hover_t));
 
-        if first_show || screen_size_changed {
+        // Always enforce anchored position so the panel stays put on resize
+        {
             let clamped =
                 Self::clamp_floating_pos(pos_x, pos_y, egui::vec2(200.0, 200.0), screen_rect);
             window = window.current_pos(clamped);
@@ -426,14 +435,14 @@ impl PaintFEApp {
     }
 
     /// Show the floating Colors panel - anchored below tools
-    fn show_floating_colors_panel(&mut self, ctx: &egui::Context, screen_size_changed: bool) {
+    fn show_floating_colors_panel(&mut self, ctx: &egui::Context, _screen_size_changed: bool) {
         let mut show = self.window_visibility.colors;
         let mut close_clicked = false;
 
         let screen_rect = ctx.content_rect();
         let screen_h = screen_rect.max.y;
 
-        let first_show = self.colors_panel_left_offset.is_none();
+        let _first_show = self.colors_panel_left_offset.is_none();
 
         // Default: 12px from left, 12px from bottom (bot_off = ~360px panel height + 12)
         let (x_off, bot_off) = self.colors_panel_left_offset.unwrap_or((12.0, 372.0));
@@ -456,7 +465,8 @@ impl PaintFEApp {
             .title_bar(false)
             .frame(self.theme.floating_window_frame_animated(hover_t));
 
-        if first_show || screen_size_changed {
+        // Always enforce anchored position so the panel stays put on resize
+        {
             let clamped = Self::clamp_floating_pos(x_off, pos_y, panel_size, screen_rect);
             window = window.current_pos(clamped);
         }

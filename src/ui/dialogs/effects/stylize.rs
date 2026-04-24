@@ -10,7 +10,7 @@ impl GlowDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
-                paint_dialog_header(ui, &colors, "\u{2728}", &t!("dialog.glow"));
+                if paint_dialog_header(ui, &colors, "\u{2728}", &t!("dialog.glow")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
                 section_label(ui, &colors, "GLOW SETTINGS");
 
@@ -74,7 +74,7 @@ impl SharpenDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
-                paint_dialog_header(ui, &colors, "\u{1F4CC}", &t!("dialog.sharpen"));
+                if paint_dialog_header(ui, &colors, "\u{1F4CC}", &t!("dialog.sharpen")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
                 section_label(ui, &colors, "SHARPEN SETTINGS");
 
@@ -138,7 +138,7 @@ impl VignetteDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(350.0);
-                paint_dialog_header(ui, &colors, "\u{1F311}", &t!("dialog.vignette"));
+                if paint_dialog_header(ui, &colors, "\u{1F311}", &t!("dialog.vignette")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
                 section_label(ui, &colors, "VIGNETTE SETTINGS");
 
@@ -212,7 +212,7 @@ impl HalftoneDialog {
             .default_pos(egui::pos2(ctx.content_rect().center().x - 175.0, 60.0))
             .show(ctx, |ui| {
                 ui.set_min_width(370.0);
-                paint_dialog_header(ui, &colors, "\u{25CF}", &t!("dialog.halftone"));
+                if paint_dialog_header(ui, &colors, "\u{25CF}", &t!("dialog.halftone")) { result = DialogResult::Cancel; }
                 ui.add_space(4.0);
                 section_label(ui, &colors, "HALFTONE SETTINGS");
 
@@ -302,4 +302,5 @@ effect_dialog_base!(GridDialog {
     style_idx: usize = 0,
     first_open: bool = true
 });
+
 

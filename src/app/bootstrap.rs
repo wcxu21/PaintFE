@@ -404,12 +404,6 @@ impl PaintFEApp {
             if self.paste_overlay.is_some() {
                 self.commit_paste_overlay();
             }
-            // Clear selection on the project we're leaving so it doesn't
-            // linger as an unremovable ghost when we come back.
-            if let Some(project) = self.projects.get_mut(self.active_project_index) {
-                project.canvas_state.clear_selection();
-            }
-
             // Clear move-selection drag state
             self.move_sel_dragging = false;
             self.move_sel_last_canvas = None;
@@ -430,6 +424,7 @@ impl PaintFEApp {
         source_center: Option<egui::Pos2>,
         use_source_center: bool,
         overwrite_transparent_pixels: bool,
+        overwrite_mask: Option<image::GrayImage>,
     ) {
         if self.paste_overlay.is_some() {
             self.commit_paste_overlay();
@@ -446,6 +441,7 @@ impl PaintFEApp {
             source_center,
             use_source_center,
             overwrite_transparent_pixels,
+            overwrite_mask,
         };
 
         if request.image.width() > project.canvas_state.width
@@ -463,19 +459,23 @@ impl PaintFEApp {
         {
             payload
         } else if let Some(img) = crate::ops::clipboard::get_clipboard_image_pub() {
-            crate::ops::clipboard::ClipboardImageForPaste {
-                image: img,
-                source: ClipboardImageSource::Internal,
-                origin_center: None,
-                overwrite_transparent_pixels: true,
-            }
-        } else {
-            return;
-        };
+                crate::ops::clipboard::ClipboardImageForPaste {
+                    image: img,
+                    source: ClipboardImageSource::Internal,
+                    origin_center: None,
+                    overwrite_transparent_pixels: true,
+                    overwrite_mask: None,
+                }
+            } else {
+                return;
+            };
 
-        // Respect the user's "transparent cutout" setting: even if the clipboard
-        // payload says overwrite (internal copy), disable it when the setting is off.
-        let overwrite = payload.overwrite_transparent_pixels && cutout_enabled;
+        let overwrite = match payload.source {
+            ClipboardImageSource::Internal => payload.overwrite_transparent_pixels,
+            ClipboardImageSource::External => {
+                payload.overwrite_transparent_pixels && cutout_enabled
+            }
+        };
 
         let use_source_center =
             payload.source == ClipboardImageSource::Internal && payload.origin_center.is_some();
@@ -485,6 +485,7 @@ impl PaintFEApp {
             payload.origin_center,
             use_source_center,
             overwrite,
+            payload.overwrite_mask,
         );
     }
 
@@ -529,6 +530,7 @@ impl PaintFEApp {
             };
             let mut overlay = overlay;
             overlay.overwrite_transparent_pixels = request.overwrite_transparent_pixels;
+            overlay.overwrite_mask = request.overwrite_mask;
 
             project.canvas_state.clear_selection();
             self.paste_overlay = Some(overlay);

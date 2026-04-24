@@ -6,7 +6,7 @@ use crate::canvas::{CanvasState, TiledImage};
 use crate::ops::transform::Interpolation;
 use eframe::egui;
 use egui::{Color32, Pos2, Rect, Stroke, Vec2};
-use image::{Rgba, RgbaImage, imageops};
+use image::{GrayImage, Luma, Rgba, RgbaImage, imageops};
 use rayon::prelude::*;
 use std::sync::Mutex;
 use std::time::Instant;
@@ -36,6 +36,8 @@ struct ClipboardPayload {
     image: RgbaImage,
     source: ClipboardImageSource,
     origin_center: Option<Pos2>,
+    overwrite_transparent_pixels: bool,
+    overwrite_mask: Option<GrayImage>,
     copied_at: Instant,
 }
 
@@ -44,20 +46,38 @@ pub struct ClipboardImageForPaste {
     pub source: ClipboardImageSource,
     pub origin_center: Option<Pos2>,
     pub overwrite_transparent_pixels: bool,
+    pub overwrite_mask: Option<GrayImage>,
 }
 
 /// Store an image in the app clipboard.
-fn set_clipboard_image(img: RgbaImage, origin_center: Option<Pos2>) {
+fn set_clipboard_image(
+    img: RgbaImage,
+    origin_center: Option<Pos2>,
+    overwrite_transparent_pixels: bool,
+    overwrite_mask: Option<GrayImage>,
+) {
     *APP_CLIPBOARD.lock().unwrap_or_else(|e| e.into_inner()) = Some(ClipboardPayload {
         image: img,
         source: ClipboardImageSource::Internal,
         origin_center,
+        overwrite_transparent_pixels,
+        overwrite_mask,
         copied_at: Instant::now(),
     });
 }
 
-fn copy_image_to_clipboard(img: RgbaImage, origin_center: Option<Pos2>) {
-    set_clipboard_image(img.clone(), origin_center);
+fn copy_image_to_clipboard(
+    img: RgbaImage,
+    origin_center: Option<Pos2>,
+    overwrite_transparent_pixels: bool,
+    overwrite_mask: Option<GrayImage>,
+) {
+    set_clipboard_image(
+        img.clone(),
+        origin_center,
+        overwrite_transparent_pixels,
+        overwrite_mask,
+    );
     copy_to_system_clipboard(&img);
 }
 
@@ -97,26 +117,29 @@ pub fn get_clipboard_image_for_paste() -> Option<ClipboardImageForPaste> {
         if let Some(internal_payload) = &internal
             && images_match(&system_img, &internal_payload.image)
         {
+                return Some(ClipboardImageForPaste {
+                    image: internal_payload.image.clone(),
+                    source: internal_payload.source,
+                    origin_center: internal_payload.origin_center,
+                    overwrite_transparent_pixels: internal_payload.overwrite_transparent_pixels,
+                    overwrite_mask: internal_payload.overwrite_mask.clone(),
+                });
+            }
             return Some(ClipboardImageForPaste {
-                image: internal_payload.image.clone(),
-                source: internal_payload.source,
-                origin_center: internal_payload.origin_center,
+                image: system_img,
+                source: ClipboardImageSource::External,
+                origin_center: None,
                 overwrite_transparent_pixels: true,
+                overwrite_mask: None,
             });
-        }
-        return Some(ClipboardImageForPaste {
-            image: system_img,
-            source: ClipboardImageSource::External,
-            origin_center: None,
-            overwrite_transparent_pixels: false,
-        });
     }
 
     internal.map(|payload| ClipboardImageForPaste {
         image: payload.image,
         source: payload.source,
         origin_center: payload.origin_center,
-        overwrite_transparent_pixels: true,
+        overwrite_transparent_pixels: payload.overwrite_transparent_pixels,
+        overwrite_mask: payload.overwrite_mask,
     })
 }
 
@@ -533,20 +556,31 @@ pub fn copy_selection(state: &CanvasState, transparent_cutout: bool) -> bool {
     let w = max_x - min_x + 1;
     let h = max_y - min_y + 1;
     let mut clip = RgbaImage::new(w, h);
+    let mut overwrite_mask = GrayImage::new(w, h);
 
     for y in min_y..=max_y {
         let mask_row = y as usize * mw as usize;
         for x in min_x..=max_x {
-            if !transparent_cutout || mask_raw[mask_row + x as usize] > 0 {
+            if mask_raw[mask_row + x as usize] > 0 {
                 let px = layer.pixels.get_pixel(x, y);
                 clip.put_pixel(x - min_x, y - min_y, *px);
+                overwrite_mask.put_pixel(x - min_x, y - min_y, Luma([255]));
+            } else if !transparent_cutout {
+                // Preserve the selection silhouette in the copied image even when
+                // transparent overwrite is disabled on paste.
+                clip.put_pixel(x - min_x, y - min_y, Rgba([0, 0, 0, 0]));
             }
         }
     }
 
     let center_x = min_x as f32 + w as f32 / 2.0;
     let center_y = min_y as f32 + h as f32 / 2.0;
-    copy_image_to_clipboard(clip, Some(Pos2::new(center_x, center_y)));
+    copy_image_to_clipboard(
+        clip,
+        Some(Pos2::new(center_x, center_y)),
+        transparent_cutout,
+        Some(overwrite_mask),
+    );
     true
 }
 
@@ -554,7 +588,12 @@ pub fn copy_overlay(overlay: &PasteOverlay) -> bool {
     let Some((img, origin_center)) = overlay.rasterize_for_clipboard() else {
         return false;
     };
-    copy_image_to_clipboard(img, Some(origin_center));
+    copy_image_to_clipboard(
+        img,
+        Some(origin_center),
+        overlay.overwrite_transparent_pixels,
+        overlay.overwrite_mask.clone(),
+    );
     true
 }
 
@@ -612,11 +651,13 @@ pub fn extract_to_overlay(state: &mut CanvasState) -> Option<PasteOverlay> {
 
         let layer = &state.layers[idx];
         let mut clip = RgbaImage::new(w, h);
+        let mut overwrite_mask = GrayImage::new(w, h);
         for y in min_y..=max_y {
             let mask_row = y as usize * mw as usize;
             for x in min_x..=max_x {
                 if mask_raw[mask_row + x as usize] > 0 {
                     clip.put_pixel(x - min_x, y - min_y, *layer.pixels.get_pixel(x, y));
+                    overwrite_mask.put_pixel(x - min_x, y - min_y, Luma([255]));
                 }
             }
         }
@@ -630,6 +671,8 @@ pub fn extract_to_overlay(state: &mut CanvasState) -> Option<PasteOverlay> {
         let center_y = min_y as f32 + h as f32 / 2.0;
         let mut overlay = PasteOverlay::new(clip, cw, ch);
         overlay.center = Pos2::new(center_x, center_y);
+        overlay.overwrite_transparent_pixels = false;
+        overlay.overwrite_mask = Some(overwrite_mask);
         Some(overlay)
     } else {
         // -- No selection: extract entire active layer --
@@ -676,6 +719,8 @@ pub struct PasteOverlay {
     pub anti_aliasing: bool,
     /// When true, transparent source pixels overwrite destination pixels.
     pub overwrite_transparent_pixels: bool,
+    /// Optional mask limiting transparent overwrite to the copied selection shape.
+    pub overwrite_mask: Option<GrayImage>,
 
     // --- Interaction state ---
     /// Which handle is being dragged, if any.
@@ -736,6 +781,7 @@ impl PasteOverlay {
             interpolation: Interpolation::Nearest,
             anti_aliasing: false,
             overwrite_transparent_pixels: false,
+            overwrite_mask: None,
             active_handle: None,
             drag_start_mouse: None,
             drag_start_center: Pos2::ZERO,
@@ -755,8 +801,11 @@ impl PasteOverlay {
 
     /// Start a paste from the app clipboard. Returns None if clipboard is empty.
     pub fn from_clipboard(canvas_w: u32, canvas_h: u32) -> Option<Self> {
-        let img = get_clipboard_image_for_paste()?.image;
-        Some(Self::new(img, canvas_w, canvas_h))
+        let payload = get_clipboard_image_for_paste()?;
+        let mut overlay = Self::new(payload.image, canvas_w, canvas_h);
+        overlay.overwrite_transparent_pixels = payload.overwrite_transparent_pixels;
+        overlay.overwrite_mask = payload.overwrite_mask;
+        Some(overlay)
     }
 
     /// Start a paste from an external image.
@@ -873,6 +922,18 @@ impl PasteOverlay {
         out
     }
 
+    fn overwrite_mask_allows(&self, local_x: f32, local_y: f32, scaled_mask: Option<&GrayImage>) -> bool {
+        let Some(mask) = scaled_mask else {
+            return true;
+        };
+        if local_x < 0.0 || local_y < 0.0 {
+            return false;
+        }
+        let ix = (local_x as u32).min(mask.width().saturating_sub(1));
+        let iy = (local_y as u32).min(mask.height().saturating_sub(1));
+        mask.get_pixel(ix, iy)[0] > 0
+    }
+
     fn apply_transformed_pixels_to_image(&self, out: &mut RgbaImage, overwrite_transparent: bool) {
         let src_w = self.source.width() as f32;
         let src_h = self.source.height() as f32;
@@ -884,6 +945,9 @@ impl PasteOverlay {
             scaled_h,
             self.interpolation.to_filter(),
         );
+        let scaled_mask = self.overwrite_mask.as_ref().map(|mask| {
+            imageops::resize(mask, scaled_w, scaled_h, imageops::FilterType::Nearest)
+        });
 
         let cw = out.width();
         let ch = out.height();
@@ -951,7 +1015,9 @@ impl PasteOverlay {
                     *scaled.get_pixel(ix, iy)
                 };
 
-                if overwrite_transparent {
+                if overwrite_transparent
+                    && self.overwrite_mask_allows(local_x, local_y, scaled_mask.as_ref())
+                {
                     out.put_pixel(dx, dy, src_px);
                 } else if src_px[3] > 0 {
                     let dst = *out.get_pixel(dx, dy);
@@ -1694,10 +1760,13 @@ impl PasteOverlay {
 
         let filter = self.interpolation.to_filter();
 
-        // Scale the source image first.
+        // Scale the source image and mask first.
         let scaled_w = (src_w * self.scale_x).round().max(1.0) as u32;
         let scaled_h = (src_h * self.scale_y).round().max(1.0) as u32;
         let scaled = imageops::resize(&self.source, scaled_w, scaled_h, filter);
+        let scaled_mask = self.overwrite_mask.as_ref().map(|mask| {
+            imageops::resize(mask, scaled_w, scaled_h, imageops::FilterType::Nearest)
+        });
 
         // Compute tight bounding box of the rotated paste to limit iteration.
         let corners = self.corners_canvas();
@@ -1771,7 +1840,9 @@ impl PasteOverlay {
                         let iy = (local_y as u32).min(scaled_h - 1);
                         *scaled.get_pixel(ix, iy)
                     };
-                    if overwrite_transparent {
+                    if overwrite_transparent
+                        && self.overwrite_mask_allows(local_x, local_y, scaled_mask.as_ref())
+                    {
                         row_patches.push((dx, dy, src_px));
                     } else if src_px[3] > 0 {
                         let dst = *flat.get_pixel(dx, dy);
