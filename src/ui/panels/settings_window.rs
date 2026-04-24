@@ -877,19 +877,6 @@ impl SettingsWindow {
                     }
                 });
                 ui.end_row();
-
-                // Pixel grid center color
-                ui.label("Pixel Grid Center");
-                ui.horizontal(|ui| {
-                    if Self::color_row(ui, "", &mut settings.pixel_grid_center_color) {
-                        settings.save();
-                    }
-                    if ui.button("↺").on_hover_text("Reset to default").clicked() {
-                        settings.pixel_grid_center_color = Color32::from_white_alpha(100);
-                        settings.save();
-                    }
-                });
-                ui.end_row();
             });
         ui.label(
             egui::RichText::new(t!("settings.interface.zoom_filter_hint"))

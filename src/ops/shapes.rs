@@ -407,14 +407,16 @@ fn sdf_trapezoid(px: f32, py: f32, hx: f32, hy: f32) -> f32 {
 }
 
 /// SDF for a parallelogram (skewed rectangle).
+/// Both left and right sides slant equally; top edge is horizontal.
 fn sdf_parallelogram(px: f32, py: f32, hx: f32, hy: f32) -> f32 {
-    // Skew amount: shift top edge right, bottom edge left
     let skew = hx * 0.3;
-    // Effective x after un-skewing
-    let t = py / hy; // -1 at bottom, +1 at top (normalized)
-    let shift = skew * t * 0.5;
-    let ux = px - shift;
-    sdf_box(ux, py, hx - skew.abs() * 0.5, hy)
+    let verts = [
+        (-hx, -hy),
+        (hx, -hy),
+        (hx + skew, hy),
+        (-hx + skew, hy),
+    ];
+    sdf_convex_polygon(&verts, px, py)
 }
 
 /// SDF for a right triangle (right angle at bottom-left).
@@ -826,7 +828,7 @@ fn right_angle_triangle_outline_coverage(
 }
 
 /// Outline for the Parallelogram with sharp miter joints.
-/// Skewed rectangle with proper edge normal offsets.
+/// Uses polygon expansion with proper edge normal offsets.
 #[inline]
 fn parallelogram_outline_coverage(
     px: f32,
@@ -836,28 +838,15 @@ fn parallelogram_outline_coverage(
     outline_half: f32,
     anti_alias: bool,
 ) -> f32 {
-    let ol = outline_half;
     let skew = hx * 0.3;
-
-    // Outer vertices (expanding by outline width along normals)
-    let outer_verts = [
-        (-hx - ol, -hy - ol),
-        (hx - skew + ol, -hy - ol),
-        (hx + skew + ol, hy + ol),
-        (-hx - ol, hy + ol),
+    let verts = [
+        (-hx, -hy),
+        (hx, -hy),
+        (hx + skew, hy),
+        (-hx + skew, hy),
     ];
-    let outer_cov = coverage_from_sdf(sdf_polygon_path(&outer_verts, px, py), anti_alias);
-
-    // Inner vertices (contracting by outline width)
-    let inner_verts = [
-        (-hx + ol, -hy + ol),
-        (hx - skew - ol, -hy + ol),
-        (hx + skew - ol, hy - ol),
-        (-hx + ol, hy - ol),
-    ];
-    let inner_cov = coverage_from_sdf(sdf_polygon_path(&inner_verts, px, py), anti_alias);
-
-    (outer_cov - inner_cov).clamp(0.0, 1.0)
+    let band = convex_polygon_miter_distance(&verts, px, py).abs() - outline_half;
+    coverage_from_sdf(band, anti_alias)
 }
 
 #[inline]
@@ -893,6 +882,26 @@ fn shape_outline_coverage(
     }
 }
 
+/// Returns the local-space corner vertices of a shape for bounding-box computation.
+/// For most shapes this is the axis-aligned rectangle; for skewed shapes (parallelogram)
+/// it returns the actual vertices so the bounding box isn't clipped.
+fn shape_local_corners(kind: ShapeKind, hw: f32, hh: f32) -> [(f32, f32); 4] {
+    match kind {
+        ShapeKind::Parallelogram => {
+            let skew = hw * 0.3;
+            [
+                (-hw, -hh),
+                (hw, -hh),
+                (hw + skew, hh),
+                (-hw + skew, hh),
+            ]
+        }
+        _ => {
+            [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)]
+        }
+    }
+}
+
 /// Rasterize a shape into an RGBA buffer.
 ///
 /// Returns `(buf, buf_w, buf_h, offset_x, offset_y)` where offset is the
@@ -905,13 +914,8 @@ pub fn rasterize_shape(
     // Compute axis-aligned bounding box that contains the rotated shape
     let cos_r = placed.rotation.cos();
     let sin_r = placed.rotation.sin();
-    // Corners of the un-rotated box
-    let corners = [
-        (-placed.hw, -placed.hh),
-        (placed.hw, -placed.hh),
-        (placed.hw, placed.hh),
-        (-placed.hw, placed.hh),
-    ];
+    // Corners of the un-rotated shape (use actual vertices for skewed shapes)
+    let corners = shape_local_corners(placed.kind, placed.hw, placed.hh);
     let mut min_x = f32::MAX;
     let mut min_y = f32::MAX;
     let mut max_x = f32::MIN;
@@ -1041,12 +1045,7 @@ pub fn rasterize_shape_into(
 ) -> (u32, u32, i32, i32) {
     let cos_r = placed.rotation.cos();
     let sin_r = placed.rotation.sin();
-    let corners = [
-        (-placed.hw, -placed.hh),
-        (placed.hw, -placed.hh),
-        (placed.hw, placed.hh),
-        (-placed.hw, placed.hh),
-    ];
+    let corners = shape_local_corners(placed.kind, placed.hw, placed.hh);
     let mut min_x = f32::MAX;
     let mut min_y = f32::MAX;
     let mut max_x = f32::MIN;

@@ -6,6 +6,26 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
+## [1.2.10] - 2026-04-24
+
+### Added
+- **Paste alpha preservation option**: Added a configurable option to preserve alpha when pasting content.
+- **Line tool tracker**: Added a dedicated tracker for line-tool interactions.
+- **Length/position info line**: Added a new on-canvas info line that reports measurement and position details.
+
+### Changed
+- **Major modular refactor**: Broke up large modules into smaller, more maintainable components.
+- **Settings/UI configurability**: Expanded and refined settings options for improved customization.
+- **Off-canvas tool behavior**: Improved brush/tool behavior when interacting near or beyond canvas bounds.
+- **Fill tool rewrite**: Reworked the fill pipeline for more accurate region detection and application.
+
+### Fixed
+- **Selection persistence**: Selection state now remains consistent and reliable across editing flows.
+- **Panel sizing and option polish**: Fixed panel sizing issues and related option behavior inconsistencies.
+- **Shape correctness fixes**: Addressed shape rendering/behavior issues for more predictable results.
+
+---
+
 ## [1.2.9] - 2026-04-23
 
 ### Added
