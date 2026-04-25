@@ -117,7 +117,20 @@ impl PaintFEApp {
         // Handle scroll wheel zoom — only when mouse is over the canvas and NOT over a widget.
         let mut should_zoom = false;
         let mut zoom_amount = 0.0;
-        let pointer_over_widget = ctx.is_pointer_over_egui();
+        // On Wayland with a tablet, also check for active Touch events since
+        // is_pointer_over_egui() relies on interact_pos() which isn't updated by Touch.
+        let pointer_over_widget = ctx.is_pointer_over_egui()
+            || ctx.input(|i| {
+                i.events.iter().any(|e| {
+                    matches!(
+                        e,
+                        egui::Event::Touch {
+                            phase: egui::TouchPhase::Start | egui::TouchPhase::Move,
+                            ..
+                        }
+                    )
+                })
+            });
 
         if !modal_open {
             ctx.input_mut(|i| {
@@ -144,6 +157,16 @@ impl PaintFEApp {
                 self.canvas.zoom_around_screen_point(zoom_factor, pos, rect);
             } else {
                 self.canvas.apply_zoom(zoom_factor);
+            }
+        }
+
+        // --- Paste Overlay Keyboard Shortcuts ---
+        // Delete/Backspace cancels paste overlay (same as Escape)
+        if self.paste_overlay.is_some() {
+            let delete_pressed = ctx.input(|i| i.key_pressed(egui::Key::Delete));
+            let backspace_pressed = ctx.input(|i| i.key_pressed(egui::Key::Backspace));
+            if delete_pressed || backspace_pressed {
+                self.cancel_paste_overlay();
             }
         }
 
@@ -375,8 +398,15 @@ impl PaintFEApp {
                 }
             }
 
-            // Ctrl+Y — Redo
-            if kb.is_pressed(ctx, BindableAction::Redo)
+            // Ctrl+Y — Redo (also Ctrl+Shift+Z for Linux muscle memory)
+            let redo_from_binding = kb.is_pressed(ctx, BindableAction::Redo);
+            let redo_from_ctrl_shift_z = ctx.input_mut(|i| {
+                i.consume_key(
+                    egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
+                    egui::Key::Z,
+                )
+            });
+            if (redo_from_binding || redo_from_ctrl_shift_z)
                 && let Some(project) = self.active_project_mut()
             {
                 project.history.redo(&mut project.canvas_state);
@@ -1021,9 +1051,33 @@ impl PaintFEApp {
             let text_tool_active = self.tools_panel.active_tool
                 == crate::components::tools::Tool::Text
                 && self.tools_panel.text_state.is_editing;
+            // Read touch state outside memory() closure to avoid RwLock deadlock.
+            let touch_active = ctx.input(|i| {
+                i.events.iter().any(|e| {
+                    matches!(
+                        e,
+                        egui::Event::Touch {
+                            phase: egui::TouchPhase::Start | egui::TouchPhase::Move,
+                            ..
+                        }
+                    )
+                })
+            });
+            // If any egui TextEdit widget has focus, always block shortcuts.
+            // This covers dialog text fields (font search, file name, settings values)
+            // that may not be caught by the canvas_widget_id check on Wayland.
+            let text_edit_has_focus = ctx.text_edit_focused();
             let other_widget_focused = ctx.memory(|m| {
-                m.focused()
-                    .is_some_and(|id| self.canvas.canvas_widget_id != Some(id))
+                let focused = m.focused();
+                if focused.is_none() {
+                    // No widget has keyboard focus — check if a Touch event is active
+                    // (Wayland tablet fallback: touch-emulated clicks may not set focus
+                    // properly, so don't block shortcuts in this case).
+                    // However, if a TextEdit is focused, always block regardless of touch.
+                    text_edit_has_focus || !touch_active
+                } else {
+                    focused.is_some_and(|id| self.canvas.canvas_widget_id != Some(id))
+                }
             });
             if !text_tool_active && !other_widget_focused && self.paste_overlay.is_none() {
                 use crate::components::tools::Tool;
@@ -1420,7 +1474,20 @@ impl PaintFEApp {
                     .hover_pos()
                     .is_some_and(|pos| canvas_rect.is_some_and(|r| r.contains(pos)))
             });
-            let over_ui = ctx.is_pointer_over_egui();
+            // On Wayland with a tablet, also check for active Touch events since
+            // is_pointer_over_egui() relies on interact_pos() which isn't updated by Touch.
+            let over_ui = ctx.is_pointer_over_egui()
+                || ctx.input(|i| {
+                    i.events.iter().any(|e| {
+                        matches!(
+                            e,
+                            egui::Event::Touch {
+                                phase: egui::TouchPhase::Start | egui::TouchPhase::Move,
+                                ..
+                            }
+                        )
+                    })
+                });
 
             if primary_pressed && over_canvas && !over_ui {
                 // Extract pixels into overlay and blank the source area.
@@ -1461,7 +1528,20 @@ impl PaintFEApp {
                     .hover_pos()
                     .is_some_and(|pos| canvas_rect.is_some_and(|r| r.contains(pos)))
             });
-            let over_ui = ctx.is_pointer_over_egui();
+            // On Wayland with a tablet, also check for active Touch events since
+            // is_pointer_over_egui() relies on interact_pos() which isn't updated by Touch.
+            let over_ui = ctx.is_pointer_over_egui()
+                || ctx.input(|i| {
+                    i.events.iter().any(|e| {
+                        matches!(
+                            e,
+                            egui::Event::Touch {
+                                phase: egui::TouchPhase::Start | egui::TouchPhase::Move,
+                                ..
+                            }
+                        )
+                    })
+                });
 
             // Compute current canvas position from mouse (without borrowing self mutably).
             let cur_canvas_pos: Option<(i32, i32)> =

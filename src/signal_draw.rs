@@ -173,7 +173,7 @@ pub fn draw_frosted_panel_bg(
 pub fn draw_pill_container(painter: &egui::Painter, rect: Rect, theme: &Theme) {
     painter.rect(
         rect,
-        CornerRadius::same(10),
+        CornerRadius::same(theme.tab_rounding as u8),
         theme.bg2,
         Stroke::new(1.0, theme.border_color),
         egui::StrokeKind::Middle,

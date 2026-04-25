@@ -24,7 +24,7 @@ impl PaintFEApp {
                         }
                         if let Some(ref mut overlay) = self.paste_overlay {
                             // --- Paste overlay context bar ---
-                            crate::signal_widgets::tool_shelf_tag(ui, "PASTE", self.theme.accent);
+                            crate::signal_widgets::tool_shelf_tag(ui, "PASTE", self.theme.accent, &self.theme);
                             ui.add_space(6.0);
 
                             // Filter mode
@@ -87,6 +87,7 @@ impl PaintFEApp {
                                 &self.assets,
                                 ctx_primary,
                                 ctx_secondary,
+                                &self.theme,
                             );
                         }
                     });
@@ -188,33 +189,47 @@ impl PaintFEApp {
 
                     // Handle paste overlay context menu results.
                     if let Some(action) = self.canvas.paste_context_action.take() {
-                        if action {
-                            // Commit — always a fresh snapshot (extraction is already in history).
-                            if let Some(overlay) = self.paste_overlay.take() {
-                                let desc = if self.is_move_pixels_active {
-                                    "Move Pixels"
-                                } else {
-                                    "Paste"
-                                };
-                                let mut cmd =
-                                    SnapshotCommand::new(desc.to_string(), &project.canvas_state);
-                                project.canvas_state.clear_preview_state();
-                                overlay.commit(&mut project.canvas_state);
-                                cmd.set_after(&project.canvas_state);
-                                project.history.push(Box::new(cmd));
-                                project.mark_dirty();
-                            }
-                            self.is_move_pixels_active = false;
-                        } else {
-                            // Cancel.
-                            self.paste_overlay = None;
-                            if self.is_move_pixels_active {
-                                // MovePixels: undo the extraction entry we already pushed
-                                project.history.undo(&mut project.canvas_state);
+                        match action {
+                            crate::canvas::PasteAction::Commit
+                            | crate::canvas::PasteAction::CommitAndSelect => {
+                                // Commit — always a fresh snapshot (extraction is already in history).
+                                if let Some(overlay) = self.paste_overlay.take() {
+                                    let desc = if self.is_move_pixels_active {
+                                        "Move Pixels"
+                                    } else {
+                                        "Paste"
+                                    };
+                                    let mut cmd =
+                                        SnapshotCommand::new(desc.to_string(), &project.canvas_state);
+                                    project.canvas_state.clear_preview_state();
+                                    overlay.commit(&mut project.canvas_state);
+                                    cmd.set_after(&project.canvas_state);
+                                    project.history.push(Box::new(cmd));
+                                    project.mark_dirty();
+                                }
                                 self.is_move_pixels_active = false;
+
+                                // Commit & Select: auto-select the full canvas
+                                if action == crate::canvas::PasteAction::CommitAndSelect {
+                                    let w = project.canvas_state.width;
+                                    let h = project.canvas_state.height;
+                                    let mask = image::GrayImage::from_pixel(w, h, image::Luma([255u8]));
+                                    project.canvas_state.selection_mask = Some(mask);
+                                    project.canvas_state.invalidate_selection_overlay();
+                                    project.canvas_state.mark_dirty(None);
+                                }
                             }
-                            project.canvas_state.clear_preview_state();
-                            project.canvas_state.mark_dirty(None);
+                            crate::canvas::PasteAction::Cancel => {
+                                // Cancel.
+                                self.paste_overlay = None;
+                                if self.is_move_pixels_active {
+                                    // MovePixels: undo the extraction entry we already pushed
+                                    project.history.undo(&mut project.canvas_state);
+                                    self.is_move_pixels_active = false;
+                                }
+                                project.canvas_state.clear_preview_state();
+                                project.canvas_state.mark_dirty(None);
+                            }
                         }
                     }
                 }

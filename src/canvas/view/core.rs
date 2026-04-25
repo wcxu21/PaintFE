@@ -1115,7 +1115,7 @@ impl Canvas {
         // PASTE OVERLAY  (above selection, interactive handles)
         // ====================================================================
         let mut paste_consumed_input = false;
-        let mut paste_context_result: Option<bool> = None;
+        let mut paste_context_result: Option<PasteAction> = None;
         if let Some(ref mut overlay) = paste_overlay {
             let is_dark = ui.visuals().dark_mode;
             let accent = self.selection_stroke; // theme accent colour
@@ -1295,12 +1295,16 @@ impl Canvas {
                     ui.close();
                 }
                 ui.separator();
-                if ui.button("Ô£ô Commit   (Enter)").clicked() {
-                    paste_context_result = Some(true);
+                if ui.button("Commit (Enter)").clicked() {
+                    paste_context_result = Some(PasteAction::Commit);
                     ui.close();
                 }
-                if ui.button("Ô£ù Cancel   (Esc)").clicked() {
-                    paste_context_result = Some(false);
+                if ui.button("Commit & Select").clicked() {
+                    paste_context_result = Some(PasteAction::CommitAndSelect);
+                    ui.close();
+                }
+                if ui.button("Cancel (Esc)").clicked() {
+                    paste_context_result = Some(PasteAction::Cancel);
                     ui.close();
                 }
             });
@@ -1556,7 +1560,21 @@ impl Canvas {
         if let Some(tools) = tools {
             // Only block input if there's a modal window/popup or pointer is over any UI element
             let pointer_over_egui = ui.ctx().is_pointer_over_egui();
-            let ui_blocking = egui::Popup::is_any_open(ui.ctx()) || pointer_over_egui;
+            // On Wayland the stylus may fire Touch events instead of Pointer events,
+            // so also check for active Touch events when determining if pointer is over egui.
+            let pointer_over_egui_with_touch = pointer_over_egui
+                || ui.input(|i| {
+                    i.events.iter().any(|e| {
+                        matches!(
+                            e,
+                            egui::Event::Touch {
+                                phase: egui::TouchPhase::Start | egui::TouchPhase::Move,
+                                ..
+                            }
+                        )
+                    })
+                });
+            let ui_blocking = egui::Popup::is_any_open(ui.ctx()) || pointer_over_egui_with_touch;
 
             // Get mouse position and check if over canvas.
             // On Wayland with a graphics tablet the stylus may route events as
@@ -1896,7 +1914,7 @@ impl Canvas {
                 if (over_image || text_handle_cursor)
                     && !modal_open
                     && !egui::Popup::is_any_open(ui.ctx())
-                    && (!ui.ctx().is_pointer_over_egui() || text_handle_cursor)
+                    && (!pointer_over_egui_with_touch || text_handle_cursor)
                     && let Some(tool) = active_tool_for_cursor
                 {
                     use crate::components::tools::Tool;
@@ -2458,7 +2476,7 @@ impl Canvas {
             let debug_text = if let Some((cx, cy, sw, sh, rot_deg, scale_pct)) = paste_info {
                 // Paste overlay active — show paste-specific info.
                 format!(
-                    "Paste: {:.0}x{:.0} | Pos: ({:.0}, {:.0}) | Rot: {:.1}deg | Scale: {:.0}%",
+                    "Paste Preview: {:.0}x{:.0} | Pos: ({:.0}, {:.0}) | Rot: {:.1}deg | Scale: {:.0}%",
                     sw, sh, cx, cy, rot_deg, scale_pct
                 )
             } else if let Some((w, h)) = sel_drag_info {
@@ -2624,6 +2642,43 @@ impl Canvas {
 
                     // Draw text
                     painter.galley(info_pos, galley, egui::Color32::TRANSPARENT);
+            }
+
+            // ====================================================================
+            // PASTE PREVIEW BADGE  (bottom-left, below tool info, always visible)
+            // ====================================================================
+            if paste_overlay.is_some() {
+                let badge_text = "PASTE PREVIEW";
+                let font_id = egui::FontId::monospace(10.0);
+                let badge_color = Color32::from_rgb(255, 200, 50); // amber/gold
+
+                let galley = ui.painter().layout_no_wrap(
+                    badge_text.to_string(),
+                    font_id,
+                    badge_color,
+                );
+
+                // Position below tool info (or at bottom-left if no tool info)
+                let tool_info_height = if debug_settings.show_tool_info && tool_info_data.is_some() {
+                    ui.painter().layout_no_wrap(
+                        "X".to_string(),
+                        egui::FontId::monospace(9.0),
+                        Color32::from_gray(200),
+                    ).size().y + 14.0
+                } else {
+                    0.0
+                };
+                let badge_pos = canvas_rect.left_bottom()
+                    + egui::vec2(10.0, -(tool_info_height + galley.size().y + 10.0));
+                let badge_rect = egui::Align2::LEFT_TOP.anchor_rect(
+                    egui::Rect::from_min_size(badge_pos, galley.size()),
+                );
+
+                // Draw semi-transparent dark background
+                painter.rect_filled(badge_rect.expand(4.0), 2.0, Color32::from_black_alpha(160));
+
+                // Draw text
+                painter.galley(badge_pos, galley, egui::Color32::TRANSPARENT);
             }
         }
     }

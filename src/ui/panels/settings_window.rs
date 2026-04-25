@@ -1194,6 +1194,22 @@ impl SettingsWindow {
                         24.0,
                         &mut self.dirty,
                     );
+                    Self::opt_f32_row(
+                        ui,
+                        "Badge CornerRadius",
+                        &mut settings.badge_rounding,
+                        0.0,
+                        24.0,
+                        &mut self.dirty,
+                    );
+                    Self::opt_f32_row(
+                        ui,
+                        "Tab CornerRadius",
+                        &mut settings.tab_rounding,
+                        0.0,
+                        24.0,
+                        &mut self.dirty,
+                    );
                 });
 
             // --- Additional Accents ---
@@ -1349,27 +1365,36 @@ impl SettingsWindow {
         }
     }
 
-    /// Render a single color picker row, returns true if value changed
+    /// Render a single color picker row with alpha support, returns true if value changed
     fn color_row(ui: &mut egui::Ui, label: &str, color: &mut egui::Color32) -> bool {
         let mut changed = false;
         ui.horizontal(|ui| {
             ui.label(format!("{}:", label));
-            let mut egui_color = egui::Color32::from_rgb(color.r(), color.g(), color.b());
+            let mut egui_color = *color;
             if egui::color_picker::color_edit_button_srgba(
                 ui,
                 &mut egui_color,
-                egui::color_picker::Alpha::Opaque,
+                egui::color_picker::Alpha::OnlyBlend,
             )
             .changed()
             {
-                *color = egui::Color32::from_rgb(egui_color.r(), egui_color.g(), egui_color.b());
+                *color = egui_color;
+                changed = true;
+            }
+            // Alpha DragValue
+            let mut alpha = color.a() as u16;
+            if ui
+                .add(egui::DragValue::new(&mut alpha).range(0..=255).speed(1))
+                .changed()
+            {
+                *color = Color32::from_rgba_premultiplied(color.r(), color.g(), color.b(), alpha as u8);
                 changed = true;
             }
         });
         changed
     }
 
-    /// Render an optional color override row with an enable checkbox + color picker + reset button.
+    /// Render an optional color override row with an enable checkbox + color picker + alpha input + reset button.
     fn opt_color_row(ui: &mut egui::Ui, label: &str, opt: &mut Option<Color32>, dirty: &mut bool) {
         ui.horizontal(|ui| {
             let mut enabled = opt.is_some();
@@ -1384,16 +1409,24 @@ impl SettingsWindow {
             }
             ui.label(format!("{label}:"));
             if let Some(color) = opt {
-                let mut egui_color = egui::Color32::from_rgb(color.r(), color.g(), color.b());
-                // Alpha::Opaque hides the alpha channel from the picker (settings colors are always opaque)
+                let mut egui_color = *color;
                 if egui::color_picker::color_edit_button_srgba(
                     ui,
                     &mut egui_color,
-                    egui::color_picker::Alpha::Opaque,
+                    egui::color_picker::Alpha::OnlyBlend,
                 )
                 .changed()
                 {
-                    *color = Color32::from_rgb(egui_color.r(), egui_color.g(), egui_color.b());
+                    *color = egui_color;
+                    *dirty = true;
+                }
+                // Alpha DragValue
+                let mut alpha = color.a() as u16;
+                if ui
+                    .add(egui::DragValue::new(&mut alpha).range(0..=255).speed(1))
+                    .changed()
+                {
+                    *color = Color32::from_rgba_premultiplied(color.r(), color.g(), color.b(), alpha as u8);
                     *dirty = true;
                 }
                 if ui.small_button("\u{21BA}").on_hover_text("Reset").clicked() {

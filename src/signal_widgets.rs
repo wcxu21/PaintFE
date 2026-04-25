@@ -73,7 +73,7 @@ impl<'a> SignalBadge<'a> {
 
             ui.painter().rect(
                 rect,
-                CornerRadius::same(4),
+                CornerRadius::same(theme.badge_rounding as u8),
                 fill,
                 Stroke::new(1.0, stroke_color),
                 egui::StrokeKind::Middle,
@@ -313,7 +313,7 @@ pub fn gradient_divider(ui: &mut Ui, theme: &Theme) {
 /// matching the website's `.section-tag` / `.badge` pattern.
 ///
 /// Example: `[BRUSH]` in accent color with rounded border and tinted background.
-pub fn tool_shelf_tag(ui: &mut Ui, label: &str, color: Color32) {
+pub fn tool_shelf_tag(ui: &mut Ui, label: &str, color: Color32, theme: &Theme) {
     let fill = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 18);
     let stroke_color = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 80);
 
@@ -324,7 +324,7 @@ pub fn tool_shelf_tag(ui: &mut Ui, label: &str, color: Color32) {
 
     egui::Frame::NONE
         .fill(fill)
-        .corner_radius(egui::CornerRadius::same(4))
+        .corner_radius(egui::CornerRadius::same(theme.badge_rounding as u8))
         .stroke(Stroke::new(1.0, stroke_color))
         .inner_margin(egui::Margin::symmetric(8, 3))
         .show(ui, |ui| {
@@ -454,11 +454,12 @@ impl<'a> PillTabBar<'a> {
         if ui.is_rect_visible(tab_rect) {
             let hovered = response.hovered();
 
+            let tab_cr = CornerRadius::same(theme.tab_rounding as u8);
             // Tab background
             if is_active {
                 ui.painter().rect(
                     tab_rect,
-                    CornerRadius::same(7),
+                    tab_cr,
                     theme.bg3,
                     Stroke::NONE,
                     egui::StrokeKind::Middle,
@@ -474,7 +475,7 @@ impl<'a> PillTabBar<'a> {
             } else if hovered {
                 ui.painter().rect_filled(
                     tab_rect,
-                    CornerRadius::same(7),
+                    tab_cr,
                     Color32::from_rgba_unmultiplied(
                         theme.bg3.r(),
                         theme.bg3.g(),

@@ -92,6 +92,59 @@ impl ActiveDialog {
     pub fn is_none(&self) -> bool {
         matches!(self, ActiveDialog::None)
     }
+
+    /// Returns a human-readable name for the active dialog (for logging).
+    pub fn name(&self) -> &'static str {
+        match self {
+            ActiveDialog::None => "None",
+            ActiveDialog::ResizeImage(_) => "ResizeImage",
+            ActiveDialog::ResizeCanvas(_) => "ResizeCanvas",
+            ActiveDialog::AlignLayer(_) => "AlignLayer",
+            ActiveDialog::GaussianBlur(_) => "GaussianBlur",
+            ActiveDialog::LayerTransform(_) => "LayerTransform",
+            ActiveDialog::BrightnessContrast(_) => "BrightnessContrast",
+            ActiveDialog::HueSaturation(_) => "HueSaturation",
+            ActiveDialog::Exposure(_) => "Exposure",
+            ActiveDialog::HighlightsShadows(_) => "HighlightsShadows",
+            ActiveDialog::Levels(_) => "Levels",
+            ActiveDialog::Curves(_) => "Curves",
+            ActiveDialog::TemperatureTint(_) => "TemperatureTint",
+            ActiveDialog::BokehBlur(_) => "BokehBlur",
+            ActiveDialog::MotionBlur(_) => "MotionBlur",
+            ActiveDialog::BoxBlur(_) => "BoxBlur",
+            ActiveDialog::ZoomBlur(_) => "ZoomBlur",
+            ActiveDialog::Crystallize(_) => "Crystallize",
+            ActiveDialog::Dents(_) => "Dents",
+            ActiveDialog::Pixelate(_) => "Pixelate",
+            ActiveDialog::Bulge(_) => "Bulge",
+            ActiveDialog::Twist(_) => "Twist",
+            ActiveDialog::AddNoise(_) => "AddNoise",
+            ActiveDialog::ReduceNoise(_) => "ReduceNoise",
+            ActiveDialog::Median(_) => "Median",
+            ActiveDialog::Glow(_) => "Glow",
+            ActiveDialog::Sharpen(_) => "Sharpen",
+            ActiveDialog::Vignette(_) => "Vignette",
+            ActiveDialog::Halftone(_) => "Halftone",
+            ActiveDialog::Grid(_) => "Grid",
+            ActiveDialog::DropShadow(_) => "DropShadow",
+            ActiveDialog::Outline(_) => "Outline",
+            ActiveDialog::PixelDrag(_) => "PixelDrag",
+            ActiveDialog::RgbDisplace(_) => "RgbDisplace",
+            ActiveDialog::Ink(_) => "Ink",
+            ActiveDialog::OilPainting(_) => "OilPainting",
+            ActiveDialog::ColorFilter(_) => "ColorFilter",
+            ActiveDialog::CanvasBorder(_) => "CanvasBorder",
+            ActiveDialog::Contours(_) => "Contours",
+            ActiveDialog::RemoveBackground(_) => "RemoveBackground",
+            ActiveDialog::Threshold(_) => "Threshold",
+            ActiveDialog::Posterize(_) => "Posterize",
+            ActiveDialog::ColorBalance(_) => "ColorBalance",
+            ActiveDialog::GradientMap(_) => "GradientMap",
+            ActiveDialog::BlackAndWhite(_) => "BlackAndWhite",
+            ActiveDialog::Vibrance(_) => "Vibrance",
+            ActiveDialog::ColorRange(_) => "ColorRange",
+        }
+    }
 }
 
 /// Result returned by each dialog's `show()` method every frame.

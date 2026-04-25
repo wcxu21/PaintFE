@@ -91,7 +91,7 @@ impl KeyCombo {
         }
     }
 
-    /// Serialize to config string
+    /// Serialize to config string. Returns "none" for unbound (empty) combos.
     pub fn to_config_string(&self) -> String {
         let mut parts = Vec::new();
         if self.ctrl {
@@ -108,11 +108,19 @@ impl KeyCombo {
         } else if let Some(ref t) = self.text_char {
             parts.push(format!("text:{}", t));
         }
-        parts.join("+")
+        if parts.is_empty() {
+            "none".to_string()
+        } else {
+            parts.join("+")
+        }
     }
 
-    /// Deserialize from config string
+    /// Deserialize from config string. Returns `None` for "none" (unbound).
     pub fn from_config_string(s: &str) -> Option<Self> {
+        let s = s.trim();
+        if s.is_empty() || s.eq_ignore_ascii_case("none") {
+            return None;
+        }
         let mut combo = Self {
             ctrl: false,
             shift: false,
@@ -632,7 +640,8 @@ impl KeyBindings {
         lines
     }
 
-    /// Load a single keybind line from config
+    /// Load a single keybind line from config.
+    /// If combo_str is "none", the binding is removed (unbound).
     pub fn load_config_line(&mut self, action_name: &str, combo_str: &str) {
         let action = match action_name {
             "NewFile" => Some(BindableAction::NewFile),
@@ -722,9 +731,14 @@ impl KeyBindings {
             "GenerateContours" => Some(BindableAction::GenerateContours),
             _ => None,
         };
-        if let Some(action) = action
-            && let Some(combo) = KeyCombo::from_config_string(combo_str)
-        {
+        let Some(action) = action else {
+            return;
+        };
+        let trimmed = combo_str.trim();
+        if trimmed.eq_ignore_ascii_case("none") || trimmed.is_empty() {
+            // Explicitly unbound — remove from map so default is overridden
+            self.bindings.remove(&action);
+        } else if let Some(combo) = KeyCombo::from_config_string(combo_str) {
             self.bindings.insert(action, combo);
         }
     }

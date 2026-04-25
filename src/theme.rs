@@ -108,6 +108,8 @@ pub struct ThemeOverrides {
     pub window_rounding: Option<f32>,
     pub menu_rounding: Option<f32>,
     pub tool_shelf_rounding: Option<f32>,
+    pub badge_rounding: Option<f32>,
+    pub tab_rounding: Option<f32>,
 
     // Atmosphere
     pub glow_intensity: Option<f32>,
@@ -155,6 +157,8 @@ impl ThemeOverrides {
             && self.window_rounding.is_none()
             && self.menu_rounding.is_none()
             && self.tool_shelf_rounding.is_none()
+            && self.badge_rounding.is_none()
+            && self.tab_rounding.is_none()
             && self.glow_intensity.is_none()
             && self.shadow_strength.is_none()
     }
@@ -450,6 +454,8 @@ pub struct Theme {
     pub window_rounding: f32,
     pub menu_rounding: f32,
     pub tool_shelf_rounding: f32,
+    pub badge_rounding: f32,
+    pub tab_rounding: f32,
     pub glow_intensity: f32,
     pub shadow_strength: f32,
 }
@@ -532,6 +538,8 @@ impl Theme {
             window_rounding: 10.0,
             menu_rounding: 8.0,
             tool_shelf_rounding: 8.0,
+            badge_rounding: 4.0,
+            tab_rounding: 7.0,
             glow_intensity: 1.0,
             shadow_strength: 1.0,
         }
@@ -608,6 +616,8 @@ impl Theme {
             window_rounding: 10.0,
             menu_rounding: 8.0,
             tool_shelf_rounding: 8.0,
+            badge_rounding: 4.0,
+            tab_rounding: 7.0,
             glow_intensity: 1.0,
             shadow_strength: 1.0,
         }
@@ -745,6 +755,12 @@ impl Theme {
         }
         if let Some(v) = ov.tool_shelf_rounding {
             self.tool_shelf_rounding = v;
+        }
+        if let Some(v) = ov.badge_rounding {
+            self.badge_rounding = v;
+        }
+        if let Some(v) = ov.tab_rounding {
+            self.tab_rounding = v;
         }
 
         self.glow_accent = Self::scale_color_alpha(self.glow_accent, self.glow_intensity);

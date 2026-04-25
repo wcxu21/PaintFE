@@ -261,6 +261,7 @@ impl PaintFEApp {
             app.recent_color_undo_count = undo_count;
         }
         app.last_window_state_fingerprint = app.compute_window_state_fingerprint();
+        log_info!("Startup: PaintFE initialized (theme={:?} preset={:?} projects={})", app.theme.mode, app.settings.theme_preset, app.projects.len());
         app
     }
 
@@ -506,11 +507,12 @@ impl PaintFEApp {
             self.do_snapshot_op("Resize Canvas to Fit Paste", |s| {
                 let new_w = s.width.max(target_w);
                 let new_h = s.height.max(target_h);
+                // Center the existing canvas content within the new expanded canvas
                 crate::ops::transform::resize_canvas(
                     s,
                     new_w,
                     new_h,
-                    (0, 0),
+                    (1, 1),
                     image::Rgba([0, 0, 0, 0]),
                 );
             });
@@ -518,19 +520,32 @@ impl PaintFEApp {
 
         if let Some(project) = self.active_project_mut() {
             let (cw, ch) = (project.canvas_state.width, project.canvas_state.height);
+            // Performance: if overwrite mode is requested but the source image has no
+            // actual transparency (all alpha = 255), skip the expensive CPU overwrite
+            // path and use the GPU-accelerated path instead (which supports preview
+            // downscaling during interaction).
+            let needs_overwrite = request.overwrite_transparent_pixels
+                && (request.overwrite_mask.is_some()
+                    || request.image.pixels().any(|p| p[3] < 255));
             let overlay = if request.use_source_center {
                 let center = request
                     .source_center
                     .unwrap_or(egui::Pos2::new(cw as f32 / 2.0, ch as f32 / 2.0));
-                PasteOverlay::from_image_at(request.image, cw, ch, center)
+                let mut o = PasteOverlay::from_image_at(request.image, cw, ch, center);
+                o.overwrite_transparent_pixels = needs_overwrite;
+                o.overwrite_mask = request.overwrite_mask;
+                o
             } else if let Some((cx, cy)) = request.cursor_canvas {
-                PasteOverlay::from_image_at(request.image, cw, ch, egui::Pos2::new(cx, cy))
+                let mut o = PasteOverlay::from_image_at(request.image, cw, ch, egui::Pos2::new(cx, cy));
+                o.overwrite_transparent_pixels = needs_overwrite;
+                o.overwrite_mask = request.overwrite_mask;
+                o
             } else {
-                PasteOverlay::from_image(request.image, cw, ch)
+                let mut o = PasteOverlay::from_image(request.image, cw, ch);
+                o.overwrite_transparent_pixels = needs_overwrite;
+                o.overwrite_mask = request.overwrite_mask;
+                o
             };
-            let mut overlay = overlay;
-            overlay.overwrite_transparent_pixels = request.overwrite_transparent_pixels;
-            overlay.overwrite_mask = request.overwrite_mask;
 
             project.canvas_state.clear_selection();
             self.paste_overlay = Some(overlay);

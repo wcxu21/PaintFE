@@ -372,6 +372,7 @@ impl PaintFEApp {
                     self.maybe_close_initial_blank();
                 }
                 IoResult::LoadFailed(msg) => {
+                    log_info!("FileIO: load failed — {}", msg);
                     eprintln!("Failed to open image: {}", msg);
                 }
                 IoResult::SaveComplete {
@@ -382,6 +383,7 @@ impl PaintFEApp {
                     tiff_compression,
                     update_project_path,
                 } => {
+                    log_info!("FileIO: save complete — project={} path={:?} format={:?}", project_index, path, format);
                     if let Some(project) = self.projects.get_mut(project_index) {
                         project.file_handler.current_path = Some(path.clone());
                         project.file_handler.last_format = format;
@@ -398,6 +400,7 @@ impl PaintFEApp {
                     project_index: _,
                     error,
                 } => {
+                    log_info!("FileIO: save failed — {}", error);
                     eprintln!("Failed to save: {}", error);
                 }
                 IoResult::AnimatedLoaded {
@@ -409,6 +412,7 @@ impl PaintFEApp {
                     fps,
                     frame_count: _,
                 } => {
+                    log_info!("FileIO: animated loaded — path={:?} format={:?} fps={}", path, format, fps);
                     let mut canvas_state = CanvasState::new(width, height);
                     if let Some(layer) = canvas_state.layers.first_mut() {
                         layer.pixels = tiled;
@@ -468,6 +472,7 @@ impl PaintFEApp {
                     mut canvas_state,
                     path,
                 } => {
+                    log_info!("FileIO: pfe loaded — path={:?}", path);
                     canvas_state.composite_cache = None;
                     canvas_state.mark_dirty(None);
 
@@ -614,8 +619,21 @@ impl PaintFEApp {
         let mut should_zoom = false;
         let mut zoom_amount = 0.0;
 
-        // Check if any floating window/widget is under the pointer
-        let pointer_over_widget = ctx.is_pointer_over_egui();
+        // Check if any floating window/widget is under the pointer.
+        // On Wayland with a tablet, also check for active Touch events since
+        // is_pointer_over_egui() relies on interact_pos() which isn't updated by Touch.
+        let pointer_over_widget = ctx.is_pointer_over_egui()
+            || ctx.input(|i| {
+                i.events.iter().any(|e| {
+                    matches!(
+                        e,
+                        egui::Event::Touch {
+                            phase: egui::TouchPhase::Start | egui::TouchPhase::Move,
+                            ..
+                        }
+                    )
+                })
+            });
 
         if !modal_open {
             ctx.input_mut(|i| {

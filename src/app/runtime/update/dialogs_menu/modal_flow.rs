@@ -21,6 +21,59 @@ impl PaintFEApp {
 
         self.process_active_dialog(ctx);
 
+        // Paste size confirmation (when clipboard image exceeds current canvas bounds)
+        if let Some(req) = self.pending_paste_request.as_ref() {
+            let mut do_resize = false;
+            let mut do_keep = false;
+            let mut do_cancel = false;
+            egui::Window::new("Paste Image")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.label(format!(
+                            "Clipboard image is larger than the current canvas ({}x{}).",
+                            req.image.width(),
+                            req.image.height()
+                        ));
+                        ui.label("Expand canvas to fit the pasted image?");
+                    });
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        let btn_size = egui::vec2(136.0, 28.0);
+                        if ui
+                            .add(egui::Button::new("Expand Canvas").min_size(btn_size))
+                            .clicked()
+                        {
+                            do_resize = true;
+                        }
+                        if ui
+                            .add(egui::Button::new("Keep Canvas").min_size(btn_size))
+                            .clicked()
+                        {
+                            do_keep = true;
+                        }
+                        if ui
+                            .add(egui::Button::new("Cancel").min_size(btn_size))
+                            .clicked()
+                        {
+                            do_cancel = true;
+                        }
+                    });
+                });
+
+            if do_resize && let Some(request) = self.pending_paste_request.take() {
+                self.apply_pending_paste_request(request, true);
+            }
+            if do_keep && let Some(request) = self.pending_paste_request.take() {
+                self.apply_pending_paste_request(request, false);
+            }
+            if do_cancel {
+                self.pending_paste_request = None;
+            }
+        }
+
         if let Some(close_idx) = self.pending_close_index {
             let name = self
                 .projects

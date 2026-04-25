@@ -619,7 +619,19 @@ impl ToolsPanel {
                         }
                     }
                     LineStage::Editing => {
-                        let mouse_pos = ui.input(|i| i.pointer.interact_pos());
+                        let mouse_pos = ui.input(|i| {
+                            i.pointer.interact_pos().or_else(|| {
+                                i.events.iter().rev().find_map(|e| match e {
+                                    egui::Event::PointerButton { pressed: true, pos, .. } => Some(*pos),
+                                    egui::Event::Touch {
+                                        phase: egui::TouchPhase::Start | egui::TouchPhase::Move,
+                                        pos,
+                                        ..
+                                    } => Some(*pos),
+                                    _ => None,
+                                })
+                            })
+                        });
 
                         // Check if settings changed and re-render if needed
                         let settings_changed =

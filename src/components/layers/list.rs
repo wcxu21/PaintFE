@@ -430,6 +430,9 @@ impl LayersPanel {
                             ContextAction::RotateScale => {
                                 self.pending_app_action = Some(LayerAppAction::RotateScale);
                             }
+                            ContextAction::AlignLayer => {
+                                self.pending_app_action = Some(LayerAppAction::AlignLayer);
+                            }
                             ContextAction::SoloLayer => {
                                 self.solo_layer(layer_idx, canvas_state);
                             }
@@ -976,6 +979,14 @@ impl LayersPanel {
                     .clicked()
                 {
                     context_action = Some(ContextAction::FlipVertical);
+                    ui.close();
+                }
+                ui.separator();
+                if assets
+                    .menu_item(ui, Icon::MenuCanvasAlign, &t!("menu.canvas.align"))
+                    .clicked()
+                {
+                    context_action = Some(ContextAction::AlignLayer);
                     ui.close();
                 }
                 ui.separator();

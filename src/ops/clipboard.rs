@@ -2,6 +2,7 @@
 // CLIPBOARD OPERATIONS — cut, copy, paste with manipulatable paste overlay
 // ============================================================================
 
+use crate::log_info;
 use crate::canvas::{CanvasState, TiledImage};
 use crate::ops::transform::Interpolation;
 use eframe::egui;
@@ -520,6 +521,7 @@ fn read_image_from_clipboard_file_list() -> Option<RgbaImage> {
 /// Copy selected pixels from the active layer into the clipboard.
 /// Returns true if anything was copied.
 pub fn copy_selection(state: &CanvasState, transparent_cutout: bool) -> bool {
+    log_info!("Clipboard: copy selection (transparent_cutout={})", transparent_cutout);
     let mask = match &state.selection_mask {
         Some(m) => m,
         None => return false,
@@ -585,6 +587,7 @@ pub fn copy_selection(state: &CanvasState, transparent_cutout: bool) -> bool {
 }
 
 pub fn copy_overlay(overlay: &PasteOverlay) -> bool {
+    log_info!("Clipboard: copy overlay");
     let Some((img, origin_center)) = overlay.rasterize_for_clipboard() else {
         return false;
     };
@@ -599,6 +602,7 @@ pub fn copy_overlay(overlay: &PasteOverlay) -> bool {
 
 /// Cut = copy + delete selected pixels.
 pub fn cut_selection(state: &mut CanvasState, transparent_cutout: bool) -> bool {
+    log_info!("Clipboard: cut selection (transparent_cutout={})", transparent_cutout);
     if !copy_selection(state, transparent_cutout) {
         return false;
     }
@@ -1027,7 +1031,6 @@ impl PasteOverlay {
         }
     }
 
-    /// Half-size of the source image in canvas coords (unscaled).
     fn half_size(&self) -> Vec2 {
         Vec2::new(
             self.source.width() as f32 / 2.0,
@@ -1531,7 +1534,19 @@ impl PasteOverlay {
 
     /// Process mouse interaction. Returns true if the overlay consumed the event.
     pub fn handle_input(&mut self, ui: &egui::Ui, image_rect: Rect, zoom: f32) -> bool {
-        let mouse_pos = match ui.input(|i| i.pointer.interact_pos()) {
+        let mouse_pos = match ui.input(|i| {
+            i.pointer.interact_pos().or_else(|| {
+                i.events.iter().rev().find_map(|e| match e {
+                    egui::Event::PointerButton { pressed: true, pos, .. } => Some(*pos),
+                    egui::Event::Touch {
+                        phase: egui::TouchPhase::Start | egui::TouchPhase::Move,
+                        pos,
+                        ..
+                    } => Some(*pos),
+                    _ => None,
+                })
+            })
+        }) {
             Some(p) => p,
             None => return false,
         };

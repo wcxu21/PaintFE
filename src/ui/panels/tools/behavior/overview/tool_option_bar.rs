@@ -5,6 +5,7 @@ impl ToolsPanel {
         assets: &Assets,
         primary_color: Color32,
         secondary_color: Color32,
+        theme: &crate::theme::Theme,
     ) {
         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
             // Tool name tag badge (Signal Grid style)
@@ -12,6 +13,7 @@ impl ToolsPanel {
                 ui,
                 &self.active_tool_name().to_uppercase(),
                 ui.visuals().widgets.active.bg_stroke.color,
+                theme,
             );
             ui.add_space(6.0);
 

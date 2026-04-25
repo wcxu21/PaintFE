@@ -267,6 +267,15 @@ impl PaintFEApp {
                             );
                         }
                     }
+                    crate::components::layers::LayerAppAction::AlignLayer => {
+                        if let Some(project) = self.projects.get(self.active_project_index) {
+                            self.active_dialog = ActiveDialog::AlignLayer(
+                                crate::ops::dialogs::AlignLayerDialog::new(
+                                    &project.canvas_state,
+                                ),
+                            );
+                        }
+                    }
                     crate::components::layers::LayerAppAction::MergeDownAsMask(layer_idx) => {
                         self.do_snapshot_op("Merge Down as Mono-Mask", |s| {
                             crate::ops::canvas_ops::merge_down_as_mask(s, layer_idx);

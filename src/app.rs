@@ -1,3 +1,4 @@
+use crate::log_info;
 use crate::assets::{
     AppSettings, Assets, BindableAction, Icon, KeyCombo, PixelGridMode, SettingsWindow,
 };

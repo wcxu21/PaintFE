@@ -180,6 +180,10 @@ pub struct AppSettings {
     pub menu_rounding: Option<f32>,
     /// Tool shelf corner radius override (px).
     pub tool_shelf_rounding: Option<f32>,
+    /// Badge corner radius override (px).
+    pub badge_rounding: Option<f32>,
+    /// Tab corner radius override (px).
+    pub tab_rounding: Option<f32>,
 
     // Theme color overrides (None = use preset default)
     pub ov_bg_color: Option<Color32>,
@@ -320,6 +324,8 @@ impl Default for AppSettings {
             window_rounding: None,
             menu_rounding: None,
             tool_shelf_rounding: None,
+            badge_rounding: None,
+            tab_rounding: None,
             ov_bg_color: None,
             ov_panel_bg: None,
             ov_window_bg: None,
@@ -494,6 +500,8 @@ impl AppSettings {
             window_rounding: self.window_rounding,
             menu_rounding: self.menu_rounding,
             tool_shelf_rounding: self.tool_shelf_rounding,
+            badge_rounding: self.badge_rounding,
+            tab_rounding: self.tab_rounding,
             glow_intensity: Some(self.glow_intensity),
             shadow_strength: Some(self.shadow_strength),
         }
@@ -1086,6 +1094,12 @@ impl AppSettings {
         if let Some(v) = self.tool_shelf_rounding {
             content.push_str(&format!("tool_shelf_rounding={v}\n"));
         }
+        if let Some(v) = self.badge_rounding {
+            content.push_str(&format!("badge_rounding={v}\n"));
+        }
+        if let Some(v) = self.tab_rounding {
+            content.push_str(&format!("tab_rounding={v}\n"));
+        }
         // Color overrides — skip lines for None values (saves space)
         let ov_fields: &[(&str, Option<Color32>)] = &[
             ("ov_bg_color", self.ov_bg_color),
@@ -1449,6 +1463,12 @@ impl AppSettings {
                 }
                 "tool_shelf_rounding" => {
                     s.tool_shelf_rounding = val.parse().ok();
+                }
+                "badge_rounding" => {
+                    s.badge_rounding = val.parse().ok();
+                }
+                "tab_rounding" => {
+                    s.tab_rounding = val.parse().ok();
                 }
                 // Color overrides
                 "ov_bg_color" => {

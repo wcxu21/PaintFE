@@ -2,6 +2,11 @@ impl PaintFEApp {
     fn process_active_dialog(&mut self, ctx: &egui::Context) {
         let mut dialog = std::mem::take(&mut self.active_dialog);
 
+        // Log dialog open
+        if !dialog.is_none() {
+            log_info!("Dialog: open ({})", dialog.name());
+        }
+
         if self.process_canvas_and_transform_dialog(ctx, &mut dialog) {
             return;
         }

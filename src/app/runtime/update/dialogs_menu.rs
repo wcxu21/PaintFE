@@ -2035,9 +2035,10 @@ impl PaintFEApp {
                                     let text = if is_active { text.strong() } else { text };
 
                                     // --- Flat-bottom rounding (top-left, top-right, bottom-right, bottom-left) ---
+                                    let tr = self.theme.tab_rounding as u8;
                                     let rounding = egui::CornerRadius {
-                                        nw: 5,
-                                        ne: 5,
+                                        nw: tr,
+                                        ne: tr,
                                         sw: 0,
                                         se: 0,
                                     };
@@ -2067,10 +2068,10 @@ impl PaintFEApp {
                                                 }
 
                                                 // Tab label (clickable + draggable for reorder)
-                                                // Use Button instead of Label to prevent text selection cursor
+                                                // Use Label with click sense so only text area is clickable,
+                                                // not the full tab width (avoids tabs filling the entire strip).
                                                 let label_resp = ui.add(
-                                                    egui::Button::new(text)
-                                                        .frame(false)
+                                                    egui::Label::new(text)
                                                         .sense(egui::Sense::click_and_drag()),
                                                 );
                                                 if label_resp.clicked() {
@@ -2135,13 +2136,7 @@ impl PaintFEApp {
                                             });
                                         });
 
-                                    // Store hover state for next frame
-                                    let is_hovered_now = tab_resp.response.hovered();
-                                    ui.ctx().memory_mut(|m| {
-                                        m.data.insert_temp(hover_mem_id, is_hovered_now);
-                                    });
-
-                                    // Track tab rect for drag-drop
+                                    // Track tab rect for drag-drop (use the frame response rect)
                                     tab_rects.push(tab_resp.response.rect);
 
                                     // Drag cursor: show grab while dragging this tab

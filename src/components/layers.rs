@@ -89,6 +89,7 @@ pub enum LayerAppAction {
     FlipHorizontal,
     FlipVertical,
     RotateScale,
+    AlignLayer,
     /// Merge the layer at `layer_idx` down as an alpha mask onto the layer below it.
     MergeDownAsMask(usize),
     AddLayerMaskRevealAll(usize),
@@ -159,6 +160,7 @@ enum ContextAction {
     FlipHorizontal,
     FlipVertical,
     RotateScale,
+    AlignLayer,
     SoloLayer,
     HideAll,
     ShowAll,

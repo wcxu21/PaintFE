@@ -1,3 +1,11 @@
+/// Action requested from the paste overlay context menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PasteAction {
+    Commit,
+    CommitAndSelect,
+    Cancel,
+}
+
 pub struct Canvas {
     pub zoom: f32,
     pan_offset: Vec2,
@@ -9,8 +17,8 @@ pub struct Canvas {
     pub selection_fill: Color32,
     /// Contrasting color for selection dashes (white in dark mode, black in light).
     pub selection_contrast: Color32,
-    /// Result from paste overlay context menu: Some(true)=commit, Some(false)=cancel.
-    pub paste_context_action: Option<bool>,
+    /// Result from paste overlay context menu.
+    pub paste_context_action: Option<PasteAction>,
     /// When true, the paste overlay context menu should auto-open on next frame.
     pub open_paste_menu: bool,
     /// GPU renderer (always initialised — uses software fallback if no hardware).

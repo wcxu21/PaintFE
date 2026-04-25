@@ -1,6 +1,9 @@
+use crate::log_info;
+
 impl ToolsPanel {
     pub fn change_tool(&mut self, new_tool: Tool) {
         if self.active_tool != new_tool {
+            log_info!("Tool: switch to {:?}", new_tool);
             // Deactivate perspective crop when switching away
             if self.active_tool == Tool::PerspectiveCrop {
                 self.perspective_crop_state.active = false;
