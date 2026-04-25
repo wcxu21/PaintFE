@@ -27,7 +27,7 @@
   <Identity
     Name="KyleJackson.PaintFE"
     Publisher="CN=41907F2B-F013-479C-A4C0-909E9A09ED7E"
-    Version="1.0.0.0"
+    Version="1.2.11.0"
     ProcessorArchitecture="x64" />
 
   <Properties>
