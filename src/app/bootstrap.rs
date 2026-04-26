@@ -251,6 +251,15 @@ impl PaintFEApp {
         app.palette_panel
             .load_recent_colors_from_serialized(&app.settings.persist_palette_recent_colors);
 
+        // Reload custom brush tips from persisted settings
+        {
+            use base64::Engine;
+            for (name, cat, b64) in &app.settings.custom_brush_tips {
+                if let Ok(png_data) = base64::engine::general_purpose::STANDARD.decode(b64) {
+                    app.assets.load_brush_tip(&cc.egui_ctx, name, cat, &png_data);
+                }
+            }
+        }
         app.apply_persisted_tool_settings();
         app.last_tool_settings_fingerprint = app.compute_tool_settings_fingerprint();
         if let Some((project_id, undo_count)) = app

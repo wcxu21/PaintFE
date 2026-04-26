@@ -690,19 +690,127 @@ impl ToolsPanel {
 
         ui.separator();
         ui.label(t!("ctx.mode"));
-        egui::ComboBox::from_id_salt("ctx_shapes_fill")
-            .selected_text(self.shapes_state.fill_mode.label())
-            .width(70.0)
-            .show_ui(ui, |ui| {
-                for mode in ShapeFillMode::all() {
-                    if ui
-                        .selectable_label(self.shapes_state.fill_mode == *mode, mode.label())
-                        .clicked()
-                    {
-                        self.shapes_state.fill_mode = *mode;
-                    }
+
+        // Merged icon + dropdown arrow (like brush size widget)
+        let popup_id = ui.make_persistent_id("ctx_shapes_fill_popup");
+        let fill_icon = self.shapes_state.fill_mode.icon();
+        let icon_size = egui::Vec2::splat(16.0);
+        let inactive = ui.visuals().widgets.inactive;
+
+        let (icon_resp, arrow_resp) = egui::Frame::NONE
+            .fill(inactive.bg_fill)
+            .stroke(inactive.bg_stroke)
+            .corner_radius(inactive.corner_radius)
+            .inner_margin(egui::Margin::same(0))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let vis = ui.visuals_mut();
+                vis.widgets.inactive.bg_fill = Color32::TRANSPARENT;
+                vis.widgets.inactive.bg_stroke = egui::Stroke::NONE;
+                vis.widgets.hovered.bg_fill = Color32::TRANSPARENT;
+                vis.widgets.hovered.bg_stroke = egui::Stroke::NONE;
+                vis.widgets.active.bg_fill = Color32::TRANSPARENT;
+                vis.widgets.active.bg_stroke = egui::Stroke::NONE;
+
+                // Icon button — direct click toggles to next mode
+                let i_resp = if let Some(tex) = assets.get_texture(fill_icon) {
+                    let sized = egui::load::SizedTexture::from_handle(tex);
+                    let img = egui::Image::from_texture(sized).fit_to_exact_size(icon_size);
+                    ui.add(egui::Button::image(img).min_size(icon_size))
+                } else {
+                    ui.add(
+                        egui::Button::new(egui::RichText::new(fill_icon.emoji()).size(11.0))
+                            .min_size(icon_size),
+                    )
+                };
+                let i_height = i_resp.rect.height();
+
+                // Thin divider
+                let sep_x = ui.cursor().left();
+                ui.painter().vline(
+                    sep_x,
+                    i_resp.rect.top() + 3.0..=i_resp.rect.bottom() - 3.0,
+                    egui::Stroke::new(1.0, inactive.bg_stroke.color.linear_multiply(0.4)),
+                );
+
+                // Dropdown arrow
+                let a_resp = if let Some(tex) = assets.get_texture(Icon::DropDown) {
+                    let sized = egui::load::SizedTexture::from_handle(tex);
+                    let img = egui::Image::from_texture(sized)
+                        .fit_to_exact_size(egui::vec2(12.0, 12.0));
+                    ui.add(
+                        egui::Button::image(img)
+                            .min_size(egui::vec2(14.0, i_height)),
+                    )
+                } else {
+                    ui.add(
+                        egui::Button::new(egui::RichText::new("\u{25BE}").size(9.0))
+                            .min_size(egui::vec2(14.0, i_height)),
+                    )
+                };
+                (i_resp, a_resp)
+            })
+            .inner;
+
+        // Icon click → toggle to next mode
+        if icon_resp.clicked() {
+            self.shapes_state.fill_mode = self.shapes_state.fill_mode.next();
+        }
+        icon_resp.on_hover_text(self.shapes_state.fill_mode.label());
+
+        // Arrow click → open dropdown popup
+        if arrow_resp.clicked() {
+            egui::Popup::toggle_id(ui.ctx(), popup_id);
+        }
+
+        // Popup with all fill mode options (icon + label per row)
+        egui::Popup::new(
+            popup_id,
+            ui.ctx().clone(),
+            egui::PopupAnchor::from(&arrow_resp),
+            ui.layer_id(),
+        )
+        .open_memory(None::<egui::SetOpenCommand>)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(120.0);
+            for mode in ShapeFillMode::all() {
+                let mode_icon = mode.icon();
+                let label = mode.label();
+                let is_selected = self.shapes_state.fill_mode == *mode;
+
+                let resp = if let Some(tex) = assets.get_texture(mode_icon) {
+                    let sized = egui::load::SizedTexture::from_handle(tex);
+                    let img = egui::Image::from_texture(sized)
+                        .fit_to_exact_size(egui::vec2(14.0, 14.0));
+                    ui.add(
+                        egui::Button::image_and_text(img, label)
+                            .min_size(egui::vec2(100.0, 22.0)),
+                    )
+                } else {
+                    ui.add(
+                        egui::Button::new(
+                            egui::RichText::new(format!("{} {}", mode_icon.emoji(), label))
+                                .size(12.0),
+                        )
+                        .min_size(egui::vec2(100.0, 22.0)),
+                    )
+                };
+
+                if is_selected {
+                    ui.painter().rect_filled(
+                        resp.rect,
+                        2.0,
+                        ui.visuals().selection.bg_fill,
+                    );
                 }
-            });
+
+                if resp.clicked() {
+                    self.shapes_state.fill_mode = *mode;
+                    egui::Popup::close_id(ui.ctx(), popup_id);
+                }
+            }
+        });
 
         ui.separator();
         ui.label(t!("ctx.shapes.width"));

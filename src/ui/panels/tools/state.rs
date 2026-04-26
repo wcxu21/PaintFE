@@ -1298,6 +1298,20 @@ impl Default for SavedRasterStyle {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum TextStyleUpdate {
+    FontFamily(String),
+    FontWeight(u16),
+    FontSize(f32),
+    Bold { enabled: bool, base_weight: u16 },
+    Italic(bool),
+    Underline(bool),
+    Strikethrough(bool),
+    LetterSpacing(f32),
+    WidthScale(f32),
+    HeightScale(f32),
+}
+
 /// State for the Text tool.
 #[derive(Debug)]
 pub struct TextToolState {
@@ -1385,6 +1399,7 @@ pub struct TextToolState {
     /// Set by context bar when style properties change; consumed by handle_input
     /// to apply to selection in text layer mode.
     pub ctx_bar_style_dirty: bool,
+    pub pending_ctx_style_update: Option<TextStyleUpdate>,
     /// Cached text effects for the current text layer (synced with TextLayerData).
     pub text_effects: crate::ops::text_layer::TextEffects,
     /// Whether text effects have been modified by the UI and need to be written back.
@@ -1414,6 +1429,8 @@ pub struct TextToolState {
     pub active_block_height: f32,
     /// Prevents click-to-place from firing on the same mouse-up as a handle interaction.
     pub text_box_click_guard: bool,
+    /// True while the user is dragging to select text within a text layer block.
+    pub text_select_dragging: bool,
     /// Whether the cursor is hovering the rotation handle (for cursor icon).
     pub hovering_rotation_handle: bool,
     /// Which resize handle the cursor is hovering (for resize cursor icon).
@@ -1502,6 +1519,7 @@ impl Default for TextToolState {
             selection: crate::ops::text_layer::TextSelection::default(),
             active_block_id: None,
             ctx_bar_style_dirty: false,
+            pending_ctx_style_update: None,
             text_effects: crate::ops::text_layer::TextEffects::default(),
             text_effects_dirty: false,
             text_warp: crate::ops::text_layer::TextWarp::None,
@@ -1516,6 +1534,7 @@ impl Default for TextToolState {
             active_block_max_height: None,
             active_block_height: 0.0,
             text_box_click_guard: false,
+            text_select_dragging: false,
             hovering_rotation_handle: false,
             hovering_resize_handle: None,
             glyph_edit_mode: false,
@@ -1825,6 +1844,14 @@ pub struct ToolsPanel {
     pub brush_resize_drag_binding: KeyCombo,
     pub injected_enter_pressed: bool,
     pub injected_escape_pressed: bool,
+    /// Set to true when user clicks "New..." in brush tip picker.
+    /// Consumed by app.rs to open AddBrushTipDialog.
+    pub pending_open_add_brush_tip: bool,
+    /// Set to a brush tip name when user right-clicks and selects "Delete".
+    /// Consumed by app.rs to remove the tip from assets.
+    pub pending_delete_brush_tip: Option<String>,
+    /// Right-click context menu state for brush tip picker: (tip_name, screen_pos_x, screen_pos_y)
+    pub brush_tip_context_menu: Option<(String, f32, f32)>,
 }
 
 impl Default for ToolsPanel {
@@ -1874,6 +1901,9 @@ impl Default for ToolsPanel {
             brush_resize_drag_binding: KeyCombo::modifiers_only(false, true, false),
             injected_enter_pressed: false,
             injected_escape_pressed: false,
+            pending_open_add_brush_tip: false,
+            pending_delete_brush_tip: None,
+            brush_tip_context_menu: None,
         }
     }
 }

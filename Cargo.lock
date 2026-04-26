@@ -4,10 +4,11 @@ version = 4
 
 [[package]]
 name = "PaintFE"
-version = "1.2.12"
+version = "1.2.13"
 dependencies = [
  "ab_glyph",
  "arboard",
+ "base64",
  "bincode",
  "bytemuck",
  "clap",
@@ -587,6 +588,12 @@ checksum = "375082f007bd67184fb9c0374614b29f9aaa604ec301635f72338bb65386a53d"
 dependencies = [
  "arrayvec",
 ]
+
+[[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bincode"

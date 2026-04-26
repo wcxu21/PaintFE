@@ -132,6 +132,20 @@ impl ShapeFillMode {
             ShapeFillMode::Both,
         ]
     }
+    pub fn icon(&self) -> crate::config::icons::Icon {
+        match self {
+            ShapeFillMode::Outline => crate::config::icons::Icon::ShapeOutline,
+            ShapeFillMode::Filled => crate::config::icons::Icon::ShapeFilled,
+            ShapeFillMode::Both => crate::config::icons::Icon::ShapeBoth,
+        }
+    }
+    pub fn next(&self) -> Self {
+        match self {
+            ShapeFillMode::Outline => ShapeFillMode::Filled,
+            ShapeFillMode::Filled => ShapeFillMode::Both,
+            ShapeFillMode::Both => ShapeFillMode::Outline,
+        }
+    }
 }
 
 /// Handle for interacting with a placed shape.

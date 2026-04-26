@@ -58,8 +58,18 @@ impl ToolsPanel {
                     run.style.font_family = self.text_state.font_family.clone();
                     changed = true;
                 }
-                if run.style.font_weight != self.text_state.font_weight {
-                    run.style.font_weight = self.text_state.font_weight;
+                // Use effective bold weight: if bold toggle is ON, use 700 (or boosted)
+                let effective_weight = if self.text_state.bold {
+                    if self.text_state.font_weight < 600 {
+                        700u16
+                    } else {
+                        (self.text_state.font_weight + 200).min(900)
+                    }
+                } else {
+                    self.text_state.font_weight
+                };
+                if run.style.font_weight != effective_weight {
+                    run.style.font_weight = effective_weight;
                     changed = true;
                 }
                 if run.style.font_size != self.text_state.font_size {
@@ -164,6 +174,19 @@ impl ToolsPanel {
         };
         let result = crate::ops::text::rasterize_text(
             &font,
+            crate::ops::text::font_cache_key(
+                &self.text_state.font_family,
+                if self.text_state.bold {
+                    if self.text_state.font_weight < 600 {
+                        700u16
+                    } else {
+                        (self.text_state.font_weight + 200).min(900)
+                    }
+                } else {
+                    self.text_state.font_weight
+                },
+                self.text_state.italic,
+            ),
             &self.text_state.text,
             self.text_state.font_size,
             self.text_state.alignment,
@@ -570,6 +593,7 @@ impl ToolsPanel {
         }
 
         self.text_state.selection = crate::ops::text_layer::TextSelection::default();
+        self.sync_text_toolbar_to_selection(canvas_state);
         self.text_state.preview_dirty = true;
     }
 
@@ -858,9 +882,161 @@ impl ToolsPanel {
                 self.text_state.selection.anchor = new_pos;
             }
         }
+        self.sync_text_toolbar_to_selection(canvas_state);
     }
 
-    /// Toggle a style property on the selection in a text layer block.
+    fn sync_text_toolbar_to_selection(&mut self, canvas_state: &CanvasState) {
+        let bid = match self.text_state.active_block_id {
+            Some(id) => id,
+            None => return,
+        };
+
+        let Some(layer) = canvas_state.layers.get(canvas_state.active_layer_index) else {
+            return;
+        };
+        let crate::canvas::LayerContent::Text(ref td) = layer.content else {
+            return;
+        };
+        let Some(block) = td.blocks.iter().find(|b| b.id == bid) else {
+            return;
+        };
+
+        let mut first_style = None;
+        let mut all_bold = true;
+        let mut all_italic = true;
+        let mut all_underline = true;
+        let mut all_strikethrough = true;
+
+        if self.text_state.selection.has_selection() {
+            let (start, end) = self.text_state.selection.ordered_flat_offsets(block);
+            let mut offset = 0usize;
+            for run in &block.runs {
+                let run_end = offset + run.text.len();
+                if run_end > start && offset < end && !run.text.is_empty() {
+                    first_style.get_or_insert_with(|| run.style.clone());
+                    all_bold &= run.style.font_weight >= 700;
+                    all_italic &= run.style.italic;
+                    all_underline &= run.style.underline;
+                    all_strikethrough &= run.style.strikethrough;
+                }
+                offset = run_end;
+            }
+        } else {
+            let cursor = self.text_state.cursor_pos.min(block.flat_text().len());
+            let mut offset = 0usize;
+            for (idx, run) in block.runs.iter().enumerate() {
+                let run_end = offset + run.text.len();
+                let at_run = cursor < run_end
+                    || (cursor == run_end
+                        && (idx + 1 == block.runs.len() || cursor > offset));
+                if at_run {
+                    first_style = Some(run.style.clone());
+                    all_bold = run.style.font_weight >= 700;
+                    all_italic = run.style.italic;
+                    all_underline = run.style.underline;
+                    all_strikethrough = run.style.strikethrough;
+                    break;
+                }
+                offset = run_end;
+            }
+        }
+
+        if let Some(style) = first_style {
+            if !self.text_state.selection.has_selection() {
+                self.text_state.font_family = style.font_family;
+                self.text_state.font_weight = style.font_weight;
+                self.text_state.font_size = style.font_size;
+                self.text_state.letter_spacing = style.letter_spacing;
+                self.text_state.width_scale = style.width_scale;
+                self.text_state.height_scale = style.height_scale;
+            }
+            self.text_state.bold = all_bold;
+            self.text_state.italic = all_italic;
+            self.text_state.underline = all_underline;
+            self.text_state.strikethrough = all_strikethrough;
+        }
+    }
+
+    fn text_layer_byte_pos_from_point(
+        &self,
+        canvas_state: &CanvasState,
+        point: (f32, f32),
+    ) -> Option<usize> {
+        let layer = canvas_state.layers.get(canvas_state.active_layer_index)?;
+        let crate::canvas::LayerContent::Text(ref td) = layer.content else {
+            return None;
+        };
+        let bid = self.text_state.active_block_id?;
+        let block = td.blocks.iter().find(|b| b.id == bid)?;
+        let bounds = crate::ops::text_layer::compute_glyph_bounds(block);
+        if bounds.is_empty() {
+            return Some(0);
+        }
+
+        let mut best_line_y = f32::MAX;
+        let mut line: Vec<_> = Vec::new();
+        for gb in &bounds {
+            let contains_y = point.1 >= gb.y && point.1 <= gb.y + gb.h;
+            let distance_y = if contains_y {
+                0.0
+            } else {
+                (point.1 - (gb.y + gb.h * 0.5)).abs()
+            };
+            if distance_y + 0.001 < best_line_y {
+                best_line_y = distance_y;
+                line.clear();
+                line.push(gb);
+            } else if (distance_y - best_line_y).abs() < 0.001 {
+                line.push(gb);
+            }
+        }
+
+        line.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+        if let Some(first) = line.first()
+            && point.0 <= first.x + first.w * 0.5
+        {
+            return Some(first.flat_start);
+        }
+        for pair in line.windows(2) {
+            let left = pair[0];
+            let right = pair[1];
+            let boundary = (left.x + left.w + right.x) * 0.5;
+            if point.0 <= boundary {
+                return Some(left.flat_end);
+            }
+        }
+        line.last().map(|gb| gb.flat_end)
+    }
+
+    /// Apply text-box-wide style properties to every run in the active text block.
+    fn text_layer_apply_block_style(
+        &mut self,
+        canvas_state: &mut CanvasState,
+        apply: impl Fn(&mut crate::ops::text_layer::TextStyle),
+    ) {
+        let bid = match self.text_state.active_block_id {
+            Some(id) => id,
+            None => return,
+        };
+
+        if let Some(layer) = canvas_state.layers.get_mut(canvas_state.active_layer_index)
+            && let crate::canvas::LayerContent::Text(ref mut td) = layer.content
+            && let Some(idx) = td.blocks.iter().position(|b| b.id == bid)
+        {
+            for run in &mut td.blocks[idx].runs {
+                apply(&mut run.style);
+            }
+            td.blocks[idx].merge_adjacent_runs();
+            td.mark_dirty();
+            self.text_state.text = td.blocks[idx].flat_text();
+        }
+
+        self.text_state.preview_dirty = true;
+        self.sync_text_toolbar_to_selection(canvas_state);
+    }
+
+    /// Apply a style closure to the selection (or cursor run if no selection)
+    /// in a text layer block.
     fn text_layer_toggle_style(
         &mut self,
         canvas_state: &mut CanvasState,
@@ -871,19 +1047,47 @@ impl ToolsPanel {
             None => return,
         };
 
-        if !self.text_state.selection.has_selection() {
-            return;
-        }
-
-        // Get ordered byte offsets
-        let (start, end) = if let Some(layer) =
-            canvas_state.layers.get(canvas_state.active_layer_index)
-            && let crate::canvas::LayerContent::Text(ref td) = layer.content
-            && let Some(block) = td.blocks.iter().find(|b| b.id == bid)
-        {
-            self.text_state.selection.ordered_flat_offsets(block)
+        // Determine byte range: selection if present, otherwise cursor run
+        // Also capture flat byte offsets for anchor/cursor BEFORE apply_style_to_range
+        // splits runs, so we can refresh the RunPosition values afterward.
+        let (start, end, anchor_flat, cursor_flat) = if self.text_state.selection.has_selection() {
+            if let Some(layer) =
+                canvas_state.layers.get(canvas_state.active_layer_index)
+                && let crate::canvas::LayerContent::Text(ref td) = layer.content
+                && let Some(block) = td.blocks.iter().find(|b| b.id == bid)
+            {
+                let a = block.run_pos_to_flat_offset(self.text_state.selection.anchor);
+                let c = block.run_pos_to_flat_offset(self.text_state.selection.cursor);
+                if a <= c {
+                    (a, c, a, c)
+                } else {
+                    (c, a, a, c)
+                }
+            } else {
+                return;
+            }
         } else {
-            return;
+            // No selection: apply to the run at cursor position
+            let cursor = self.text_state.cursor_pos;
+            if let Some(layer) =
+                canvas_state.layers.get(canvas_state.active_layer_index)
+                && let crate::canvas::LayerContent::Text(ref td) = layer.content
+                && let Some(block) = td.blocks.iter().find(|b| b.id == bid)
+            {
+                let run_pos = block.flat_offset_to_run_pos(cursor);
+                let run_start = block.run_pos_to_flat_offset(run_pos);
+                let run_end = if run_pos.run_index + 1 < block.runs.len() {
+                    block.run_pos_to_flat_offset(crate::ops::text_layer::RunPosition {
+                        run_index: run_pos.run_index + 1,
+                        byte_offset: 0,
+                    })
+                } else {
+                    block.flat_text().len()
+                };
+                (run_start, run_end, cursor, cursor)
+            } else {
+                return;
+            }
         };
 
         if let Some(layer) = canvas_state.layers.get_mut(canvas_state.active_layer_index)
@@ -894,9 +1098,34 @@ impl ToolsPanel {
             td.mark_dirty();
             // Refresh flat text (run splitting might have changed byte offsets)
             self.text_state.text = td.blocks[idx].flat_text();
+            // Refresh selection RunPosition values — after apply_style_to_range splits
+            // runs, the old RunPosition{run_index, byte_offset} values are stale and
+            // would produce wrong flat offsets on the next call. Convert the flat byte
+            // offsets we captured before the split back to fresh RunPosition values.
+            self.text_state.selection.anchor =
+                td.blocks[idx].flat_offset_to_run_pos(anchor_flat);
+            self.text_state.selection.cursor =
+                td.blocks[idx].flat_offset_to_run_pos(cursor_flat);
         }
+        self.sync_text_toolbar_to_selection(canvas_state);
 
         self.text_state.preview_dirty = true;
+        // Immediately recompute cached_line_advances so overlay/cursor positioning
+        // uses correct glyph widths (bold/italic changes advance metrics).
+        if let Some(ref font) = self.text_state.loaded_font {
+            let metrics = crate::ops::text::compute_text_layout_metrics(
+                font,
+                &self.text_state.text,
+                self.text_state.font_size,
+                self.text_state.active_block_max_width,
+                self.text_state.letter_spacing,
+                self.text_state.line_spacing,
+                self.text_state.width_scale,
+                self.text_state.height_scale,
+            );
+            self.text_state.cached_line_advances = metrics.line_advances;
+            self.text_state.cached_line_height = metrics.line_height;
+        }
     }
 
     /// Cycle to the next/previous text block (Tab / Shift+Tab).
@@ -946,9 +1175,19 @@ impl ToolsPanel {
             crate::ops::text::TextAlignment::Right => TLA::Right,
         };
 
+        // Use effective bold weight: if bold toggle is ON, use 700 (or boosted)
+        let effective_weight = if self.text_state.bold {
+            if self.text_state.font_weight < 600 {
+                700u16
+            } else {
+                (self.text_state.font_weight + 200).min(900)
+            }
+        } else {
+            self.text_state.font_weight
+        };
         let new_style = TLS {
             font_family: self.text_state.font_family.clone(),
-            font_weight: self.text_state.font_weight,
+            font_weight: effective_weight,
             font_size: self.text_state.font_size,
             italic: self.text_state.italic,
             underline: self.text_state.underline,

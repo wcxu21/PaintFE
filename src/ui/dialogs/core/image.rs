@@ -933,7 +933,301 @@ impl GaussianBlurDialog {
 }
 
 // ============================================================================
-// LAYER TRANSFORM DIALOG - with interactive rotation gizmo
+// ADD BRUSH TIP DIALOG - import a PNG as a custom brush tip
 // ============================================================================
 
+/// Result from the AddBrushTipDialog
+pub struct AddBrushTipResult {
+    pub name: String,
+    pub category: String,
+    pub png_data: Vec<u8>,
+}
 
+pub struct AddBrushTipDialog {
+    pub open: bool,
+    pub name: String,
+    pub category: String,
+    pub categories: Vec<String>,
+    pub selected_path: Option<std::path::PathBuf>,
+    pub png_data: Option<Vec<u8>>,
+    pub preview_texture: Option<egui::TextureHandle>,
+    pub valid: bool,
+    pub error_message: String,
+    pub image_width: u32,
+    pub image_height: u32,
+    pub brush_icon_texture: Option<egui::TextureHandle>,
+}
+
+impl AddBrushTipDialog {
+    pub fn new(categories: &[String]) -> Self {
+        let mut cats = categories.to_vec();
+        if !cats.iter().any(|c| c == "Custom") {
+            cats.push("Custom".to_string());
+        }
+        Self {
+            open: false,
+            name: String::new(),
+            category: "Custom".to_string(),
+            categories: cats,
+            selected_path: None,
+            png_data: None,
+            preview_texture: None,
+            valid: false,
+            error_message: String::new(),
+            image_width: 0,
+            image_height: 0,
+            brush_icon_texture: None,
+        }
+    }
+
+    pub fn open_dialog(&mut self) {
+        self.open = true;
+        self.name.clear();
+        self.category = "Custom".to_string();
+        self.selected_path = None;
+        self.png_data = None;
+        self.preview_texture = None;
+        self.valid = false;
+        self.error_message.clear();
+        self.image_width = 0;
+        self.image_height = 0;
+    }
+
+    /// Validate the selected file. Returns true if valid.
+    fn validate_file(&mut self, path: &std::path::Path) -> bool {
+        self.error_message.clear();
+        self.valid = false;
+        self.png_data = None;
+        self.preview_texture = None;
+        self.image_width = 0;
+        self.image_height = 0;
+
+        // Check extension
+        let ext = path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_default();
+        if ext != "png" {
+            self.error_message = "Only PNG files are supported.".to_string();
+            return false;
+        }
+
+        // Read file
+        let data = match std::fs::read(path) {
+            Ok(d) => d,
+            Err(e) => {
+                self.error_message = format!("Cannot read file: {}", e);
+                return false;
+            }
+        };
+
+        // Decode PNG
+        match image::load_from_memory(&data) {
+            Ok(img) => {
+                self.image_width = img.width();
+                self.image_height = img.height();
+                self.png_data = Some(data);
+
+                // Check size recommendation
+                if img.width() > 256 || img.height() > 256 {
+                    self.error_message = format!(
+                        "Image is {}x{} — large images may impact performance. Recommended: 128x128.",
+                        img.width(), img.height()
+                    );
+                    // Still valid, just warn
+                }
+
+                self.valid = true;
+                true
+            }
+            Err(e) => {
+                self.error_message = format!("Invalid PNG: {}", e);
+                false
+            }
+        }
+    }
+
+    pub fn show(&mut self, ctx: &egui::Context) -> Option<AddBrushTipResult> {
+        if !self.open {
+            return None;
+        }
+
+        let mut result: Option<AddBrushTipResult> = None;
+        let colors = super::DialogColors::from_ctx(ctx);
+
+        egui::Window::new("dialog_add_brush_tip")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .default_pos(egui::pos2(ctx.content_rect().center().x - 200.0, 80.0))
+            .show(ctx, |ui| {
+                ui.set_min_width(400.0);
+
+                if super::paint_dialog_header_with_texture(ui, &colors, self.brush_icon_texture.as_ref(), "New Brush Tip") {
+                    self.open = false;
+                    return;
+                }
+                ui.add_space(4.0);
+
+                // Info section
+                super::section_label(ui, &colors, "INFORMATION");
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Recommended file size: 128\u{00D7}128 px. Black pixels are treated as \
+                         transparent; white pixels define the brush area."
+                    )
+                    .size(12.0)
+                    .color(colors.text_muted),
+                );
+                ui.add_space(8.0);
+
+                // Name field
+                super::section_label(ui, &colors, "BRUSH NAME");
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.add_sized([280.0, 22.0], egui::TextEdit::singleline(&mut self.name)
+                        .hint_text("Enter brush tip name..."));
+                });
+                ui.add_space(6.0);
+
+                // File browse
+                super::section_label(ui, &colors, "IMAGE FILE");
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    let path_text = self.selected_path
+                        .as_ref()
+                        .and_then(|p| p.file_name())
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("No file selected");
+                    ui.add_sized([250.0, 22.0], egui::Label::new(
+                        egui::RichText::new(path_text).size(12.0).color(colors.text_muted)
+                    ));
+                    if ui.button("Browse...").clicked()
+                        && let Some(path) = rfd::FileDialog::new()
+                            .add_filter("PNG Image", &["png"])
+                            .pick_file()
+                    {
+                        self.selected_path = Some(path.clone());
+                        self.validate_file(&path);
+                        // Auto-fill name from filename
+                        if self.name.is_empty()
+                            && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                        {
+                            self.name = stem.to_string();
+                        }
+                    }
+                });
+                ui.add_space(6.0);
+
+                // Category
+                super::section_label(ui, &colors, "CATEGORY");
+                ui.add_space(2.0);
+                egui::ComboBox::from_id_salt("brush_tip_category")
+                    .selected_text(&self.category)
+                    .width(200.0)
+                    .show_ui(ui, |ui| {
+                        for cat in &self.categories {
+                            ui.selectable_value(&mut self.category, cat.clone(), cat.as_str());
+                        }
+                    });
+                ui.add_space(8.0);
+
+                // Preview / validation
+                if self.selected_path.is_some() {
+                    super::accent_separator(ui, &colors);
+                    ui.add_space(4.0);
+                    super::section_label(ui, &colors, "PREVIEW");
+
+                    if self.valid {
+                        // Load preview texture if needed
+                        if self.preview_texture.is_none()
+                            && let Some(png_data) = &self.png_data
+                            && let Ok(img) = image::load_from_memory(png_data)
+                        {
+                            let rgba = img.to_rgba8();
+                            let (w, h) = rgba.dimensions();
+                            let size = [w as usize, h as usize];
+                            let pixels = rgba.into_raw();
+                            let ci = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+                            let tex = ctx.load_texture(
+                                "brush_tip_preview",
+                                ci,
+                                egui::TextureOptions::LINEAR,
+                            );
+                            self.preview_texture = Some(tex);
+                        }
+
+                        ui.horizontal(|ui| {
+                            if let Some(tex) = &self.preview_texture {
+                                let max_preview = 128.0_f32;
+                                let scale = (max_preview / self.image_width as f32)
+                                    .min(max_preview / self.image_height as f32)
+                                    .min(1.0);
+                                let preview_size = egui::vec2(
+                                    self.image_width as f32 * scale,
+                                    self.image_height as f32 * scale,
+                                );
+                                let sized = egui::load::SizedTexture::from_handle(tex);
+                                let preview_rect = ui.allocate_exact_size(preview_size, egui::Sense::hover()).0;
+                                egui::Image::from_texture(sized)
+                                    .fit_to_exact_size(preview_size)
+                                    .paint_at(ui, preview_rect);
+                            }
+                            ui.add_space(8.0);
+                            ui.vertical(|ui| {
+                                ui.label(egui::RichText::new("\u{2705} Valid").color(
+                                    egui::Color32::from_rgb(80, 200, 80)
+                                ));
+                                ui.label(format!("{}x{} px", self.image_width, self.image_height));
+                                if !self.error_message.is_empty() {
+                                    ui.label(
+                                        egui::RichText::new(&self.error_message)
+                                            .size(11.0)
+                                            .color(egui::Color32::from_rgb(220, 180, 50))
+                                    );
+                                }
+                            });
+                        });
+                    } else {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("\u{274C} Invalid").color(
+                                egui::Color32::from_rgb(220, 60, 60)
+                            ));
+                            if !self.error_message.is_empty() {
+                                ui.label(
+                                    egui::RichText::new(&self.error_message)
+                                        .size(11.0)
+                                        .color(egui::Color32::from_rgb(220, 60, 60))
+                                );
+                            }
+                        });
+                    }
+                    ui.add_space(4.0);
+                }
+
+                // Footer
+                let (ok, cancel) = super::dialog_footer(ui, &colors);
+                if ok {
+                    let name_trimmed = self.name.trim().to_string();
+                    if name_trimmed.is_empty() {
+                        self.error_message = "Please enter a brush name.".to_string();
+                    } else if !self.valid {
+                        self.error_message = "Please select a valid PNG file.".to_string();
+                    } else if let Some(png_data) = self.png_data.clone() {
+                        result = Some(AddBrushTipResult {
+                            name: name_trimmed,
+                            category: self.category.clone(),
+                            png_data,
+                        });
+                        self.open = false;
+                    }
+                }
+                if cancel {
+                    self.open = false;
+                }
+            });
+
+        result
+    }
+}

@@ -9,6 +9,8 @@ impl PartialEq for TextStyle {
             && self.color == other.color
             && self.letter_spacing.to_bits() == other.letter_spacing.to_bits()
             && self.baseline_offset.to_bits() == other.baseline_offset.to_bits()
+            && self.width_scale.to_bits() == other.width_scale.to_bits()
+            && self.height_scale.to_bits() == other.height_scale.to_bits()
     }
 }
 

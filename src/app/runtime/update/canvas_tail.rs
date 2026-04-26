@@ -94,6 +94,36 @@ impl PaintFEApp {
                 });
             });
 
+        // Process pending brush tip actions from context bar
+        if self.tools_panel.pending_open_add_brush_tip {
+            self.tools_panel.pending_open_add_brush_tip = false;
+            // Build category list from assets
+            let cats: Vec<String> = self.assets.brush_tip_categories()
+                .iter()
+                .map(|c| c.name.clone())
+                .collect();
+            let mut dlg = crate::ui::dialogs::core::AddBrushTipDialog::new(&cats);
+            dlg.brush_icon_texture = self.assets.get_texture(crate::config::icons::Icon::Brush).cloned();
+            dlg.open_dialog();
+            self.active_dialog = crate::ui::dialogs::core::ActiveDialog::AddBrushTip(dlg);
+        }
+
+        if let Some(tip_name) = self.tools_panel.pending_delete_brush_tip.take() {
+            // If currently using this tip, reset to Circle
+            if !self.tools_panel.properties.brush_tip.is_circle()
+                && let crate::components::tools::BrushTip::Image(ref name) =
+                    self.tools_panel.properties.brush_tip
+                && name == &tip_name
+            {
+                self.tools_panel.properties.brush_tip =
+                    crate::components::tools::BrushTip::Circle;
+            }
+            self.assets.remove_brush_tip(&tip_name);
+            // Also remove from persisted settings
+            self.settings.custom_brush_tips.retain(|(n, _, _)| n != &tip_name);
+            self.settings.save();
+        }
+
         // Process pending selection modification from context bar
         if let Some(op) = self.tools_panel.pending_sel_modify.take()
             && let Some(project) = self.active_project_mut()

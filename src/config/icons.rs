@@ -95,6 +95,9 @@ pub enum Icon {
     HideAll,
     ShowAll,
     DropDown,
+    ShapeOutline,
+    ShapeFilled,
+    ShapeBoth,
 
     // === Settings Tabs ===
     SettingsGeneral,
@@ -299,6 +302,9 @@ impl Icon {
             Icon::SoloLayer => "\u{1F4CD}",
             Icon::HideAll => "\u{1F6AB}",
             Icon::ShowAll => "\u{1F441}",
+            Icon::ShapeOutline => "[O]",
+            Icon::ShapeFilled => "[F]",
+            Icon::ShapeBoth => "[B]",
             // Menu: File
             Icon::MenuFileNew => "\u{1F4C4}",
             Icon::MenuFileOpen => "\u{1F4C2}",
@@ -488,6 +494,9 @@ impl Icon {
             Icon::SoloLayer => "Solo Layer",
             Icon::HideAll => "Hide All Layers",
             Icon::ShowAll => "Show All Layers",
+            Icon::ShapeOutline => "Shape: Outline",
+            Icon::ShapeFilled => "Shape: Filled",
+            Icon::ShapeBoth => "Shape: Both",
             // UI: Context bar
             Icon::UiBrushDynamics => "Brush Dynamics (Flow, Scatter, Color Jitter)",
             // All menu items — tooltip matches the label

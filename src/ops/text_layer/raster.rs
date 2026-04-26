@@ -203,6 +203,7 @@ fn rasterize_block_multirun(
 
         let rasterized = text::rasterize_text(
             &font,
+            text::font_cache_key(&style.font_family, style.font_weight, style.italic),
             &all_text,
             style.font_size,
             alignment,
@@ -422,6 +423,7 @@ struct RunSegment {
     text: String,
     style: TextStyle,
     font: FontArc,
+    font_cache_key: u64,
     ascent: f32,
     line_height: f32,
     advance: f32,
@@ -472,6 +474,7 @@ fn rasterize_block_per_glyph(
         let ch_str = gb.ch.to_string();
         let rasterized = text::rasterize_text(
             &font,
+            text::font_cache_key(&style.font_family, style.font_weight, style.italic),
             &ch_str,
             style.font_size * scale,
             text::TextAlignment::Left,
@@ -668,9 +671,11 @@ fn rasterize_block_multirun_slow(
             Some(f) => f,
             None => continue,
         };
+        let safe_ws = run.style.width_scale.clamp(0.001, f32::MAX / run.style.font_size.max(1.0));
+        let safe_hs = run.style.height_scale.clamp(0.001, f32::MAX / run.style.font_size.max(1.0));
         let scaled = font.as_scaled(ab_glyph::PxScale {
-            x: run.style.font_size * run.style.width_scale,
-            y: run.style.font_size * run.style.height_scale,
+            x: run.style.font_size * safe_ws,
+            y: run.style.font_size * safe_hs,
         });
 
         let parts: Vec<&str> = run.text.split('\n').collect();
@@ -686,6 +691,11 @@ fn rasterize_block_multirun_slow(
                     text: String::new(),
                     style: run.style.clone(),
                     font: font.clone(),
+                    font_cache_key: text::font_cache_key(
+                        &run.style.font_family,
+                        run.style.font_weight,
+                        run.style.italic,
+                    ),
                     ascent: scaled.ascent(),
                     line_height: scaled.height(),
                     advance: 0.0,
@@ -699,9 +709,9 @@ fn rasterize_block_multirun_slow(
                 let gid = font.glyph_id(ch);
                 if let Some(prev) = prev_glyph {
                     advance += scaled.kern(prev, gid);
-                    advance += run.style.letter_spacing;
                 }
                 advance += scaled.h_advance(gid);
+                advance += run.style.letter_spacing;
                 prev_glyph = Some(gid);
             }
             lines.last_mut().unwrap().push(RunSegment {
@@ -709,6 +719,11 @@ fn rasterize_block_multirun_slow(
                 text: part.to_string(),
                 style: run.style.clone(),
                 font: font.clone(),
+                font_cache_key: text::font_cache_key(
+                    &run.style.font_family,
+                    run.style.font_weight,
+                    run.style.italic,
+                ),
                 ascent: scaled.ascent(),
                 line_height: scaled.height(),
                 advance,
@@ -754,6 +769,7 @@ fn rasterize_block_multirun_slow(
 
             let rasterized = text::rasterize_text(
                 &seg.font,
+                seg.font_cache_key,
                 &seg.text,
                 seg.style.font_size,
                 text::TextAlignment::Left, // alignment handled by x_cursor

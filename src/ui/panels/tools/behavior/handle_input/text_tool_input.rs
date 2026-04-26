@@ -33,39 +33,6 @@ impl ToolsPanel {
                 let ctrl_enter =
                     ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command);
 
-                // Apply context bar style changes to selection (text layer mode)
-                if self.text_state.ctx_bar_style_dirty
-                    && self.text_state.editing_text_layer
-                    && self.text_state.selection.has_selection()
-                {
-                    self.text_state.ctx_bar_style_dirty = false;
-                    let bold = self.text_state.bold;
-                    let italic = self.text_state.italic;
-                    let underline = self.text_state.underline;
-                    let strikethrough = self.text_state.strikethrough;
-                    let weight = if bold {
-                        if self.text_state.font_weight < 600 {
-                            700u16
-                        } else {
-                            self.text_state.font_weight
-                        }
-                    } else {
-                        self.text_state.font_weight
-                    };
-                    let font_family = self.text_state.font_family.clone();
-                    let font_size = self.text_state.font_size;
-                    self.text_layer_toggle_style(canvas_state, move |s| {
-                        s.font_weight = weight;
-                        s.italic = italic;
-                        s.underline = underline;
-                        s.strikethrough = strikethrough;
-                        s.font_family = font_family.clone();
-                        s.font_size = font_size;
-                    });
-                } else {
-                    self.text_state.ctx_bar_style_dirty = false;
-                }
-
                 // Sync effects changes from UI panel to the text layer
                 if self.text_state.text_effects_dirty && self.text_state.editing_text_layer {
                     self.text_state.text_effects_dirty = false;
@@ -617,6 +584,138 @@ impl ToolsPanel {
                     }
                 }
 
+                // --- Drag-to-select text within the active block ---
+                // If primary pressed within the text content area (not on any handle),
+                // set the selection anchor and start dragging.
+                if is_primary_pressed
+                    && self.text_state.is_editing
+                    && self.text_state.editing_text_layer
+                    && !self.text_state.dragging_handle
+                    && self.text_state.text_box_drag.is_none()
+                    && !self.text_state.text_box_click_guard
+                    && let Some(pos_f) = canvas_pos_f32
+                    && let Some(origin) = self.text_state.origin
+                {
+                    // Check if click is within the text box bounds (not on handles)
+                    let font_size = self.text_state.font_size;
+                    let display_w = if let Some(mw) = self.text_state.active_block_max_width {
+                        mw.max(font_size * 2.0)
+                    } else {
+                        // Compute natural width from font metrics (same as handle positioning)
+                        if let Some(ref font) = self.text_state.loaded_font {
+                            use ab_glyph::{Font as _, ScaleFont as _};
+                            let scaled = font.as_scaled(ab_glyph::PxScale {
+                                x: font_size * self.text_state.width_scale,
+                                y: font_size * self.text_state.height_scale,
+                            });
+                            let lines: Vec<&str> = self.text_state.text.split('\n').collect();
+                            let mut max_w = font_size * 2.0;
+                            for line in &lines {
+                                let mut w = 0.0f32;
+                                let mut prev = None;
+                                for ch in line.chars() {
+                                    let gid = font.glyph_id(ch);
+                                    if let Some(prev_id) = prev {
+                                        w += scaled.kern(prev_id, gid);
+                                    }
+                                    w += scaled.h_advance(gid);
+                                    prev = Some(gid);
+                                }
+                                max_w = max_w.max(w);
+                            }
+                            max_w
+                        } else {
+                            font_size * 2.0
+                        }
+                    };
+                    let text_h = self.text_state.active_block_height;
+                    let visual_h = self.text_state.active_block_max_height.map(|mh| mh.max(text_h)).unwrap_or(text_h);
+                    let pad = 4.0;
+                    let bx = {
+                        use crate::ops::text::TextAlignment;
+                        match self.text_state.alignment {
+                            TextAlignment::Left => origin[0] - pad,
+                            TextAlignment::Center => origin[0] - display_w * 0.5 - pad,
+                            TextAlignment::Right => origin[0] - display_w - pad,
+                        }
+                    };
+                    let by = origin[1] - pad;
+                    let bw = display_w + pad * 2.0;
+                    let bh = visual_h + pad * 2.0;
+
+                    if pos_f.0 >= bx && pos_f.0 <= bx + bw && pos_f.1 >= by && pos_f.1 <= by + bh {
+                        // Inside text box - set anchor at click position
+                        self.text_state.text_select_dragging = true;
+                        // Position cursor at click point (same logic as same-block click)
+                        let rel_x = pos_f.0 - origin[0];
+                        let rel_y = pos_f.1 - origin[1];
+                        let lh = self.text_state.cached_line_height.max(1.0);
+                        let visual_line_count = if let (Some(mw), Some(font)) = (
+                            self.text_state.active_block_max_width,
+                            &self.text_state.loaded_font,
+                        ) {
+                            let ls = self.text_state.letter_spacing;
+                            let vlines: Vec<String> = self.text_state.text.split('\n')
+                                .flat_map(|line| crate::ops::text::word_wrap_line(line, font,
+                                    self.text_state.font_size, mw, ls,
+                                    self.text_state.width_scale, self.text_state.height_scale))
+                                .collect();
+                            vlines.len()
+                        } else {
+                            self.text_state.text.split('\n').count()
+                        };
+                        let line_idx = ((rel_y / lh).floor() as usize)
+                            .min(visual_line_count.saturating_sub(1));
+                        let mut best_pos = 0;
+                        if !self.text_state.cached_line_advances.is_empty()
+                            && line_idx < self.text_state.cached_line_advances.len()
+                        {
+                            let advances = &self.text_state.cached_line_advances[line_idx];
+                            let mut best_dist = f32::MAX;
+                            for (ci, &adv) in advances.iter().enumerate() {
+                                let dist = (adv - rel_x).abs();
+                                if dist < best_dist { best_dist = dist; best_pos = ci; }
+                            }
+                            let max_chars = advances.len().saturating_sub(1);
+                            best_pos = best_pos.min(max_chars);
+                        }
+                        let byte_pos = if let Some(pos) =
+                            self.text_layer_byte_pos_from_point(canvas_state, pos_f)
+                        {
+                            pos
+                        } else if let (Some(mw), Some(font)) = (
+                            self.text_state.active_block_max_width,
+                            &self.text_state.loaded_font,
+                        ) {
+                            let ls = self.text_state.letter_spacing;
+                            Self::visual_to_byte_pos(&self.text_state.text, line_idx, best_pos,
+                                font, self.text_state.font_size, mw, ls,
+                                self.text_state.width_scale, self.text_state.height_scale)
+                        } else {
+                            let lines: Vec<&str> = self.text_state.text.split('\n').collect();
+                            let clamped = line_idx.min(lines.len().saturating_sub(1));
+                            let line_start: usize = lines.iter().take(clamped).map(|l| l.len() + 1).sum();
+                            let line_text = lines[clamped];
+                            let clamped_pos = best_pos.min(line_text.chars().count());
+                            let byte_offset: usize = line_text.chars().take(clamped_pos).map(|c| c.len_utf8()).sum();
+                            line_start + byte_offset
+                        };
+                        self.text_state.cursor_pos = byte_pos;
+                        // Set both anchor and cursor to same position (start of drag)
+                        self.text_state.selection.anchor = if let Some(layer) = canvas_state.layers.get(canvas_state.active_layer_index)
+                            && let crate::canvas::LayerContent::Text(ref td) = layer.content
+                            && let Some(bid) = self.text_state.active_block_id
+                            && let Some(block) = td.blocks.iter().find(|b| b.id == bid)
+                        {
+                            block.flat_offset_to_run_pos(byte_pos)
+                        } else {
+                            self.text_state.selection.anchor
+                        };
+                        self.text_state.selection.cursor = self.text_state.selection.anchor;
+                        self.text_state.preview_dirty = true;
+                    }
+                }
+
                 // Process text box drag (resize / rotate)
                 if let Some(drag_type) = self.text_state.text_box_drag {
                     if is_primary_down && let Some(pos_f) = canvas_pos_unclamped {
@@ -817,6 +916,73 @@ impl ToolsPanel {
                     }
                 }
 
+                // --- Drag-to-select: update cursor position during drag ---
+                if self.text_state.text_select_dragging
+                    && is_primary_down
+                    && self.text_state.editing_text_layer
+                    && let Some(pos_f) = canvas_pos_f32
+                    && let Some(origin) = self.text_state.origin
+                {
+                    // Same cursor-positioning logic as same-block click
+                    let rel_x = pos_f.0 - origin[0];
+                    let rel_y = pos_f.1 - origin[1];
+                    let lh = self.text_state.cached_line_height.max(1.0);
+                    let visual_line_count = if let (Some(mw), Some(font)) = (
+                        self.text_state.active_block_max_width,
+                        &self.text_state.loaded_font,
+                    ) {
+                        let ls = self.text_state.letter_spacing;
+                        let vlines: Vec<String> = self.text_state.text.split('\n')
+                            .flat_map(|line| crate::ops::text::word_wrap_line(line, font,
+                                self.text_state.font_size, mw, ls,
+                                self.text_state.width_scale, self.text_state.height_scale))
+                            .collect();
+                        vlines.len()
+                    } else {
+                        self.text_state.text.split('\n').count()
+                    };
+                    let line_idx = ((rel_y / lh).floor() as usize)
+                        .min(visual_line_count.saturating_sub(1));
+                    let mut best_pos = 0;
+                    if !self.text_state.cached_line_advances.is_empty()
+                        && line_idx < self.text_state.cached_line_advances.len()
+                    {
+                        let advances = &self.text_state.cached_line_advances[line_idx];
+                        let mut best_dist = f32::MAX;
+                        for (ci, &adv) in advances.iter().enumerate() {
+                            let dist = (adv - rel_x).abs();
+                            if dist < best_dist { best_dist = dist; best_pos = ci; }
+                        }
+                        let max_chars = advances.len().saturating_sub(1);
+                        best_pos = best_pos.min(max_chars);
+                    }
+                    let byte_pos = if let Some(pos) =
+                        self.text_layer_byte_pos_from_point(canvas_state, pos_f)
+                    {
+                        pos
+                    } else if let (Some(mw), Some(font)) = (
+                        self.text_state.active_block_max_width,
+                        &self.text_state.loaded_font,
+                    ) {
+                        let ls = self.text_state.letter_spacing;
+                        Self::visual_to_byte_pos(&self.text_state.text, line_idx, best_pos,
+                            font, self.text_state.font_size, mw, ls,
+                            self.text_state.width_scale, self.text_state.height_scale)
+                    } else {
+                        let lines: Vec<&str> = self.text_state.text.split('\n').collect();
+                        let clamped = line_idx.min(lines.len().saturating_sub(1));
+                        let line_start: usize = lines.iter().take(clamped).map(|l| l.len() + 1).sum();
+                        let line_text = lines[clamped];
+                        let clamped_pos = best_pos.min(line_text.chars().count());
+                        let byte_offset: usize = line_text.chars().take(clamped_pos).map(|c| c.len_utf8()).sum();
+                        line_start + byte_offset
+                    };
+                    self.text_state.cursor_pos = byte_pos;
+                    // Extend selection (shift-hold behavior: update cursor but keep anchor)
+                    self.text_layer_update_selection(canvas_state, true);
+                    self.text_state.preview_dirty = true;
+                }
+
                 if self.text_state.dragging_handle
                     && is_primary_down
                     && let Some(pos_f) = canvas_pos_unclamped
@@ -986,11 +1152,12 @@ impl ToolsPanel {
                 }
 
                 // Click to place origin (or commit existing + start new)
-                // Only if not dragging the handle
+                // Only if not dragging the handle and not finishing a drag-to-select
                 let any_popup_open = egui::Popup::is_any_open(ui.ctx());
                 if is_primary_clicked
                     && !self.text_state.dragging_handle
                     && !self.text_state.text_box_click_guard
+                    && !self.text_state.text_select_dragging
                     && !any_popup_open
                 {
                     // Check if click is on the handle - if so, skip placement
@@ -1257,9 +1424,10 @@ impl ToolsPanel {
                     }
                 }
 
-                // Clear the click guard on mouse release (after the click handler above)
+                // Clear the click guard and drag-to-select on mouse release (after the click handler above)
                 if is_primary_released {
                     self.text_state.text_box_click_guard = false;
+                    self.text_state.text_select_dragging = false;
                 }
 
                 // Detect color changes from the color widget
@@ -1335,6 +1503,7 @@ impl ToolsPanel {
                                         byte_offset: len,
                                     };
                             }
+                            self.sync_text_toolbar_to_selection(canvas_state);
                         }
                     }
 

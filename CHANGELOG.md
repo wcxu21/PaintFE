@@ -6,28 +6,16 @@ The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/
 
 ---
 
-## [1.2.12] - 2026-04-25
+## [1.2.13] - 2026-04-26
 
-### Bug Fixes
-- Fixed Ctrl+Shift+Z keybind -- Redo shortcut now works reliably.
-- Fixed paste freeze on oversized images -- Pasting an image larger than the canvas (via Ctrl+V or Edit > Paste) no longer hangs the application.
-- Fixed project tab hitboxes -- Clickable area now spans the entire tab widget (excluding the close X button), not just the text label.
-- Fixed unbound key persistence -- Keys set to "unbound" in Preferences > Keybinds now survive restarts.
-- Fixed Wayland drawing tablet input -- Cursor icon, keyboard shortcuts, and cursor position tracking now work correctly when using a tablet on Wayland (workaround for missing zwp_tablet_v2 protocol support in winit).
+### Added
+- Custom brush tips workflow -- Added a dedicated Add Brush Tip dialog so PNG brush tips can be imported, categorized, saved across restarts, and managed directly from the brush tip picker.
 
-### New Features
-- Paste preview overlay - Pasted images now show a preview with transform handles before committing. Right-click for context menu options.
-- Optimized paste previews in Overwrite mode -- Faster rendering when pasting with overwrite blending.
-- Layer Align moved to Transform menu -- Right-click a layer > Transform > Align... (moved from the Canvas menu, sits just above Rotate/Scale).
-- Alpha settings in Interface preferences -- New alpha-related display options in the Interface settings tab.
-- Del key cancels paste -- Press Delete to dismiss an active paste overlay.
-- Control corner rounding for Badges and Project Tabs -- New preference options to customize corner radii.
+### Changed
+- Shape fill mode controls -- Replaced the Outline/Filled/Both text dropdown with icon-based controls for faster switching in the shape tool context bar.
 
-### Improvements
-- Enhanced logging - PaintFE now logs more detailed diagnostic information for troubleshooting.
-- Text field capture guard - Canvas shortcuts no longer fire while typing in dialog text fields (font search, file name, settings values).
-
----
+### Fixed
+- Text layer editing regressions -- Restored reliable text layer selections and property updates so width, height, bold styling, and related text editing controls behave correctly again.
 
 ## [1.2.11] - 2026-04-25
 

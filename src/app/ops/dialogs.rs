@@ -7,6 +7,10 @@ impl PaintFEApp {
             log_info!("Dialog: open ({})", dialog.name());
         }
 
+        if self.process_brush_tip_dialog(ctx, &mut dialog) {
+            return;
+        }
+
         if self.process_canvas_and_transform_dialog(ctx, &mut dialog) {
             return;
         }
@@ -47,6 +51,7 @@ impl PaintFEApp {
     }
 }
 
+include!("dialogs/brush_tip.rs");
 include!("dialogs/canvas_and_transform.rs");
 include!("dialogs/adjustments.rs");
 include!("dialogs/blur.rs");

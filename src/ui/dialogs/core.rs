@@ -28,6 +28,7 @@ use super::effects::*;
 pub enum ActiveDialog {
     #[default]
     None,
+    AddBrushTip(AddBrushTipDialog),
     ResizeImage(ResizeImageDialog),
     ResizeCanvas(ResizeCanvasDialog),
     AlignLayer(AlignLayerDialog),
@@ -97,6 +98,7 @@ impl ActiveDialog {
     pub fn name(&self) -> &'static str {
         match self {
             ActiveDialog::None => "None",
+            ActiveDialog::AddBrushTip(_) => "AddBrushTip",
             ActiveDialog::ResizeImage(_) => "ResizeImage",
             ActiveDialog::ResizeCanvas(_) => "ResizeCanvas",
             ActiveDialog::AlignLayer(_) => "AlignLayer",
@@ -231,11 +233,32 @@ pub(crate) fn contrast_text_color(fill: Color32) -> Color32 {
 }
 
 /// Paint the accent header bar with icon + title (Signal Grid style).
+/// If `texture_icon` is provided, renders it as an image instead of text.
 pub(crate) fn paint_dialog_header(
     ui: &mut egui::Ui,
     colors: &DialogColors,
     icon: &str,
     title: &str,
+) -> bool {
+    paint_dialog_header_impl(ui, colors, icon, title, None)
+}
+
+/// Same as `paint_dialog_header` but with an optional texture handle for the icon.
+pub(crate) fn paint_dialog_header_with_texture(
+    ui: &mut egui::Ui,
+    colors: &DialogColors,
+    texture_icon: Option<&egui::TextureHandle>,
+    title: &str,
+) -> bool {
+    paint_dialog_header_impl(ui, colors, "", title, texture_icon)
+}
+
+fn paint_dialog_header_impl(
+    ui: &mut egui::Ui,
+    colors: &DialogColors,
+    icon: &str,
+    title: &str,
+    texture_icon: Option<&egui::TextureHandle>,
 ) -> bool {
     let available_width = ui.available_width();
     let header_height = 32.0;
@@ -252,15 +275,31 @@ pub(crate) fn paint_dialog_header(
         colors.accent,
     );
 
-    // Diamond icon + title
+    // Icon + title
     let text_pos = Pos2::new(rect.min.x + 12.0, rect.center().y);
-    painter.text(
-        text_pos,
-        egui::Align2::LEFT_CENTER,
-        format!("{icon} {title}"),
-        egui::FontId::proportional(14.0),
-        colors.accent_strong,
-    );
+    if let Some(tex) = texture_icon {
+        let sized = egui::load::SizedTexture::from_handle(tex);
+        let img = egui::Image::from_texture(sized).fit_to_exact_size(egui::vec2(16.0, 16.0));
+        img.paint_at(ui, egui::Rect::from_center_size(
+            Pos2::new(text_pos.x + 8.0, text_pos.y),
+            egui::vec2(16.0, 16.0),
+        ));
+        painter.text(
+            Pos2::new(text_pos.x + 22.0, text_pos.y),
+            egui::Align2::LEFT_CENTER,
+            title,
+            egui::FontId::proportional(14.0),
+            colors.accent_strong,
+        );
+    } else {
+        painter.text(
+            text_pos,
+            egui::Align2::LEFT_CENTER,
+            format!("{icon} {title}"),
+            egui::FontId::proportional(14.0),
+            colors.accent_strong,
+        );
+    }
 
     let close_size = Vec2::new(header_height, header_height);
     let close_rect = Rect::from_center_size(

@@ -389,6 +389,21 @@ impl Assets {
         );
         self.load_icon(
             ctx,
+            Icon::ShapeOutline,
+            include_bytes!("../../assets/icons/ui/shape_outline.png"),
+        );
+        self.load_icon(
+            ctx,
+            Icon::ShapeFilled,
+            include_bytes!("../../assets/icons/ui/shape_filled.png"),
+        );
+        self.load_icon(
+            ctx,
+            Icon::ShapeBoth,
+            include_bytes!("../../assets/icons/ui/shape_both.png"),
+        );
+        self.load_icon(
+            ctx,
             Icon::Expand,
             include_bytes!("../../assets/icons/ui/expand.png"),
         );
@@ -1173,7 +1188,7 @@ impl Assets {
 
     /// Load a brush tip from grayscale PNG bytes.
     /// Extracts the luminance/alpha as a single-channel mask, creates an icon texture.
-    fn load_brush_tip(&mut self, ctx: &egui::Context, name: &str, category: &str, png_data: &[u8]) {
+    pub fn load_brush_tip(&mut self, ctx: &egui::Context, name: &str, category: &str, png_data: &[u8]) {
         match image::load_from_memory(png_data) {
             Ok(img) => {
                 let gray = img.to_luma8();
@@ -1278,6 +1293,31 @@ impl Assets {
 
     pub fn brush_tip_categories(&self) -> &[BrushTipCategory] {
         &self.brush_tip_categories
+    }
+
+    /// Remove a custom brush tip by name. Returns true if found and removed.
+    /// Built-in (embedded) tips cannot be removed — only tips loaded at runtime.
+    pub fn remove_brush_tip(&mut self, name: &str) -> bool {
+        // Remove from data
+        let data_idx = self.brush_tip_data.iter().position(|d| d.name == name);
+        if let Some(idx) = data_idx {
+            let cat = self.brush_tip_data[idx].category.clone();
+            self.brush_tip_data.remove(idx);
+            // Remove from category
+            if let Some(cat_idx) = self.brush_tip_categories.iter().position(|c| c.name == cat) {
+                self.brush_tip_categories[cat_idx].tips.retain(|t| t != name);
+                if self.brush_tip_categories[cat_idx].tips.is_empty() {
+                    self.brush_tip_categories.remove(cat_idx);
+                }
+            }
+            // Remove textures
+            self.brush_tip_textures.remove(name);
+            self.brush_tip_icon_pixels.remove(name);
+            self.brush_tip_icon_sizes.remove(name);
+            true
+        } else {
+            false
+        }
     }
 
     /// Check if a texture is available for the given icon

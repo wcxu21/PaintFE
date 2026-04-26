@@ -23,6 +23,84 @@ impl ToolsPanel {
         if !self.text_state.is_editing || self.text_state.text.is_empty() {
             return;
         }
+        // Apply context bar style changes (bold, italic, etc.) to the selection.
+        // This MUST run outside the allow_input gate because when the user clicks
+        // Bold in the context bar (egui UI), ui_blocking=true and text_drag_override=false
+        // (due to pointer_over_egui_with_touch), so handle_input is skipped.
+        // If we don't process ctx_bar_style_dirty here, sync_text_layer_run_style
+        // (called from render_text_preview) writes the effective weight to the
+        // single run, making the ENTIRE block bold instead of just the selection.
+        if self.text_state.ctx_bar_style_dirty && self.text_state.editing_text_layer {
+            self.text_state.ctx_bar_style_dirty = false;
+            if let Some(update) = self.text_state.pending_ctx_style_update.take() {
+                match update {
+                    TextStyleUpdate::FontFamily(font_family) => {
+                        self.text_layer_apply_block_style(canvas_state, |style| {
+                            style.font_family.clone_from(&font_family);
+                        });
+                    }
+                    TextStyleUpdate::FontWeight(font_weight) => {
+                        self.text_layer_apply_block_style(canvas_state, |style| {
+                            style.font_weight = font_weight;
+                        });
+                    }
+                    TextStyleUpdate::FontSize(font_size) => {
+                        self.text_layer_apply_block_style(canvas_state, |style| {
+                            style.font_size = font_size;
+                        });
+                    }
+                    TextStyleUpdate::Bold {
+                        enabled,
+                        base_weight,
+                    } => {
+                        let effective_weight = if enabled {
+                            if base_weight < 600 {
+                                700u16
+                            } else {
+                                (base_weight + 200).min(900)
+                            }
+                        } else if base_weight >= 600 {
+                            400
+                        } else {
+                            base_weight
+                        };
+                        self.text_layer_toggle_style(canvas_state, |style| {
+                            style.font_weight = effective_weight;
+                        });
+                    }
+                    TextStyleUpdate::Italic(italic) => {
+                        self.text_layer_toggle_style(canvas_state, |style| {
+                            style.italic = italic;
+                        });
+                    }
+                    TextStyleUpdate::Underline(underline) => {
+                        self.text_layer_toggle_style(canvas_state, |style| {
+                            style.underline = underline;
+                        });
+                    }
+                    TextStyleUpdate::Strikethrough(strikethrough) => {
+                        self.text_layer_toggle_style(canvas_state, |style| {
+                            style.strikethrough = strikethrough;
+                        });
+                    }
+                    TextStyleUpdate::LetterSpacing(letter_spacing) => {
+                        self.text_layer_apply_block_style(canvas_state, |style| {
+                            style.letter_spacing = letter_spacing;
+                        });
+                    }
+                    TextStyleUpdate::WidthScale(width_scale) => {
+                        self.text_layer_apply_block_style(canvas_state, |style| {
+                            style.width_scale = width_scale;
+                        });
+                    }
+                    TextStyleUpdate::HeightScale(height_scale) => {
+                        self.text_layer_apply_block_style(canvas_state, |style| {
+                            style.height_scale = height_scale;
+                        });
+                    }
+                }
+            }
+        }
         // Detect color change
         let current_color = [
             (primary_color_f32[0] * 255.0) as u8,
@@ -712,9 +790,56 @@ impl ToolsPanel {
                 line_height
             };
             let sel_color = Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 80);
+            let mut drew_glyph_selection = false;
+
+            if let Some(layer) = canvas_state.layers.get(canvas_state.active_layer_index)
+                && let crate::canvas::LayerContent::Text(ref td) = layer.content
+                && let Some(bid) = self.text_state.active_block_id
+                && let Some(block) = td.blocks.iter().find(|b| b.id == bid)
+            {
+                for gb in crate::ops::text_layer::compute_glyph_bounds(block) {
+                    if gb.flat_end <= sel_start || gb.flat_start >= sel_end {
+                        continue;
+                    }
+                    let r = egui::Rect::from_min_max(
+                        Pos2::new(
+                            canvas_rect.min.x + gb.x * zoom,
+                            canvas_rect.min.y + gb.y * zoom,
+                        ),
+                        Pos2::new(
+                            canvas_rect.min.x + (gb.x + gb.w) * zoom,
+                            canvas_rect.min.y + (gb.y + gb.h) * zoom,
+                        ),
+                    );
+                    if has_rot {
+                        let corners = [
+                            rotate_screen_point(r.left_top(), rot_pivot, block_rotation),
+                            rotate_screen_point(r.right_top(), rot_pivot, block_rotation),
+                            rotate_screen_point(r.right_bottom(), rot_pivot, block_rotation),
+                            rotate_screen_point(r.left_bottom(), rot_pivot, block_rotation),
+                        ];
+                        let mut mesh = egui::Mesh::with_texture(egui::TextureId::Managed(0));
+                        let uv = Pos2::ZERO;
+                        for &c in &corners {
+                            mesh.vertices.push(egui::epaint::Vertex {
+                                pos: c,
+                                uv,
+                                color: sel_color,
+                            });
+                        }
+                        mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+                        painter.add(egui::Shape::mesh(mesh));
+                    } else {
+                        painter.rect_filled(r, 0.0, sel_color);
+                    }
+                    drew_glyph_selection = true;
+                }
+            }
 
             // Compute visual lines with byte offsets for wrap-aware selection
-            let visual_with_offsets: Vec<(String, usize)> = if let (Some(mw), Some(font)) = (
+            let visual_with_offsets: Vec<(String, usize)> = if drew_glyph_selection {
+                Vec::new()
+            } else if let (Some(mw), Some(font)) = (
                 self.text_state.active_block_max_width,
                 &self.text_state.loaded_font,
             ) {

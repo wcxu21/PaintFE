@@ -1747,11 +1747,13 @@ impl Canvas {
                 || tools.is_stroke_active();
             // When editing a text layer block, handles (rotation, delete) can be drawn outside
             // canvas bounds ÔÇö allow input so the user can click/drag them.
-            // This also overrides ui_blocking, because the handles may overlap panels.
+            // Do NOT override ui_blocking when pointer is over egui UI (e.g. tool shelf),
+            // otherwise clicking Bold/Italic buttons passes through to the canvas.
             let text_handles_active =
                 tools.text_state.is_editing && tools.text_state.editing_text_layer;
             let text_drag_override =
-                text_handles_active || tools.text_state.text_box_drag.is_some();
+                (text_handles_active || tools.text_state.text_box_drag.is_some())
+                    && !pointer_over_egui_with_touch;
             let keyboard_finalize_pressed =
                 ui.input(|i| i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Escape));
             let pending_tool_commit = tools.mesh_warp_state.commit_pending

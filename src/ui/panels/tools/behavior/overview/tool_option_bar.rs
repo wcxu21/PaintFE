@@ -170,10 +170,21 @@ impl ToolsPanel {
         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
             ui.set_min_width(240.0);
+            ui.set_max_width(260.0);
 
             let cols = 5;
             let icon_size = egui::Vec2::splat(36.0);
             let accent = ui.visuals().hyperlink_color;
+
+            // "New..." button in top-right corner
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("New...").clicked() {
+                        self.pending_open_add_brush_tip = true;
+                        ui.close();
+                    }
+                });
+            });
 
             // "Basic" category header always first, with Circle as first item
             ui.label(egui::RichText::new("Basic").strong().size(11.0));
@@ -314,12 +325,53 @@ impl ToolsPanel {
                             if response.clicked() {
                                 self.properties.brush_tip = BrushTip::Image(tip_name.clone());
                             }
+                            // Right-click opens context menu (only non-default tips)
+                            let is_default_cat = cat.name == "Basic"
+                                || cat.name == "Texture"
+                                || cat.name == "Vegetation";
+                            if response.secondary_clicked()
+                                && !is_default_cat
+                                && let Some(pos) = ui.input(|i| i.pointer.latest_pos())
+                            {
+                                self.brush_tip_context_menu =
+                                    Some((tip_name.clone(), pos.x, pos.y));
+                            }
                             response.on_hover_text(tip_name);
                             if (i + 1) % cols == 0 {
                                 ui.end_row();
                             }
                         }
                     });
+            }
+
+            // Show right-click context menu if active
+            if let Some((ref ctx_tip, cx, cy)) = self.brush_tip_context_menu.clone() {
+                let ctx_id = ui.make_persistent_id("brush_tip_ctx_menu");
+                let ctx_rect = egui::Rect::from_min_size(
+                    egui::pos2(cx, cy),
+                    egui::vec2(120.0, 0.0),
+                );
+                egui::Area::new(ctx_id)
+                    .fixed_pos(ctx_rect.min)
+                    .order(egui::Order::Foreground)
+                    .show(ui.ctx(), |ui| {
+                        let frame = egui::Frame::popup(ui.style());
+                        frame.show(ui, |ui| {
+                            ui.set_min_width(120.0);
+                            if ui.button("Delete").clicked() {
+                                self.pending_delete_brush_tip = Some(ctx_tip.clone());
+                                self.brush_tip_context_menu = None;
+                                ui.close();
+                            }
+                        });
+                    });
+                // Close context menu on any click outside
+                if ui.input(|i| i.pointer.any_click())
+                    && let Some(pointer_pos) = ui.input(|i| i.pointer.latest_pos())
+                    && !ctx_rect.contains(pointer_pos)
+                {
+                    self.brush_tip_context_menu = None;
+                }
             }
         });
     }
@@ -423,6 +475,8 @@ impl ToolsPanel {
             self.text_state.font_size = (self.text_state.font_size - 1.0).max(6.0);
             self.text_state.preview_dirty = true;
             self.text_state.glyph_cache.clear();
+            self.text_state.pending_ctx_style_update =
+                Some(TextStyleUpdate::FontSize(self.text_state.font_size));
             self.text_state.ctx_bar_style_dirty = true;
         }
 
@@ -451,6 +505,8 @@ impl ToolsPanel {
                 if dv_resp.changed() {
                     self.text_state.preview_dirty = true;
                     self.text_state.glyph_cache.clear();
+                    self.text_state.pending_ctx_style_update =
+                        Some(TextStyleUpdate::FontSize(self.text_state.font_size));
                     self.text_state.ctx_bar_style_dirty = true;
                 }
                 let dv_rect = dv_resp.rect;
@@ -500,6 +556,8 @@ impl ToolsPanel {
                     self.text_state.font_size = preset;
                     self.text_state.preview_dirty = true;
                     self.text_state.glyph_cache.clear();
+                    self.text_state.pending_ctx_style_update =
+                        Some(TextStyleUpdate::FontSize(self.text_state.font_size));
                     self.text_state.ctx_bar_style_dirty = true;
                     egui::Popup::close_id(ui.ctx(), popup_id);
                 }
@@ -509,6 +567,8 @@ impl ToolsPanel {
             self.text_state.font_size += 1.0;
             self.text_state.preview_dirty = true;
             self.text_state.glyph_cache.clear();
+            self.text_state.pending_ctx_style_update =
+                Some(TextStyleUpdate::FontSize(self.text_state.font_size));
             self.text_state.ctx_bar_style_dirty = true;
         }
     }

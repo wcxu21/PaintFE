@@ -8,7 +8,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 
 param(
-    [string]$Version     = "1.2.12.0",    # Must be Major.Minor.Patch.0 format
+    [string]$Version     = "1.2.13.0",    # Must be Major.Minor.Patch.0 format
     [switch]$SkipBuild,                   # Skip cargo build (use existing binary)
     [switch]$SkipAssets                   # Skip icon asset generation
 )

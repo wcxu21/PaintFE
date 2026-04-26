@@ -132,6 +132,8 @@ pub struct AppSettings {
     pub persisted_pressure_min_opacity: f32,
     pub persisted_brush_mode: String,
     pub persisted_brush_tip: String,
+    /// Custom brush tips persisted across restarts: (name, category, base64_png_data)
+    pub custom_brush_tips: Vec<(String, String, String)>,
     pub persisted_fill_tolerance: f32,
     pub persisted_fill_anti_aliased: bool,
     pub persisted_fill_global: bool,
@@ -294,6 +296,7 @@ impl Default for AppSettings {
             persisted_pressure_min_opacity: 0.1,
             persisted_brush_mode: "normal".to_string(),
             persisted_brush_tip: String::new(),
+            custom_brush_tips: Vec::new(),
             persisted_fill_tolerance: 5.0,
             persisted_fill_anti_aliased: true,
             persisted_fill_global: false,
@@ -993,6 +996,10 @@ impl AppSettings {
             "persisted_brush_tip={}\n",
             self.persisted_brush_tip
         ));
+        // Save custom brush tips (name, category, base64 png)
+        for (name, cat, b64) in &self.custom_brush_tips {
+            content.push_str(&format!("custom_brush_tip={},{},{}\n", name, cat, b64));
+        }
         content.push_str(&format!(
             "persisted_fill_tolerance={}\n",
             self.persisted_fill_tolerance
@@ -1371,6 +1378,18 @@ impl AppSettings {
                 }
                 "persisted_brush_tip" => {
                     s.persisted_brush_tip = val.to_string();
+                }
+                "custom_brush_tip" => {
+                    // Format: name,category,base64data
+                    if let Some((rest, b64)) = val.rsplit_once(',')
+                        && let Some((name, cat)) = rest.split_once(',')
+                    {
+                        s.custom_brush_tips.push((
+                            name.to_string(),
+                            cat.to_string(),
+                            b64.to_string(),
+                        ));
+                    }
                 }
                 "persisted_fill_tolerance" => {
                     s.persisted_fill_tolerance = val.parse().unwrap_or(5.0);

@@ -235,6 +235,11 @@ impl ToolsPanel {
                                                 crate::ops::text::GlyphPixelCache::default();
                                             let preview = crate::ops::text::rasterize_text(
                                                 preview_font,
+                                                crate::ops::text::font_cache_key(
+                                                    font_name.as_str(),
+                                                    400,
+                                                    false,
+                                                ),
                                                 preview_text,
                                                 18.0,
                                                 crate::ops::text::TextAlignment::Left,
@@ -353,6 +358,10 @@ impl ToolsPanel {
                                     self.text_state.font_family = (*font_name).clone();
                                     self.text_state.loaded_font = None;
                                     self.text_state.preview_dirty = true;
+                                    self.text_state.pending_ctx_style_update =
+                                        Some(TextStyleUpdate::FontFamily(
+                                            self.text_state.font_family.clone(),
+                                        ));
                                     self.text_state.ctx_bar_style_dirty = true;
                                     self.text_state.cached_raster_key.clear();
                                     // Refresh available weights for new family
@@ -405,6 +414,8 @@ impl ToolsPanel {
                             self.text_state.font_weight = *val;
                             self.text_state.loaded_font = None;
                             self.text_state.preview_dirty = true;
+                            self.text_state.pending_ctx_style_update =
+                                Some(TextStyleUpdate::FontWeight(*val));
                             self.text_state.ctx_bar_style_dirty = true;
                             self.text_state.cached_raster_key.clear();
                         }
@@ -424,6 +435,10 @@ impl ToolsPanel {
             self.text_state.bold = !self.text_state.bold;
             self.text_state.loaded_font = None;
             self.text_state.preview_dirty = true;
+            self.text_state.pending_ctx_style_update = Some(TextStyleUpdate::Bold {
+                enabled: self.text_state.bold,
+                base_weight: self.text_state.font_weight,
+            });
             self.text_state.ctx_bar_style_dirty = true;
         }
         if ui
@@ -433,6 +448,8 @@ impl ToolsPanel {
             self.text_state.italic = !self.text_state.italic;
             self.text_state.loaded_font = None;
             self.text_state.preview_dirty = true;
+            self.text_state.pending_ctx_style_update =
+                Some(TextStyleUpdate::Italic(self.text_state.italic));
             self.text_state.ctx_bar_style_dirty = true;
         }
         if ui
@@ -441,6 +458,8 @@ impl ToolsPanel {
         {
             self.text_state.underline = !self.text_state.underline;
             self.text_state.preview_dirty = true;
+            self.text_state.pending_ctx_style_update =
+                Some(TextStyleUpdate::Underline(self.text_state.underline));
             self.text_state.ctx_bar_style_dirty = true;
         }
         if ui
@@ -449,6 +468,9 @@ impl ToolsPanel {
         {
             self.text_state.strikethrough = !self.text_state.strikethrough;
             self.text_state.preview_dirty = true;
+            self.text_state.pending_ctx_style_update = Some(TextStyleUpdate::Strikethrough(
+                self.text_state.strikethrough,
+            ));
             self.text_state.ctx_bar_style_dirty = true;
         }
 
@@ -478,6 +500,9 @@ impl ToolsPanel {
             .changed()
         {
             self.text_state.preview_dirty = true;
+            self.text_state.pending_ctx_style_update =
+                Some(TextStyleUpdate::LetterSpacing(self.text_state.letter_spacing));
+            self.text_state.ctx_bar_style_dirty = true;
         }
 
         ui.separator();
@@ -486,12 +511,15 @@ impl ToolsPanel {
             .add(
                 egui::DragValue::new(&mut self.text_state.width_scale)
                     .speed(0.01)
-                    .range(0.01..=f32::MAX)
+                    .range(0.01..=10.0)
                     .suffix("x"),
             )
             .changed()
         {
             self.text_state.preview_dirty = true;
+            self.text_state.pending_ctx_style_update =
+                Some(TextStyleUpdate::WidthScale(self.text_state.width_scale));
+            self.text_state.ctx_bar_style_dirty = true;
         }
 
         ui.label("Letter Height");
@@ -499,12 +527,15 @@ impl ToolsPanel {
             .add(
                 egui::DragValue::new(&mut self.text_state.height_scale)
                     .speed(0.01)
-                    .range(0.01..=f32::MAX)
+                    .range(0.01..=10.0)
                     .suffix("x"),
             )
             .changed()
         {
             self.text_state.preview_dirty = true;
+            self.text_state.pending_ctx_style_update =
+                Some(TextStyleUpdate::HeightScale(self.text_state.height_scale));
+            self.text_state.ctx_bar_style_dirty = true;
         }
 
         ui.separator();

@@ -27,9 +27,11 @@ pub fn compute_block_layout(block: &TextBlock) -> BlockLayout {
                 continue;
             }
         };
+        let safe_ws = run.style.width_scale.clamp(0.001, f32::MAX / run.style.font_size.max(1.0));
+        let safe_hs = run.style.height_scale.clamp(0.001, f32::MAX / run.style.font_size.max(1.0));
         let scaled = font.as_scaled(ab_glyph::PxScale {
-            x: run.style.font_size * run.style.width_scale,
-            y: run.style.font_size * run.style.height_scale,
+            x: run.style.font_size * safe_ws,
+            y: run.style.font_size * safe_hs,
         });
         let ascent = scaled.ascent();
         let lh = scaled.height();
@@ -49,9 +51,9 @@ pub fn compute_block_layout(block: &TextBlock) -> BlockLayout {
                 let gid = font.glyph_id(ch);
                 if let Some(prev) = prev_glyph {
                     cursor_x += scaled.kern(prev, gid);
-                    cursor_x += run.style.letter_spacing;
                 }
                 cursor_x += scaled.h_advance(gid);
+                cursor_x += run.style.letter_spacing;
                 seg_advances.push(cursor_x);
                 prev_glyph = Some(gid);
             }
@@ -89,9 +91,9 @@ pub fn compute_block_layout(block: &TextBlock) -> BlockLayout {
             let gid = font.glyph_id(ch);
             if let Some(prev) = prev_g {
                 cx += scaled.kern(prev, gid);
-                cx += run.style.letter_spacing;
             }
             cx += scaled.h_advance(gid);
+            cx += run.style.letter_spacing;
             flat_advances.push(cx);
             prev_g = Some(gid);
         }
@@ -176,6 +178,8 @@ pub struct GlyphBounds {
     pub glyph_index: usize,
     /// The character this glyph represents.
     pub ch: char,
+    pub flat_start: usize,
+    pub flat_end: usize,
     /// Top-left corner in canvas coords.
     pub x: f32,
     pub y: f32,
@@ -197,30 +201,36 @@ pub fn compute_glyph_bounds(block: &TextBlock) -> Vec<GlyphBounds> {
     // Split runs into per-line segments (same logic as rasterize_block_multirun_slow)
     struct GlyphSeg {
         text: String,
+        flat_start: usize,
         font: FontArc,
         font_size: f32,
         width_scale: f32,
         height_scale: f32,
+        letter_spacing: f32,
         ascent: f32,
         line_height: f32,
         advance: f32,
     }
 
     let mut lines: Vec<Vec<GlyphSeg>> = vec![Vec::new()];
+    let mut flat_offset = 0usize;
 
     for run in &block.runs {
         let font = match load_font_for_style(&run.style) {
             Some(f) => f,
             None => continue,
         };
+        let safe_ws = run.style.width_scale.clamp(0.001, f32::MAX / run.style.font_size.max(1.0));
+        let safe_hs = run.style.height_scale.clamp(0.001, f32::MAX / run.style.font_size.max(1.0));
         let scaled = font.as_scaled(ab_glyph::PxScale {
-            x: run.style.font_size * run.style.width_scale,
-            y: run.style.font_size * run.style.height_scale,
+            x: run.style.font_size * safe_ws,
+            y: run.style.font_size * safe_hs,
         });
         let parts: Vec<&str> = run.text.split('\n').collect();
         for (pi, part) in parts.iter().enumerate() {
             if pi > 0 {
                 lines.push(Vec::new());
+                flat_offset += 1;
             }
             let mut advance = 0.0f32;
             let mut prev_glyph: Option<ab_glyph::GlyphId> = None;
@@ -230,18 +240,22 @@ pub fn compute_glyph_bounds(block: &TextBlock) -> Vec<GlyphBounds> {
                     advance += scaled.kern(prev, gid);
                 }
                 advance += scaled.h_advance(gid);
+                advance += run.style.letter_spacing;
                 prev_glyph = Some(gid);
             }
             lines.last_mut().unwrap().push(GlyphSeg {
                 text: part.to_string(),
+                flat_start: flat_offset,
                 font: font.clone(),
                 font_size: run.style.font_size,
                 width_scale: run.style.width_scale,
                 height_scale: run.style.height_scale,
+                letter_spacing: run.style.letter_spacing,
                 ascent: scaled.ascent(),
                 line_height: scaled.height(),
                 advance,
             });
+            flat_offset += part.len();
         }
     }
 
@@ -275,6 +289,7 @@ pub fn compute_glyph_bounds(block: &TextBlock) -> Vec<GlyphBounds> {
             let baseline_y = block.position[1] + y_pos + max_ascent;
             let seg_ascent = seg.ascent;
             let mut prev_glyph: Option<ab_glyph::GlyphId> = None;
+            let mut seg_flat = seg.flat_start;
 
             for ch in seg.text.chars() {
                 let gid = font.glyph_id(ch);
@@ -282,16 +297,20 @@ pub fn compute_glyph_bounds(block: &TextBlock) -> Vec<GlyphBounds> {
                     x_cursor += scaled.kern(prev, gid);
                 }
                 let h_advance = scaled.h_advance(gid);
+                let flat_start = seg_flat;
+                let flat_end = flat_start + ch.len_utf8();
 
                 // Glyph box: use the tight glyph bounds from the font
                 let glyph_x = block.position[0] + x_cursor;
                 let glyph_y = baseline_y - seg_ascent;
-                let glyph_w = h_advance;
+                let glyph_w = h_advance + seg.letter_spacing.max(0.0);
                 let glyph_h = seg.line_height;
 
                 result.push(GlyphBounds {
                     glyph_index: glyph_idx,
                     ch,
+                    flat_start,
+                    flat_end,
                     x: glyph_x,
                     y: glyph_y,
                     w: glyph_w,
@@ -301,8 +320,10 @@ pub fn compute_glyph_bounds(block: &TextBlock) -> Vec<GlyphBounds> {
                 });
 
                 x_cursor += h_advance;
+                x_cursor += seg.letter_spacing;
                 prev_glyph = Some(gid);
                 glyph_idx += 1;
+                seg_flat = flat_end;
             }
         }
 

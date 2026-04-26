@@ -1,10 +1,22 @@
 use ab_glyph::{Font, FontArc, GlyphId, ScaleFont, point};
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::OnceLock;
 
-/// Cache for rasterized glyph pixel data. Key: (GlyphId, font_size_bits, width_scale_bits, height_scale_bits).
+/// Cache for rasterized glyph pixel data.
+/// Key: (font identity, GlyphId, font_size_bits, width_scale_bits, height_scale_bits).
 /// Value: (pixels as (u32, u32, f32), bounds_min_x_at_origin_zero, bounds_min_y_at_origin_zero).
-pub type GlyphPixelCache = HashMap<(GlyphId, u32, u32, u32), (Vec<(u32, u32, f32)>, f32, f32)>;
+type GlyphPixelCacheKey = (u64, GlyphId, u32, u32, u32);
+type GlyphPixelCacheValue = (Vec<(u32, u32, f32)>, f32, f32);
+pub type GlyphPixelCache = HashMap<GlyphPixelCacheKey, GlyphPixelCacheValue>;
+
+pub fn font_cache_key(family: &str, weight: u16, italic: bool) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    family.hash(&mut hasher);
+    weight.hash(&mut hasher);
+    italic.hash(&mut hasher);
+    hasher.finish()
+}
 
 /// Text alignment options.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,9 +55,11 @@ pub fn layout_text(
     width_scale: f32,
     height_scale: f32,
 ) -> (Vec<(GlyphId, f32, f32)>, f32, f32, f32, f32) {
+    let safe_ws = width_scale.clamp(0.001, f32::MAX / font_size.max(1.0));
+    let safe_hs = height_scale.clamp(0.001, f32::MAX / font_size.max(1.0));
     let scaled = font.as_scaled(ab_glyph::PxScale {
-        x: font_size * width_scale,
-        y: font_size * height_scale,
+        x: font_size * safe_ws,
+        y: font_size * safe_hs,
     });
     let ascent = scaled.ascent();
     let descent = scaled.descent();
@@ -185,9 +199,11 @@ pub fn compute_text_layout_metrics(
     height_scale: f32,
 ) -> TextLayoutMetrics {
     use ab_glyph::{Font as _, ScaleFont as _};
+    let safe_ws = width_scale.clamp(0.001, f32::MAX / font_size.max(1.0));
+    let safe_hs = height_scale.clamp(0.001, f32::MAX / font_size.max(1.0));
     let scaled = font.as_scaled(ab_glyph::PxScale {
-        x: font_size * width_scale,
-        y: font_size * height_scale,
+        x: font_size * safe_ws,
+        y: font_size * safe_hs,
     });
     let base_line_height = scaled.height();
     let line_height = base_line_height * line_spacing;
@@ -256,9 +272,11 @@ pub fn word_wrap_line(
     if line.is_empty() {
         return vec![String::new()];
     }
+    let safe_ws = width_scale.clamp(0.001, f32::MAX / font_size.max(1.0));
+    let safe_hs = height_scale.clamp(0.001, f32::MAX / font_size.max(1.0));
     let scaled = font.as_scaled(ab_glyph::PxScale {
-        x: font_size * width_scale,
-        y: font_size * height_scale,
+        x: font_size * safe_ws,
+        y: font_size * safe_hs,
     });
 
     // Measure the full line width first as a fast path
@@ -408,6 +426,7 @@ pub fn word_wrap_line(
 
 pub fn rasterize_text(
     font: &FontArc,
+    font_cache_key: u64,
     text: &str,
     font_size: f32,
     alignment: TextAlignment,
@@ -416,7 +435,7 @@ pub fn rasterize_text(
     color: [u8; 4],
     anti_alias: bool,
     bold: bool,
-    italic: bool,
+    _italic: bool,
     underline: bool,
     strikethrough: bool,
     _canvas_w: u32,
@@ -429,9 +448,13 @@ pub fn rasterize_text(
     width_scale: f32,
     height_scale: f32,
 ) -> RasterizedText {
+    // Clamp scale to prevent inf/NaN from propagating (e.g. from extreme DragValue input).
+    // f32::MAX / font_size ensures the product stays finite.
+    let safe_ws = width_scale.clamp(0.001, f32::MAX / font_size.max(1.0));
+    let safe_hs = height_scale.clamp(0.001, f32::MAX / font_size.max(1.0));
     let scaled = font.as_scaled(ab_glyph::PxScale {
-        x: font_size * width_scale,
-        y: font_size * height_scale,
+        x: font_size * safe_ws,
+        y: font_size * safe_hs,
     });
     let ascent = scaled.ascent();
     let base_line_height = scaled.height();
@@ -621,7 +644,13 @@ pub fn rasterize_text(
     for &(glyph_id, gx, gy) in &all_glyphs {
         let draw_x = gx.round();
         let draw_y = gy.round();
-        let cache_key = (glyph_id, font_size_key, width_scale_key, height_scale_key);
+        let cache_key = (
+            font_cache_key,
+            glyph_id,
+            font_size_key,
+            width_scale_key,
+            height_scale_key,
+        );
 
         // Populate cache if this glyph hasn't been rasterized yet
         glyph_cache.entry(cache_key).or_insert_with(|| {
@@ -652,14 +681,8 @@ pub fn rasterize_text(
             let actual_by = *base_by + draw_y;
 
             for &(px, py, cov) in pixels.iter() {
-                let mut cx = px as f32 + origin_x + actual_bx;
+                let cx = px as f32 + origin_x + actual_bx;
                 let cy = py as f32 + origin_y + actual_by;
-
-                // Apply italic shear
-                if italic {
-                    let baseline_y = origin_y + draw_y;
-                    cx += (baseline_y - cy) * 0.2;
-                }
 
                 let ix = cx.round() as i32 - x0;
                 let iy = cy.round() as i32 - y0;
